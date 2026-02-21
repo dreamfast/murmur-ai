@@ -3,10 +3,12 @@ package dashboard
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/lrstanley/girc"
 )
@@ -66,6 +68,119 @@ func TestNewBridgeSASLConfig(t *testing.T) {
 				}
 				if sasl.Pass != tt.password {
 					t.Errorf("SASL Pass = %q, want %q", sasl.Pass, tt.password)
+				}
+			}
+		})
+	}
+}
+
+func TestWSMessageTimestampJSON(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		msg           WSMessage
+		wantTimestamp bool
+	}{
+		{
+			name: "timestamp present in JSON",
+			msg: WSMessage{
+				Type:      "message",
+				Channel:   "#test",
+				Nick:      "user1",
+				Text:      "hello",
+				Timestamp: time.Date(2026, 1, 15, 12, 0, 0, 0, time.UTC).UnixMilli(),
+			},
+			wantTimestamp: true,
+		},
+		{
+			name: "zero timestamp omitted from JSON",
+			msg: WSMessage{
+				Type:    "message",
+				Channel: "#test",
+				Nick:    "user1",
+				Text:    "hello",
+			},
+			wantTimestamp: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			data, err := json.Marshal(tt.msg)
+			if err != nil {
+				t.Fatalf("Marshal error: %v", err)
+			}
+
+			var raw map[string]interface{}
+			if err := json.Unmarshal(data, &raw); err != nil {
+				t.Fatalf("Unmarshal error: %v", err)
+			}
+
+			_, hasTS := raw["timestamp"]
+			if hasTS != tt.wantTimestamp {
+				t.Errorf("timestamp in JSON = %v, want %v (json: %s)", hasTS, tt.wantTimestamp, data)
+			}
+
+			if tt.wantTimestamp {
+				// Verify round-trip: unmarshal back to WSMessage.
+				var decoded WSMessage
+				if err := json.Unmarshal(data, &decoded); err != nil {
+					t.Fatalf("round-trip Unmarshal error: %v", err)
+				}
+				if decoded.Timestamp != tt.msg.Timestamp {
+					t.Errorf("round-trip Timestamp = %d, want %d", decoded.Timestamp, tt.msg.Timestamp)
+				}
+			}
+		})
+	}
+}
+
+func TestEventTimestamp(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		timestamp time.Time
+		wantPos   bool
+	}{
+		{
+			name:      "normal timestamp",
+			timestamp: time.Date(2026, 1, 15, 12, 0, 0, 0, time.UTC),
+			wantPos:   true,
+		},
+		{
+			name:      "zero timestamp gets current time",
+			timestamp: time.Time{},
+			wantPos:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			e := girc.Event{Timestamp: tt.timestamp}
+			ts := eventTimestamp(e)
+
+			if tt.wantPos && ts <= 0 {
+				t.Errorf("eventTimestamp() = %d, want > 0", ts)
+			}
+
+			if tt.name == "normal timestamp" {
+				want := tt.timestamp.UnixMilli()
+				if ts != want {
+					t.Errorf("eventTimestamp() = %d, want %d", ts, want)
+				}
+			}
+
+			if tt.name == "zero timestamp gets current time" {
+				// Should be close to now (within 1 second).
+				now := time.Now().UnixMilli()
+				if ts < now-1000 || ts > now+1000 {
+					t.Errorf("eventTimestamp() = %d, want near %d", ts, now)
 				}
 			}
 		})

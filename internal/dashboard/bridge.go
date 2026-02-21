@@ -32,6 +32,10 @@ type WSMessage struct {
 	Error string `json:"error,omitempty"`
 	// Channels is the list of joined channels (for connected events).
 	Channels []string `json:"channels,omitempty"`
+	// Timestamp is the event time in Unix milliseconds. For messages with
+	// IRCv3 server-time tags (e.g. history replay), this reflects the
+	// original send time rather than the time the bridge received it.
+	Timestamp int64 `json:"timestamp,omitempty"`
 }
 
 // Bridge connects a single WebSocket client to an IRC connection.
@@ -124,10 +128,11 @@ func NewBridge(ctx context.Context, ws *websocket.Conn, cfg BridgeConfig, logger
 			return
 		}
 		b.sendWS(WSMessage{
-			Type:    "message",
-			Channel: e.Params[0],
-			Nick:    e.Source.Name,
-			Text:    e.Last(),
+			Type:      "message",
+			Channel:   e.Params[0],
+			Nick:      e.Source.Name,
+			Text:      e.Last(),
+			Timestamp: eventTimestamp(e),
 		})
 	})
 
@@ -136,9 +141,10 @@ func NewBridge(ctx context.Context, ws *websocket.Conn, cfg BridgeConfig, logger
 			return
 		}
 		b.sendWS(WSMessage{
-			Type:    "join",
-			Channel: e.Params[0],
-			Nick:    e.Source.Name,
+			Type:      "join",
+			Channel:   e.Params[0],
+			Nick:      e.Source.Name,
+			Timestamp: eventTimestamp(e),
 		})
 	})
 
@@ -147,10 +153,11 @@ func NewBridge(ctx context.Context, ws *websocket.Conn, cfg BridgeConfig, logger
 			return
 		}
 		b.sendWS(WSMessage{
-			Type:    "part",
-			Channel: e.Params[0],
-			Nick:    e.Source.Name,
-			Text:    e.Last(),
+			Type:      "part",
+			Channel:   e.Params[0],
+			Nick:      e.Source.Name,
+			Text:      e.Last(),
+			Timestamp: eventTimestamp(e),
 		})
 	})
 
@@ -159,10 +166,11 @@ func NewBridge(ctx context.Context, ws *websocket.Conn, cfg BridgeConfig, logger
 			return
 		}
 		b.sendWS(WSMessage{
-			Type:    "topic",
-			Channel: e.Params[0],
-			Nick:    e.Source.Name,
-			Topic:   e.Last(),
+			Type:      "topic",
+			Channel:   e.Params[0],
+			Nick:      e.Source.Name,
+			Topic:     e.Last(),
+			Timestamp: eventTimestamp(e),
 		})
 	})
 
@@ -171,10 +179,11 @@ func NewBridge(ctx context.Context, ws *websocket.Conn, cfg BridgeConfig, logger
 			return
 		}
 		b.sendWS(WSMessage{
-			Type:    "mode",
-			Channel: e.Params[0],
-			Nick:    e.Source.Name,
-			Mode:    e.Params[1],
+			Type:      "mode",
+			Channel:   e.Params[0],
+			Nick:      e.Source.Name,
+			Mode:      e.Params[1],
+			Timestamp: eventTimestamp(e),
 		})
 	})
 
@@ -194,6 +203,18 @@ func NewBridge(ctx context.Context, ws *websocket.Conn, cfg BridgeConfig, logger
 	})
 
 	return b, nil
+}
+
+// eventTimestamp returns the event timestamp as Unix milliseconds.
+// girc populates Event.Timestamp from the IRCv3 server-time tag when
+// available, falling back to time.Now(). This defensive check ensures
+// we never send a zero timestamp.
+func eventTimestamp(e girc.Event) int64 {
+	ts := e.Timestamp.UnixMilli()
+	if ts <= 0 {
+		ts = time.Now().UnixMilli()
+	}
+	return ts
 }
 
 // Run starts the IRC connection and WebSocket read loop. It blocks until
