@@ -49,8 +49,9 @@ type Server struct {
 	commands        *CommandHandler
 	agent           *Agent
 	permissions     *PermissionManager
-	permCleanupStop context.CancelFunc // stops the PM cleanup goroutine; nil if PM not active
-	monitorCtx      context.Context    // lifecycle context for background goroutines; set in Run()
+	nickserv        atomic.Pointer[NickServVerifier] // NickServ identity verification; nil if disabled
+	permCleanupStop context.CancelFunc               // stops the PM cleanup goroutine; nil if PM not active
+	monitorCtx      context.Context                  // lifecycle context for background goroutines; set in Run()
 
 	// allowedUsers is an atomic copy of the allowed users list, used by
 	// isAllowed() for lock-free reads. Updated during Reload().
@@ -305,6 +306,35 @@ func New(cfg *config.ServerConfig, configPath string, logger *slog.Logger) (*Ser
 	// Wire the permission manager into the agent.
 	agent.SetPermissions(pm)
 
+	// Create NickServ verifier if permissions require identity verification.
+	// Default: enabled when permissions.toml has [users] entries.
+	var nickserv *NickServVerifier
+	requireNickServ := cfg.Security.RequireNickServ || len(permCfg.Users) > 0
+	if requireNickServ {
+		cacheTTL := defaultNickServCacheTTL
+		if cfg.Security.NickServCacheTTL != "" {
+			ttl, err := time.ParseDuration(cfg.Security.NickServCacheTTL)
+			if err != nil {
+				database.Close()
+				return nil, fmt.Errorf("server.New: parse nickserv_cache_ttl: %w", err)
+			}
+			if ttl < 0 {
+				database.Close()
+				return nil, fmt.Errorf("server.New: nickserv_cache_ttl must be non-negative")
+			}
+			cacheTTL = ttl
+		}
+		whoisFn := func(nick string) (string, error) {
+			result, err := conn.Whois(nick)
+			if err != nil {
+				return "", err
+			}
+			return result.Account, nil
+		}
+		nickserv = NewNickServVerifier(whoisFn, cacheTTL, logger)
+		logger.Info("NickServ verification enabled", "cache_ttl", cacheTTL)
+	}
+
 	// Create the task scheduler (may be nil if not enabled).
 	var scheduler *Scheduler
 	if cfg.Scheduler.Enabled {
@@ -373,6 +403,9 @@ func New(cfg *config.ServerConfig, configPath string, logger *slog.Logger) (*Ser
 		ircLogHandler:   ircLogHandler,
 	}
 	s.allowedUsers.Store(&cfg.Security.AllowedUsers)
+	if nickserv != nil {
+		s.nickserv.Store(nickserv)
+	}
 
 	// Wire the reloader to the command handler now that the server exists.
 	// This breaks the circular dependency: commands needs a Reloader, but
@@ -632,6 +665,36 @@ func (s *Server) Reload() error {
 		)
 	}
 
+	// Update NickServ verifier: recreate on enable or TTL change, disable if
+	// no longer required. Always recreating when enabled is cheap (just a
+	// struct with empty maps) and ensures TTL changes take effect.
+	requireNickServ := cfg.Security.RequireNickServ || len(permCfg.Users) > 0
+	if requireNickServ {
+		cacheTTL := defaultNickServCacheTTL
+		if cfg.Security.NickServCacheTTL != "" {
+			ttl, err := time.ParseDuration(cfg.Security.NickServCacheTTL)
+			if err != nil {
+				return fmt.Errorf("Reload: parse nickserv_cache_ttl: %w", err)
+			}
+			if ttl < 0 {
+				return fmt.Errorf("Reload: nickserv_cache_ttl must be non-negative")
+			}
+			cacheTTL = ttl
+		}
+		whoisFn := func(nick string) (string, error) {
+			result, err := s.conn.Whois(nick)
+			if err != nil {
+				return "", err
+			}
+			return result.Account, nil
+		}
+		s.nickserv.Store(NewNickServVerifier(whoisFn, cacheTTL, s.logger))
+		s.logger.Info("NickServ verification reloaded", "cache_ttl", cacheTTL)
+	} else if !requireNickServ && s.nickserv.Load() != nil {
+		s.nickserv.Store(nil)
+		s.logger.Info("NickServ verification disabled via reload")
+	}
+
 	// Apply changes atomically to each component.
 	s.agent.UpdateProviders(providers, cfg.LLM.Default)
 	s.agent.UpdateConfig(cfg.Server.Verbose, cfg.Memory.MaxHistory, cfg.Memory.CrossChannelContext, approvalTimeout, systemPrompt)
@@ -769,9 +832,6 @@ func (s *Server) registerBusHandlers() {
 // It checks authorization, dispatches ! commands, and spawns agent loops
 // for regular messages. The ctx parameter is the server's run context,
 // passed via closure from Run() to avoid storing it as a struct field.
-//
-// TODO: Enforce SecurityConfig.RequireNickServ — verify NickServ identification
-// before processing messages from allowed users. (Phase 3)
 func (s *Server) handleUserMessage(ctx context.Context, channel, nick, message string) {
 	s.logger.Debug("user message received",
 		"channel", channel,
@@ -794,9 +854,17 @@ func (s *Server) handleUserMessage(ctx context.Context, channel, nick, message s
 		return
 	}
 
-	// Try command handler first. Commands bypass flood protection so that
-	// !flush and !forget always work even during a flood.
+	// Try command handler first. Commands bypass flood protection and
+	// NickServ verification so that !help, !status, etc. always work.
 	if s.commands.HandleCommand(channel, nick, message) {
+		return
+	}
+
+	// NickServ identity verification: if enabled, require users to be
+	// identified before their messages reach the agent. Commands (above)
+	// still work without identification.
+	if nv := s.nickserv.Load(); nv != nil && !nv.IsIdentified(nick) {
+		s.conn.Send(channel, nick+": you must be identified with NickServ to use this bot")
 		return
 	}
 

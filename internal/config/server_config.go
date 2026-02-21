@@ -197,8 +197,14 @@ type ApprovalConfig struct {
 type SecurityConfig struct {
 	// AllowedUsers is the list of IRC nicks allowed to interact with the agent.
 	AllowedUsers []string `toml:"allowed_users"`
-	// RequireNickServ requires users to be identified with NickServ.
+	// RequireNickServ requires users to be identified with NickServ before
+	// their messages are processed by the agent. Defaults to true when
+	// permissions.toml has [users] entries. Commands still work without
+	// identification.
 	RequireNickServ bool `toml:"require_nickserv"`
+	// NickServCacheTTL is how long to cache NickServ identification results.
+	// Defaults to "5m". Set to "0" to disable caching.
+	NickServCacheTTL string `toml:"nickserv_cache_ttl"`
 	// BusKey is a shared secret for bus message authentication (optional, Phase 2).
 	BusKey string `toml:"bus_key"`
 	// PermissionsFile is the path to the permissions TOML file that defines
