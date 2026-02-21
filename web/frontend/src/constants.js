@@ -21,4 +21,5 @@ export const API = Object.freeze({
   LOGIN: "/dashboard/login",
   LOGOUT: "/dashboard/logout",
   STATUS: "/dashboard/status",
+  WS: "/ws",
 });
