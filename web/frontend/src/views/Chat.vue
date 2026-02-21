@@ -94,11 +94,19 @@
         <div class="max-h-48 overflow-y-auto px-3 pb-3 md:max-h-none md:flex-1">
           <div
             v-for="user in activeUsers"
-            :key="user"
-            class="flex items-center gap-2 rounded px-2 py-1 text-sm"
+            :key="user.nick"
+            class="flex items-center gap-1 rounded px-2 py-1 text-sm"
           >
-            <span class="h-1.5 w-1.5 rounded-full bg-success"></span>
-            <span class="truncate font-mono text-xs text-text-secondary">{{ user }}</span>
+            <span
+              v-if="user.prefix"
+              class="w-3 flex-shrink-0 text-center font-mono text-xs font-bold"
+              :class="user.color"
+            >{{ user.prefix }}</span>
+            <span
+              v-else
+              class="w-3 flex-shrink-0"
+            ></span>
+            <span class="truncate font-mono text-xs text-text-secondary">{{ user.nick }}</span>
           </div>
         </div>
       </div>
@@ -204,10 +212,51 @@ function channelUnread(ch) {
   return state ? state.unread : 0;
 }
 
-/** Users in the active channel. */
+/**
+ * Rank order for IRC mode prefixes. Lower index = higher rank.
+ * Used for sorting users in the sidebar.
+ */
+const MODE_RANK = ["~", "&", "@", "%", "+"];
+
+/**
+ * Color classes for each IRC mode prefix.
+ * Owner(~) = gold, Admin(&) = purple, Op(@) = green, HalfOp(%) = teal, Voice(+) = blue.
+ */
+const PREFIX_COLORS = {
+  "~": "text-amber-400",
+  "&": "text-purple-400",
+  "@": "text-green-400",
+  "%": "text-teal-400",
+  "+": "text-blue-400",
+};
+
+/** Rank value for users without a mode prefix (sorted after all prefixed users). */
+const UNRANKED = MODE_RANK.length;
+
+/**
+ * Users in the active channel, sorted by rank then alphabetically.
+ * Owner(~) > Admin(&) > Op(@) > HalfOp(%) > Voice(+) > regular.
+ * Returns enriched objects { nick, prefix, color } to avoid repeated lookups in the template.
+ */
 const activeUsers = computed(() => {
   const state = chatStore.channelState[chatStore.activeChannel];
-  return state ? state.users : [];
+  if (!state || !state.users) return [];
+  const modes = state.userModes || {};
+  return state.users
+    .map((nick) => {
+      const prefix = modes[nick] || "";
+      const rank = MODE_RANK.indexOf(prefix);
+      return {
+        nick,
+        prefix,
+        color: PREFIX_COLORS[prefix] || "",
+        rank: rank === -1 ? UNRANKED : rank,
+      };
+    })
+    .sort((a, b) => {
+      if (a.rank !== b.rank) return a.rank - b.rank;
+      return a.nick.localeCompare(b.nick, undefined, { sensitivity: "base" });
+    });
 });
 
 /** Topic of the active channel. */
