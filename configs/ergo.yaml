@@ -156,7 +156,7 @@ history:
     channel-length: 2048
     client-length: 256
     autoresize-window: 3d
-    autoreplay-on-join: 0
+    autoreplay-on-join: 50
     chathistory-maxmessages: 100
     znc-maxmessages: 2048
     restrictions:
