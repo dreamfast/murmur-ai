@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"murmur/internal/bus"
+	"murmur/internal/config"
 	"murmur/internal/irc"
 	"murmur/internal/llm"
 )
@@ -55,6 +56,7 @@ type agentConfig struct {
 	crossChCtx      int // messages per other channel to include in system prompt (0 = disabled)
 	approvalTimeout time.Duration
 	verbose         bool
+	debug           config.DebugConfig // granular debug log category flags
 }
 
 // Agent runs the LLM agent loop. It ties together LLM providers, tool routing,
@@ -113,7 +115,7 @@ type Agent struct {
 // When verbose is true, the agent sends status messages to IRC (thinking,
 // tool calls, results) so the user can follow what it's doing in real time.
 //
-// TODO: Refactor to an options struct — 18 positional parameters is too many.
+// TODO: Refactor to an options struct — 19 positional parameters is too many.
 func NewAgent(
 	providers map[string]llm.Provider,
 	defaultProvider string,
@@ -132,6 +134,7 @@ func NewAgent(
 	toolTimeout time.Duration,
 	approvalTimeout time.Duration,
 	verbose bool,
+	debug config.DebugConfig,
 	logger *slog.Logger,
 ) *Agent {
 	if serverTools == nil {
@@ -148,6 +151,7 @@ func NewAgent(
 			crossChCtx:      crossChannelContext,
 			approvalTimeout: approvalTimeout,
 			verbose:         verbose,
+			debug:           debug,
 		},
 		serverTools:     serverTools,
 		registry:        registry,
@@ -199,7 +203,7 @@ func (a *Agent) SetPermissions(pm *PermissionManager) {
 // UpdateConfig updates the agent's simple configuration fields under the
 // mu write lock. This is called during hot config reload for fields that
 // don't require structural changes (no new goroutines, no connection changes).
-func (a *Agent) UpdateConfig(verbose bool, maxHistory, crossChCtx int, approvalTimeout time.Duration, systemPrompt string) {
+func (a *Agent) UpdateConfig(verbose bool, maxHistory, crossChCtx int, approvalTimeout time.Duration, systemPrompt string, debug config.DebugConfig) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.cfg.verbose = verbose
@@ -207,6 +211,7 @@ func (a *Agent) UpdateConfig(verbose bool, maxHistory, crossChCtx int, approvalT
 	a.cfg.crossChCtx = crossChCtx
 	a.cfg.approvalTimeout = approvalTimeout
 	a.cfg.systemPrompt = systemPrompt
+	a.cfg.debug = debug
 }
 
 // loadConfig returns a snapshot of the agent's mutable configuration fields.
@@ -408,20 +413,36 @@ func (a *Agent) runLoop(ctx context.Context, channel, nick string) {
 			a.status(channel, cfg.verbose, fmt.Sprintf("thinking... [%s, iteration %d]", provider.Name(), i+1))
 		}
 
-		// Call the LLM.
+		// Call the LLM with timing measurement.
+		llmStart := time.Now()
 		resp, err := provider.ChatCompletion(ctx, &llm.ChatRequest{
 			Messages: messages,
 			Tools:    tools,
 		})
+		llmDuration := time.Since(llmStart)
 		if err != nil {
 			a.logger.Error("LLM call failed",
 				"error", err,
 				"provider", provider.Name(),
 				"channel", channel,
 				"iteration", i,
+				"latency", llmDuration,
 			)
 			a.send(channel, fmt.Sprintf("error: LLM call failed: %v", err))
 			return
+		}
+		if cfg.debug.LogLLMRequests {
+			a.logger.Info("llm_request",
+				"provider", provider.Name(),
+				"channel", channel,
+				"iteration", i,
+				"latency", llmDuration,
+				"prompt_tokens", resp.Usage.PromptTokens,
+				"completion_tokens", resp.Usage.CompletionTokens,
+				"total_tokens", resp.Usage.TotalTokens,
+				"tool_calls", len(resp.ToolCalls),
+				"has_content", resp.Content != "",
+			)
 		}
 
 		// If the response has tool calls, process them.
@@ -455,19 +476,29 @@ func (a *Agent) runLoop(ctx context.Context, channel, nick string) {
 
 			// Route each tool call and store results.
 			for _, tc := range resp.ToolCalls {
-				a.logger.Info("routing tool call",
-					"tool", tc.Function.Name,
-					"call_id", tc.ID,
-					"channel", channel,
-				)
+				if cfg.debug.LogToolCalls {
+					a.logger.Info("routing tool call",
+						"tool", tc.Function.Name,
+						"call_id", tc.ID,
+						"channel", channel,
+					)
+				}
 				a.status(channel, cfg.verbose, fmt.Sprintf("calling %s...", tc.Function.Name))
 
+				toolStart := time.Now()
 				result, routeErr := a.routeToolCall(ctx, channel, tc.Function.Name, json.RawMessage(tc.Function.Arguments))
+				toolDuration := time.Since(toolStart)
 				if routeErr != nil {
-					a.logger.Error("tool call failed",
-						"tool", tc.Function.Name,
-						"error", routeErr,
-					)
+					if cfg.debug.LogToolCalls {
+						a.logger.Error("tool_call_result",
+							"tool", tc.Function.Name,
+							"call_id", tc.ID,
+							"channel", channel,
+							"status", "error",
+							"duration", toolDuration,
+							"error", routeErr,
+						)
+					}
 					a.status(channel, cfg.verbose, fmt.Sprintf("%s failed: %s", tc.Function.Name, truncate(routeErr.Error(), 80)))
 					// Feed the error back to the LLM as a tool result.
 					result = fmt.Sprintf("error: %v", routeErr)
@@ -488,6 +519,16 @@ func (a *Agent) runLoop(ctx context.Context, channel, nick string) {
 						)
 					}
 				} else {
+					if cfg.debug.LogToolCalls {
+						a.logger.Info("tool_call_result",
+							"tool", tc.Function.Name,
+							"call_id", tc.ID,
+							"channel", channel,
+							"status", "ok",
+							"duration", toolDuration,
+							"result_bytes", len(result),
+						)
+					}
 					a.status(channel, cfg.verbose, fmt.Sprintf("%s done (%d bytes)", tc.Function.Name, len(result)))
 					// Reset failure count on success.
 					delete(toolFailCounts, tc.Function.Name)
@@ -732,11 +773,16 @@ func (a *Agent) resolveProvider(channel, nick string, pm *PermissionManager) (ll
 			ep := pm.GetEffective(nick, channel, allToolNames, allModelNames)
 			for _, modelName := range ep.Models {
 				if p, ok := providers[modelName]; ok {
-					a.logger.Info("model not allowed, falling back",
-						"nick", nick,
-						"denied", resolved.Name(),
-						"fallback", modelName,
-					)
+					cfg := a.loadConfig()
+					if cfg.debug.LogPermissions {
+						a.logger.Info("permission_denial",
+							"nick", nick,
+							"channel", channel,
+							"resource", "model",
+							"denied", resolved.Name(),
+							"fallback", modelName,
+						)
+					}
 					return p, nil
 				}
 			}

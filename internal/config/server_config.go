@@ -4,6 +4,7 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,6 +25,31 @@ type ServerConfig struct {
 	Vault     VaultConfig     `toml:"vault"`
 	Tools     ToolsConfig     `toml:"tools"`
 	API       APIConfig       `toml:"api"`
+	Debug     DebugConfig     `toml:"debug"`
+}
+
+// DebugConfig holds settings for the debug IRC channel that receives live
+// structured log output. This replaces the old server.debug_channel field
+// with richer controls for filtering what gets logged.
+type DebugConfig struct {
+	// Enabled controls whether debug logging to IRC is active. Must be
+	// explicitly set to true in the [debug] section. The backward compat
+	// path (server.debug_channel) sets this automatically.
+	Enabled bool `toml:"enabled"`
+	// Channel is the IRC channel that receives debug log output (e.g., "#murmur-debug").
+	// Empty means debug logging is disabled regardless of the Enabled flag.
+	Channel string `toml:"channel"`
+	// LogLevel is the minimum slog level for messages sent to the debug channel.
+	// Valid values: "debug", "info", "warn", "error". Defaults to "debug".
+	LogLevel string `toml:"log_level"`
+	// LogToolCalls enables logging of tool call routing and results.
+	LogToolCalls bool `toml:"log_tool_calls"`
+	// LogLLMRequests enables logging of LLM API calls with provider, tokens, and latency.
+	LogLLMRequests bool `toml:"log_llm_requests"`
+	// LogBusProtocol enables logging of bus protocol messages (register, heartbeat, etc.).
+	LogBusProtocol bool `toml:"log_bus_protocol"`
+	// LogPermissions enables logging of permission checks and denials.
+	LogPermissions bool `toml:"log_permissions"`
 }
 
 // APIConfig holds configuration for the REST API server exposed by both
@@ -316,6 +342,25 @@ func LoadServerConfig(path string) (*ServerConfig, error) {
 		}
 	}
 
+	// Backward compat: if server.debug_channel is set but [debug] section is
+	// not configured, populate DebugConfig from the old field. This allows
+	// existing configs to keep working without changes.
+	if cfg.Server.DebugChannel != "" && cfg.Debug.Channel == "" {
+		cfg.Debug.Channel = cfg.Server.DebugChannel
+		cfg.Debug.Enabled = true
+		// Default all log categories to true for backward compat — the old
+		// debug_channel logged everything.
+		cfg.Debug.LogToolCalls = true
+		cfg.Debug.LogLLMRequests = true
+		cfg.Debug.LogBusProtocol = true
+		cfg.Debug.LogPermissions = true
+	}
+
+	// Default debug log level to "debug" when channel is configured.
+	if cfg.Debug.Channel != "" && cfg.Debug.LogLevel == "" {
+		cfg.Debug.LogLevel = "debug"
+	}
+
 	// Default API listen address.
 	if cfg.API.Enabled && cfg.API.Listen == "" {
 		cfg.API.Listen = "127.0.0.1:8080"
@@ -439,6 +484,23 @@ func (c *ServerConfig) ParseApprovalTimeout() (time.Duration, error) {
 		return 0, fmt.Errorf("ParseApprovalTimeout: must be positive, got %s", c.Approval.Timeout)
 	}
 	return d, nil
+}
+
+// ParseDebugLevel parses the debug log level string into a slog.Level.
+// Returns slog.LevelDebug if the level string is empty or unrecognized.
+func (c *DebugConfig) ParseDebugLevel() slog.Level {
+	switch strings.ToLower(c.LogLevel) {
+	case "debug", "":
+		return slog.LevelDebug
+	case "info":
+		return slog.LevelInfo
+	case "warn":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	default:
+		return slog.LevelDebug
+	}
 }
 
 // validatePositiveDuration checks that a duration string, if non-empty, parses

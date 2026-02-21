@@ -73,6 +73,7 @@ func newTestAPIEnv(t *testing.T) *testAPIEnv {
 		2*time.Second,
 		2*time.Second,
 		false,
+		config.DebugConfig{},
 		logger,
 	)
 	// Suppress IRC sends in tests.
@@ -668,7 +669,7 @@ func TestAPI_AuthMiddleware_EmptyConfigKey(t *testing.T) {
 	providers := map[string]llm.Provider{"test-provider": mock}
 
 	agent := NewAgent(providers, "test-provider", serverTools, registry, memory, router,
-		nil, nil, "test", "test-server", "#test-bus", 100, 0, nil, 2*time.Second, 2*time.Second, false, logger)
+		nil, nil, "test", "test-server", "#test-bus", 100, 0, nil, 2*time.Second, 2*time.Second, false, config.DebugConfig{}, logger)
 	agent.sendFunc = func(_, _ string) {}
 
 	cfg := &config.ServerConfig{}
@@ -782,6 +783,7 @@ func newTestAPIEnvWithPerms(t *testing.T) *testAPIEnv {
 		2*time.Second,
 		2*time.Second,
 		false,
+		config.DebugConfig{},
 		logger,
 	)
 	agent.sendFunc = func(_, _ string) {}

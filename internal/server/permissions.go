@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"murmur/internal/bus"
@@ -28,6 +29,11 @@ type PermissionManager struct {
 	mu     sync.RWMutex
 	cfg    *config.PermissionsConfig
 	logger *slog.Logger
+
+	// logPermissions controls whether permission_filter log messages are emitted.
+	// Updated via SetLogPermissions during hot reload. Uses atomic.Bool for
+	// lock-free concurrent access from FilterTools (read) and Reload (write).
+	logPermissions atomic.Bool
 
 	// cacheMu protects the effective permissions cache.
 	cacheMu sync.RWMutex
@@ -164,12 +170,19 @@ func (pm *PermissionManager) FilterTools(tools []bus.ToolDef, nick, channel stri
 		}
 	}
 
-	if len(filtered) != len(tools) {
-		pm.logger.Debug("filtered tools for user",
+	if len(filtered) != len(tools) && pm.logPermissions.Load() {
+		denied := make([]string, 0, len(tools)-len(filtered))
+		for _, t := range tools {
+			if _, ok := allowed[t.Name]; !ok {
+				denied = append(denied, t.Name)
+			}
+		}
+		pm.logger.Info("permission_filter",
 			"nick", nick,
 			"channel", channel,
 			"total", len(tools),
 			"allowed", len(filtered),
+			"denied_tools", denied,
 		)
 	}
 
@@ -332,6 +345,12 @@ func (pm *PermissionManager) cleanupRateLimits() {
 			pm.rateHits[nick] = pruned
 		}
 	}
+}
+
+// SetLogPermissions controls whether FilterTools emits permission_filter log
+// messages. This is called during hot reload to sync with the debug config.
+func (pm *PermissionManager) SetLogPermissions(enabled bool) {
+	pm.logPermissions.Store(enabled)
 }
 
 // Config returns the current permissions config. This is used by other

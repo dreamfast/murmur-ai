@@ -111,11 +111,19 @@ func New(cfg *config.ServerConfig, configPath string, logger *slog.Logger) (*Ser
 	// both stderr and the IRC channel. The IRC handler starts disabled and
 	// is activated after the IRC connection is established in Run().
 	var ircLogHandler *irc.IRCLogHandler
-	if cfg.Server.DebugChannel != "" {
-		ircLogHandler = irc.NewIRCLogHandler(cfg.Server.DebugChannel, slog.LevelDebug)
+	if cfg.Debug.Channel != "" {
+		debugLevel := cfg.Debug.ParseDebugLevel()
+		ircLogHandler = irc.NewIRCLogHandler(cfg.Debug.Channel, debugLevel)
+		if !cfg.Debug.Enabled {
+			ircLogHandler.SetEnabled(false)
+		}
 		multiHandler := irc.NewMultiHandler(logger.Handler(), ircLogHandler)
 		logger = slog.New(multiHandler)
-		logger.Info("debug channel configured", "channel", cfg.Server.DebugChannel)
+		logger.Info("debug channel configured",
+			"channel", cfg.Debug.Channel,
+			"level", debugLevel.String(),
+			"enabled", cfg.Debug.Enabled,
+		)
 	}
 
 	channels := []string{cfg.IRC.Channels.Main, cfg.IRC.Channels.Bus}
@@ -275,6 +283,7 @@ func New(cfg *config.ServerConfig, configPath string, logger *slog.Logger) (*Ser
 	var pm *PermissionManager
 	if len(permCfg.Users) > 0 || len(permCfg.Channels) > 0 {
 		pm = NewPermissionManager(permCfg, logger)
+		pm.SetLogPermissions(cfg.Debug.LogPermissions)
 		logger.Info("permissions loaded",
 			"users", len(permCfg.Users),
 			"channels", len(permCfg.Channels),
@@ -300,6 +309,7 @@ func New(cfg *config.ServerConfig, configPath string, logger *slog.Logger) (*Ser
 		2*time.Minute,
 		approvalTimeout,
 		cfg.Server.Verbose,
+		cfg.Debug,
 		logger,
 	)
 
@@ -473,11 +483,11 @@ func New(cfg *config.ServerConfig, configPath string, logger *slog.Logger) (*Ser
 	// Join the debug channel and activate the IRC log handler on connect.
 	if ircLogHandler != nil {
 		conn.OnConnect(func() {
-			if err := conn.Join(cfg.Server.DebugChannel); err != nil {
-				logger.Warn("failed to join debug channel", "channel", cfg.Server.DebugChannel, "error", err)
+			if err := conn.Join(cfg.Debug.Channel); err != nil {
+				logger.Warn("failed to join debug channel", "channel", cfg.Debug.Channel, "error", err)
 			}
 			ircLogHandler.SetConnection(conn)
-			logger.Info("debug channel active", "channel", cfg.Server.DebugChannel)
+			logger.Info("debug channel active", "channel", cfg.Debug.Channel)
 		})
 	}
 
@@ -653,6 +663,7 @@ func (s *Server) Reload() error {
 	}
 	if s.permissions != nil {
 		s.permissions.Update(permCfg)
+		s.permissions.SetLogPermissions(cfg.Debug.LogPermissions)
 		s.logger.Info("permissions reloaded",
 			"users", len(permCfg.Users),
 			"channels", len(permCfg.Channels),
@@ -661,6 +672,7 @@ func (s *Server) Reload() error {
 		// Permissions were added after initial startup — create a new manager
 		// and start its cleanup goroutine.
 		pm := NewPermissionManager(permCfg, s.logger)
+		pm.SetLogPermissions(cfg.Debug.LogPermissions)
 		s.agent.SetPermissions(pm)
 		s.permissions = pm
 		// Wire into command handler for admin commands.
@@ -724,26 +736,35 @@ func (s *Server) Reload() error {
 
 	// Apply changes atomically to each component.
 	s.agent.UpdateProviders(providers, cfg.LLM.Default)
-	s.agent.UpdateConfig(cfg.Server.Verbose, cfg.Memory.MaxHistory, cfg.Memory.CrossChannelContext, approvalTimeout, systemPrompt)
+	s.agent.UpdateConfig(cfg.Server.Verbose, cfg.Memory.MaxHistory, cfg.Memory.CrossChannelContext, approvalTimeout, systemPrompt, cfg.Debug)
 	s.commands.UpdateAllowedUsers(cfg.Security.AllowedUsers)
 	s.allowedUsers.Store(&cfg.Security.AllowedUsers)
 	s.memory.UpdateConfig(cfg.Memory.MaxHistory, cfg.Memory.SummaryThreshold)
 
-	// Toggle debug channel handler.
+	// Toggle debug channel handler and update level.
 	if s.ircLogHandler != nil {
-		oldDebugCh := s.loadCfg().Server.DebugChannel
-		if cfg.Server.DebugChannel == "" {
+		oldDebugCh := s.loadCfg().Debug.Channel
+		if cfg.Debug.Channel == "" || !cfg.Debug.Enabled {
 			s.ircLogHandler.SetEnabled(false)
 			s.logger.Info("debug channel disabled by reload")
 		} else {
 			s.ircLogHandler.SetEnabled(true)
-			if oldDebugCh != cfg.Server.DebugChannel {
-				s.logger.Warn("debug_channel name changed; new channel requires restart to take effect",
+			s.ircLogHandler.SetLevel(cfg.Debug.ParseDebugLevel())
+			if oldDebugCh != cfg.Debug.Channel {
+				s.logger.Warn("debug channel name changed; new channel requires restart to take effect",
 					"old", oldDebugCh,
-					"new", cfg.Server.DebugChannel,
+					"new", cfg.Debug.Channel,
 				)
 			}
-			s.logger.Info("debug channel enabled by reload", "channel", cfg.Server.DebugChannel)
+			s.logger.Info("debug channel updated by reload",
+				"channel", cfg.Debug.Channel,
+				"enabled", cfg.Debug.Enabled,
+				"level", cfg.Debug.LogLevel,
+				"log_tool_calls", cfg.Debug.LogToolCalls,
+				"log_llm_requests", cfg.Debug.LogLLMRequests,
+				"log_bus_protocol", cfg.Debug.LogBusProtocol,
+				"log_permissions", cfg.Debug.LogPermissions,
+			)
 		}
 	}
 

@@ -2,7 +2,7 @@
 
 > Status: IN PROGRESS
 > Branch: feat/permissions-dashboard-setup
-> Updated: 2026-02-21T6
+> Updated: 2026-02-21T7
 
 ## Phase 1: Foundation
 
@@ -15,8 +15,8 @@
 | 5 | Permissions Manage LLM Tool | `done` | 95b9df7 |
 | 6 | Per-User Rate Limiting Integration | `done` | 6dc2e60 |
 | 7 | Per-User API Keys for Webhooks | `done` | fce0563 |
-| 8 | Scheduled Task Permission Tracking | `in_progress` | — |
-| 9 | Enhanced Debug Channel Logging | `pending` | — |
+| 8 | Scheduled Task Permission Tracking | `done` | 4214aa8 |
+| 9 | Enhanced Debug Channel Logging | `in_progress` | — |
 | 10 | Config Examples, System Prompt, and Deny List Updates | `pending` | — |
 
 ## Phase 2: Setup & Deployment

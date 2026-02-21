@@ -125,11 +125,12 @@ func newTestAgentEnv(t *testing.T) *testAgentEnv {
 		"test-server",
 		"#test-bus",
 		100,
-		0,             // cross-channel context disabled in tests
-		nil,           // no channel settings by default
-		2*time.Second, // short timeout for tests
-		2*time.Second, // short approval timeout for tests
-		false,         // verbose off in tests
+		0,                    // cross-channel context disabled in tests
+		nil,                  // no channel settings by default
+		2*time.Second,        // short timeout for tests
+		2*time.Second,        // short approval timeout for tests
+		false,                // verbose off in tests
+		config.DebugConfig{}, // no debug logging in tests
 		logger,
 	)
 	agent.sendFunc = env.appendSent
@@ -533,6 +534,7 @@ func TestAgent_SetProvider_PerChannel(t *testing.T) {
 		2*time.Second,
 		2*time.Second,
 		false,
+		config.DebugConfig{},
 		logger,
 	)
 
@@ -612,6 +614,7 @@ func TestAgent_ResolveProvider(t *testing.T) {
 		2*time.Second,
 		2*time.Second,
 		false,
+		config.DebugConfig{},
 		logger,
 	)
 
@@ -708,6 +711,7 @@ func TestAgent_ResolveProvider_StaleOverride(t *testing.T) {
 		2*time.Second,
 		2*time.Second,
 		false,
+		config.DebugConfig{},
 		logger,
 	)
 
@@ -886,6 +890,7 @@ func TestAgent_NoProviders(t *testing.T) {
 		2*time.Second,
 		2*time.Second,
 		false,
+		config.DebugConfig{},
 		logger,
 	)
 
@@ -1238,6 +1243,7 @@ func TestAgent_ServerToolExecution(t *testing.T) {
 		2*time.Second,
 		2*time.Second,
 		false,
+		config.DebugConfig{},
 		logger,
 	)
 
@@ -1364,6 +1370,7 @@ func TestAgent_ServerToolPriority(t *testing.T) {
 		2*time.Second,
 		2*time.Second,
 		false,
+		config.DebugConfig{},
 		logger,
 	)
 
@@ -1461,6 +1468,7 @@ func TestAgent_ApprovalFlow_Auto(t *testing.T) {
 		2*time.Second,
 		2*time.Second,
 		false,
+		config.DebugConfig{},
 		logger,
 	)
 
@@ -1570,6 +1578,7 @@ func TestAgent_ApprovalFlow_Report(t *testing.T) {
 		2*time.Second,
 		2*time.Second,
 		false,
+		config.DebugConfig{},
 		logger,
 	)
 
@@ -1687,6 +1696,7 @@ func TestAgent_ApprovalFlow_Approve(t *testing.T) {
 		2*time.Second,
 		5*time.Second, // longer approval timeout for this test
 		false,
+		config.DebugConfig{},
 		logger,
 	)
 
@@ -1812,6 +1822,7 @@ func TestAgent_BuildSystemPrompt_ChannelSpecificModel(t *testing.T) {
 		2*time.Second,
 		2*time.Second,
 		false,
+		config.DebugConfig{},
 		logger,
 	)
 
@@ -1916,6 +1927,7 @@ func TestAgent_SyncChannelTopic_SkipsBusChannel(t *testing.T) {
 		2*time.Second,
 		2*time.Second,
 		false,
+		config.DebugConfig{},
 		logger,
 	)
 
@@ -2050,7 +2062,7 @@ func TestAgent_ExecuteTool_ServerTool(t *testing.T) {
 	agent := NewAgent(
 		providers, "test-provider", serverTools, registry, memory, router,
 		nil, nil, "test", "test-server", "#test-bus", 100, 0, nil,
-		2*time.Second, 2*time.Second, false, logger,
+		2*time.Second, 2*time.Second, false, config.DebugConfig{}, logger,
 	)
 
 	ctx := context.Background()
@@ -2087,7 +2099,7 @@ func TestAgent_ExecuteTool_BusTool(t *testing.T) {
 	agent := NewAgent(
 		providers, "test-provider", nil, registry, memory, router,
 		nil, nil, "test", "test-server", "#test-bus", 100, 0, nil,
-		2*time.Second, 2*time.Second, false, logger,
+		2*time.Second, 2*time.Second, false, config.DebugConfig{}, logger,
 	)
 
 	// Override routeToolFunc to simulate bus routing.
@@ -2304,6 +2316,7 @@ func TestAgent_BuildSystemPrompt_DM(t *testing.T) {
 		2*time.Second,
 		2*time.Second,
 		false,
+		config.DebugConfig{},
 		logger,
 	)
 
@@ -2420,7 +2433,7 @@ func TestAgent_UpdateConfig(t *testing.T) {
 	}
 
 	// Update config.
-	env.agent.UpdateConfig(true, 50, 5, 30*time.Second, "New system prompt")
+	env.agent.UpdateConfig(true, 50, 5, 30*time.Second, "New system prompt", config.DebugConfig{})
 
 	// Verify updated values.
 	cfg = env.agent.loadConfig()
