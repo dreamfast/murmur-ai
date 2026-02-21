@@ -11,7 +11,7 @@
  * tracking when the user is not on the chat page.
  */
 
-import { reactive, ref, shallowRef } from "vue";
+import { reactive, shallowRef } from "vue";
 import { signedWebSocketURL } from "../api.js";
 import { API } from "../constants.js";
 

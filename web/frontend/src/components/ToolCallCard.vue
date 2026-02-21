@@ -28,14 +28,14 @@
       <!-- Approve/Deny buttons (only when pending) -->
       <div v-if="!status" class="flex gap-2">
         <button
-          @click="$emit('approve', approval.id)"
           class="rounded bg-success/20 px-3 py-1.5 text-xs font-medium text-success transition hover:bg-success/30"
+          @click="$emit('approve', approval.id)"
         >
           &#x2705; Approve
         </button>
         <button
-          @click="$emit('deny', approval.id)"
           class="rounded bg-error/20 px-3 py-1.5 text-xs font-medium text-error transition hover:bg-error/30"
+          @click="$emit('deny', approval.id)"
         >
           &#x274C; Deny
         </button>

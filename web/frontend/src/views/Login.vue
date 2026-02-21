@@ -9,8 +9,8 @@
 
       <!-- Login Card -->
       <form
-        @submit.prevent="handleLogin"
         class="space-y-4 rounded-lg border border-border bg-bg-secondary p-6"
+        @submit.prevent="handleLogin"
       >
         <!-- Error message -->
         <div

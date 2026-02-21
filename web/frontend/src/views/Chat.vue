@@ -112,8 +112,8 @@
         <div class="flex items-center gap-3">
           <span class="hidden font-mono text-xs text-text-muted sm:inline">{{ nick }}</span>
           <button
-            @click="handleLogout"
             class="rounded px-2 py-1 text-xs text-text-secondary transition hover:bg-bg-hover hover:text-text-primary"
+            @click="handleLogout"
           >
             Logout
           </button>

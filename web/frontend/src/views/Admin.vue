@@ -75,8 +75,8 @@
           <button
             v-for="action in quickActions"
             :key="action.cmd"
-            @click="sendCommand(action.cmd)"
             class="flex items-center gap-2 rounded-lg border border-border bg-bg-secondary px-4 py-3 text-left transition hover:border-accent/50 hover:bg-bg-hover"
+            @click="sendCommand(action.cmd)"
           >
             <span class="text-lg">{{ action.icon }}</span>
             <div>

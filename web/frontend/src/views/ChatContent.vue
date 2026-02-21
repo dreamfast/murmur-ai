@@ -92,7 +92,7 @@
         </button>
       </div>
 
-      <form @submit.prevent="handleSend" class="flex gap-2">
+      <form class="flex gap-2" @submit.prevent="handleSend">
         <input
           ref="inputRef"
           v-model="inputText"
