@@ -32,6 +32,12 @@ func TestSessionCreateRetrieve(t *testing.T) {
 	if len(sess.ID) != sessionIDLen*2 { // hex encoding doubles length
 		t.Errorf("session ID length = %d, want %d", len(sess.ID), sessionIDLen*2)
 	}
+	if sess.SigningKey == "" {
+		t.Error("SigningKey is empty, want non-empty hex string")
+	}
+	if len(sess.SigningKey) != signingKeyLen*2 {
+		t.Errorf("SigningKey length = %d, want %d", len(sess.SigningKey), signingKeyLen*2)
+	}
 
 	// Retrieve by ID.
 	got := store.Get(sess.ID)

@@ -1,12 +1,16 @@
 package dashboard
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
 	"path"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -22,6 +26,13 @@ const (
 	loginRateLimit = 5
 	// loginRateWindow is the sliding window for login rate limiting.
 	loginRateWindow = time.Minute
+	// signatureMaxAge is the maximum age of a signed request timestamp.
+	// Requests older than this are rejected to prevent replay attacks.
+	signatureMaxAge = 30 * time.Second
+	// signatureTimestampHeader is the HTTP header carrying the Unix timestamp.
+	signatureTimestampHeader = "X-Request-Timestamp"
+	// signatureHeader is the HTTP header carrying the HMAC-SHA256 signature.
+	signatureHeader = "X-Request-Signature"
 )
 
 // loginRequest is the JSON body for POST /dashboard/login.
@@ -32,9 +43,10 @@ type loginRequest struct {
 
 // loginResponse is the JSON body returned from POST /dashboard/login.
 type loginResponse struct {
-	OK    bool   `json:"ok"`
-	Nick  string `json:"nick,omitempty"`
-	Error string `json:"error,omitempty"`
+	OK         bool   `json:"ok"`
+	Nick       string `json:"nick,omitempty"`
+	SigningKey string `json:"signing_key,omitempty"`
+	Error      string `json:"error,omitempty"`
 }
 
 // Handler serves the dashboard HTTP endpoints and static files.
@@ -61,7 +73,9 @@ func NewHandler(sessions *SessionStore, cfg config.DashboardConfig, ircCfg confi
 }
 
 // ServeHTTP implements http.Handler and routes requests to the appropriate
-// endpoint. Security headers are set on every response.
+// endpoint. Security headers are set on every response. Signed endpoints
+// (logout, WebSocket) require valid X-Request-Timestamp and X-Request-Signature
+// headers to prevent replay attacks.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Set security headers on all responses.
 	w.Header().Set("X-Frame-Options", "DENY")
@@ -70,6 +84,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	switch {
 	case r.Method == http.MethodPost && r.URL.Path == "/dashboard/login":
+		// Login is unsigned — the client has no signing key yet.
 		h.handleLogin(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/dashboard/logout":
 		h.handleLogout(w, r)
@@ -131,13 +146,23 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 	sess.Password = req.Password
 
 	SetCookie(w, r, sess.ID, int(h.sessions.timeout.Seconds()))
-	h.jsonResponse(w, http.StatusOK, loginResponse{OK: true, Nick: req.Nick})
+	h.jsonResponse(w, http.StatusOK, loginResponse{
+		OK:         true,
+		Nick:       req.Nick,
+		SigningKey: sess.SigningKey,
+	})
 }
 
-// handleLogout destroys the current session.
+// handleLogout destroys the current session. Requires a valid request signature.
 func (h *Handler) handleLogout(w http.ResponseWriter, r *http.Request) {
 	sess := h.sessions.GetFromRequest(r)
 	if sess != nil {
+		if !h.verifySignature(r, sess, "") {
+			h.jsonResponse(w, http.StatusForbidden, loginResponse{
+				Error: "invalid or expired request signature",
+			})
+			return
+		}
 		h.sessions.Destroy(sess.ID)
 	}
 	// Clear the cookie regardless.
@@ -146,10 +171,31 @@ func (h *Handler) handleLogout(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleWebSocket upgrades the connection and starts the IRC bridge.
+// Requires a valid session cookie. Signature is verified from query
+// parameters (t=timestamp, s=signature) since the browser WebSocket API
+// does not support custom HTTP headers.
 func (h *Handler) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	sess := h.sessions.GetFromRequest(r)
 	if sess == nil {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	// WebSocket connections pass signature via query params because
+	// the browser WebSocket API cannot set custom HTTP headers.
+	q := r.URL.Query()
+	tsStr := q.Get("t")
+	sig := q.Get("s")
+	if tsStr == "" || sig == "" {
+		http.Error(w, "missing signature parameters", http.StatusForbidden)
+		return
+	}
+	// Inject into headers so verifySignature can process them uniformly.
+	r.Header.Set(signatureTimestampHeader, tsStr)
+	r.Header.Set(signatureHeader, sig)
+	// Verify against the base path (without query string).
+	if !h.verifySignature(r, sess, "") {
+		http.Error(w, "invalid or expired request signature", http.StatusForbidden)
 		return
 	}
 
@@ -229,6 +275,50 @@ func (h *Handler) handleStatic(w http.ResponseWriter, r *http.Request) {
 	}
 
 	fileServer.ServeHTTP(w, r)
+}
+
+// verifySignature checks the X-Request-Timestamp and X-Request-Signature
+// headers against the session's signing key. The signature is
+// HMAC-SHA256(signingKey, timestamp + method + path + body). Requests with
+// timestamps older than signatureMaxAge are rejected to prevent replay.
+// The body parameter should be the raw request body for POST requests,
+// or empty string for GET/WebSocket upgrades.
+func (h *Handler) verifySignature(r *http.Request, sess *Session, body string) bool {
+	tsStr := r.Header.Get(signatureTimestampHeader)
+	sig := r.Header.Get(signatureHeader)
+	if tsStr == "" || sig == "" {
+		return false
+	}
+
+	// Validate timestamp freshness.
+	ts, err := strconv.ParseInt(tsStr, 10, 64)
+	if err != nil {
+		return false
+	}
+	now := time.Now().Unix()
+	diff := now - ts
+	if diff < 0 {
+		diff = -diff
+	}
+	if diff > int64(signatureMaxAge.Seconds()) {
+		h.logger.Debug("request signature expired",
+			"age_seconds", diff,
+			"max_seconds", int64(signatureMaxAge.Seconds()),
+		)
+		return false
+	}
+
+	// Compute expected signature: HMAC-SHA256(key, timestamp+method+path+body).
+	keyBytes, err := hex.DecodeString(sess.SigningKey)
+	if err != nil {
+		return false
+	}
+	mac := hmac.New(sha256.New, keyBytes)
+	payload := tsStr + r.Method + r.URL.Path + body
+	mac.Write([]byte(payload))
+	expected := hex.EncodeToString(mac.Sum(nil))
+
+	return hmac.Equal([]byte(sig), []byte(expected))
 }
 
 // checkLoginRate returns true if the IP has not exceeded the login rate limit.

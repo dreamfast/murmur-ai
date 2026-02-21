@@ -21,16 +21,20 @@ const (
 	cleanupInterval = 5 * time.Minute
 )
 
+// signingKeyLen is the byte length of per-session HMAC signing keys.
+const signingKeyLen = 32
+
 // Session represents an authenticated dashboard user session. Each session
 // owns an IRC bridge connection that relays messages between the browser
 // and the IRC server.
 type Session struct {
-	ID        string
-	Nick      string
-	Password  string // NickServ password, kept in memory only
-	CreatedAt time.Time
-	LastSeen  time.Time
-	Bridge    *Bridge // nil until WebSocket connects
+	ID         string
+	Nick       string
+	Password   string // NickServ password, kept in memory only
+	SigningKey string // hex-encoded HMAC-SHA256 key for request signing
+	CreatedAt  time.Time
+	LastSeen   time.Time
+	Bridge     *Bridge // nil until WebSocket connects
 }
 
 // SessionStore manages in-memory dashboard sessions with automatic expiry.
@@ -53,19 +57,24 @@ func NewSessionStore(timeout time.Duration, logger *slog.Logger) *SessionStore {
 }
 
 // Create generates a new session for the given nick and returns it.
-// The session ID is a cryptographically random hex string.
+// The session ID and signing key are cryptographically random hex strings.
 func (s *SessionStore) Create(nick string) (*Session, error) {
-	id, err := generateSessionID()
+	id, err := generateRandomHex(sessionIDLen)
+	if err != nil {
+		return nil, err
+	}
+	sigKey, err := generateRandomHex(signingKeyLen)
 	if err != nil {
 		return nil, err
 	}
 
 	now := time.Now()
 	sess := &Session{
-		ID:        id,
-		Nick:      nick,
-		CreatedAt: now,
-		LastSeen:  now,
+		ID:         id,
+		Nick:       nick,
+		SigningKey: sigKey,
+		CreatedAt:  now,
+		LastSeen:   now,
 	}
 
 	s.mu.Lock()
@@ -209,9 +218,10 @@ func (s *SessionStore) Count() int {
 	return len(s.sessions)
 }
 
-// generateSessionID creates a cryptographically random session ID.
-func generateSessionID() (string, error) {
-	b := make([]byte, sessionIDLen)
+// generateRandomHex creates a cryptographically random hex string of the
+// given byte length (output is 2*n hex characters).
+func generateRandomHex(n int) (string, error) {
+	b := make([]byte, n)
 	if _, err := rand.Read(b); err != nil {
 		return "", err
 	}
