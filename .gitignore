@@ -1,0 +1,51 @@
+# Binaries
+bin/
+/murmur
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary
+*.test
+
+# Output of go coverage
+*.out
+
+# Go workspace
+go.work
+go.work.sum
+
+# Dependency directories
+vendor/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Live configs (contain personal settings — use .example files as templates)
+configs/server.docker.toml
+configs/client.docker.toml
+
+# LLM plan files and dev workflow
+.llm/
+.opencode/
+PLAN.md
+COMMANDS.md

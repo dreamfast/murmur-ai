@@ -1,0 +1,8 @@
+{
+  "$schema": "https://opencode.ai/config.schema.json",
+  "provider": "openrouter",
+  "model": "anthropic/claude-sonnet-4",
+  "mcpServers": {},
+  "theme": "catppuccin",
+  "lsp": {}
+}

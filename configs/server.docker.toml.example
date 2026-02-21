@@ -1,0 +1,141 @@
+# Murmur server config for Docker Compose
+# Copy to server.docker.toml and customize.
+# IRC connects to the "ircd" service on the internal Docker network.
+
+[server]
+data_dir = "/data"
+system_prompt_file = "/data/system_prompt.md"
+name = "server"
+verbose = true
+
+[irc]
+server = "ircd"
+port = 6667
+tls = false
+nick = "murmur"
+user = "murmur"
+realname = "Murmur Agent"
+max_line_len = 8192
+
+# IRC operator (optional, works with bundled Ergo)
+# oper_user = "admin"
+# oper_password = "vault:irc-oper-password"
+
+[irc.channels]
+main = "#murmur"
+bus = "#murmur-bus"
+
+[llm]
+default = "openrouter"
+
+[llm.providers.openrouter]
+api_base = "https://openrouter.ai/api/v1"
+api_key = "vault:llm-api-key"
+model = "anthropic/claude-sonnet-4-5"
+max_tokens = 8192
+temperature = 0.7
+
+# Kimi (with reasoning/thinking mode)
+# [llm.providers.kimi]
+# api_base = "https://api.kimi.com/coding/v1"
+# api_key = "vault:kimi-api-key"
+# model = "kimi-for-coding"
+# max_tokens = 8192
+# temperature = 0.7
+# user_agent = "claude-code/1.0"
+# reasoning = true
+
+# Local Ollama
+# [llm.providers.ollama]
+# api_base = "http://host.docker.internal:11434/v1"
+# api_key = "ollama"
+# model = "llama3.1:70b"
+# max_tokens = 4096
+# temperature = 0.7
+
+[memory]
+db_path = "/data/memory.db"
+max_history = 100
+# summary_model = "ollama"       # use a cheap model for summarization
+# summary_threshold = 80         # default: 80% of max_history
+# cross_channel_context = 10     # messages from other channels in system prompt (-1 to disable)
+
+[scheduler]
+enabled = true
+heartbeat_interval = "5m"
+client_timeout = "2m"
+tick_interval = "30s"
+max_concurrent = 3
+
+[security]
+allowed_users = []    # empty = allow everyone (set your IRC nick to restrict)
+bus_key = ""
+
+# --- Server-side tools (no client needed) ---
+
+[tools.shell]
+enabled = true
+docker_image = "murmur-shell:latest"
+network = true
+memory_limit = "256m"
+cpu_limit = "1.0"
+timeout = "60s"
+
+[tools.code_exec]
+enabled = true
+piston_url = "http://piston:2000"
+default_language = "python"
+
+[tools.rss]
+enabled = true
+max_items = 10
+
+[tools.dns]
+enabled = true
+
+# Web search (Brave Search API — requires vault secret)
+# [tools.web_search]
+# enabled = true
+# api_key = "vault:brave-search-key"
+# max_results = 5
+
+# SearXNG search (requires: docker compose --profile search up)
+# [tools.searxng]
+# enabled = true
+# url = "http://searxng:8080"
+# max_results = 10
+
+# OpenCode coding agent (requires: docker compose --profile opencode up)
+# [tools.opencode]
+# enabled = true
+# url = "http://opencode:3000"
+# session_timeout = "5m"
+
+# Config management (read/write this config file at runtime)
+[tools.config_manage]
+enabled = true
+config_path = "/etc/murmur/server.toml"
+
+# IRC management (join/part channels, cross-channel context, moderation)
+[tools.irc_manage]
+enabled = true
+
+[tools.http]
+enabled = true
+timeout = "30s"
+max_response_bytes = 1048576  # 1 MB
+# allowed_domains = ["api.example.com", "*.trusted.org"]  # empty = allow all
+block_private_ips = true
+
+# --- REST API ---
+
+[api]
+enabled = true
+listen = "0.0.0.0:8080"       # container-internal; mapped via docker-compose ports
+api_key = "vault:api-key"      # set via: murmur vault set api-key <your-secret>
+event_retention_days = 30
+
+[vault]
+enabled = true
+db_path = "/data/vault.db"
+passphrase_env = "MURMUR_VAULT_PASS"

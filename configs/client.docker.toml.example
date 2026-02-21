@@ -1,0 +1,71 @@
+# Murmur client config for Docker Compose
+# Copy to client.docker.toml and customize.
+# IRC connects to the "ircd" service on the internal Docker network.
+
+[client]
+id = "my-desktop"
+hostname = "my-desktop"
+autonomy = "auto"
+
+[irc]
+server = "ircd"
+port = 6667
+tls = false
+nick = "murmur-client"
+user = "murmur-client"
+realname = "Murmur Client"
+bus_channel = "#murmur-bus"
+max_line_len = 8192
+
+[heartbeat]
+interval = "30s"
+
+[security]
+# bus_key = ""
+
+# --- Tools ---
+
+[tools.systeminfo]
+enabled = true
+
+[tools.shell]
+enabled = true
+docker_image = "murmur-shell:latest"
+network = true
+memory_limit = "256m"
+cpu_limit = "1.0"
+timeout = "60s"
+
+# Mail reader (Thunderbird mbox)
+# [tools.mail_read]
+# enabled = true
+# thunderbird_profile = "/thunderbird/abc123.default"
+# mail_dir = "Mail/pop.example.com"
+
+# Mail sender (SMTP)
+# [tools.mail_send]
+# enabled = true
+# smtp_host = "smtp.example.com"
+# smtp_port = 587
+# smtp_user = "you@example.com"
+# smtp_password = "vault:smtp-password"
+# from_address = "you@example.com"
+
+# SearXNG search (requires: docker compose --profile search up)
+# [tools.searxng]
+# enabled = true
+# url = "http://searxng:8080"
+# max_results = 10
+
+# OpenCode coding agent (requires: docker compose --profile opencode up)
+# [tools.opencode]
+# enabled = true
+# url = "http://opencode:3000"
+# session_timeout = "5m"
+
+# --- REST API ---
+
+[api]
+enabled = true
+listen = "0.0.0.0:8081"       # container-internal; mapped via docker-compose ports
+api_key = "vault:api-key"      # set via: murmur vault set api-key <your-secret>

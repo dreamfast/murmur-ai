@@ -1,0 +1,27 @@
+# OpenCode coding agent for Murmur.
+# Downloads the pre-built binary from anomalyco/opencode and runs in server mode.
+FROM debian:bookworm-slim
+
+ARG OPENCODE_VERSION=v1.2.10
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    git \
+    bash \
+    curl \
+    openssh-client \
+    ripgrep \
+    fzf \
+    && rm -rf /var/lib/apt/lists/*
+
+# Download and install the pre-built binary (glibc build).
+RUN curl -fsSL "https://github.com/anomalyco/opencode/releases/download/${OPENCODE_VERSION}/opencode-linux-x64.tar.gz" \
+    | tar -xz -C /usr/local/bin/ \
+    && chmod +x /usr/local/bin/opencode
+
+WORKDIR /workspace
+
+EXPOSE 3000
+
+ENTRYPOINT ["opencode"]
+CMD ["serve", "--port", "3000", "--hostname", "0.0.0.0"]

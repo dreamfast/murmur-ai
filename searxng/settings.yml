@@ -1,0 +1,57 @@
+# SearXNG settings for Murmur
+# This configuration enables JSON API access and disables the web UI
+# for use as a backend search service.
+
+use_default_settings: true
+
+general:
+  instance_name: "murmur-search"
+  debug: false
+
+search:
+  safe_search: 0
+  autocomplete: ""
+  default_lang: "en"
+  formats:
+    - html
+    - json
+
+server:
+  # Bind to all interfaces inside the container.
+  bind_address: "0.0.0.0"
+  port: 8080
+  secret_key: "murmur-searxng-secret-change-me"
+  # Disable rate limiting for internal use.
+  limiter: false
+  image_proxy: false
+
+ui:
+  # Minimal UI — we primarily use the JSON API.
+  static_use_hash: true
+  default_theme: simple
+
+# Enable common search engines.
+engines:
+  - name: google
+    engine: google
+    shortcut: g
+
+  - name: duckduckgo
+    engine: duckduckgo
+    shortcut: ddg
+
+  - name: wikipedia
+    engine: wikipedia
+    shortcut: wp
+
+  - name: github
+    engine: github
+    shortcut: gh
+
+  - name: stackoverflow
+    engine: stackoverflow
+    shortcut: so
+
+  - name: arxiv
+    engine: arxiv
+    shortcut: arx

@@ -1,0 +1,188 @@
+[client]
+id = "laptop-home"
+hostname = "thinkpad"
+autonomy = "report"
+
+[irc]
+server = "irc.example.com"
+port = 6697
+tls = true
+nick = "murmur-laptop"
+user = "murmur-laptop"
+realname = "Murmur Client"
+password = ""
+nickserv_password = ""
+bus_channel = "#murmur-bus"
+
+[heartbeat]
+interval = "30s"
+
+[security]
+# bus_key = "shared-secret"  # HMAC-SHA256 key for bus authentication
+                              # WARNING: strongly recommended when shell or
+                              # code_exec tools are enabled
+
+# --- Vault ---
+# Encrypted key-value store for secrets (AES-256-GCM + Argon2id).
+# When enabled, config values with "vault:" prefix are resolved from the vault.
+# The vault passphrase is read from the environment variable specified below.
+# [vault]
+# enabled = true
+# db_path = "~/.murmur/vault.db"        # default: ~/.murmur/vault.db
+# passphrase_env = "MURMUR_VAULT_PASS"  # env var containing the passphrase
+
+# --- Tools ---
+
+# System info: safe, read-only system queries (no Docker needed).
+# Actions: uptime, disk, memory, cpu, os_info, docker_ps, apt_upgradable,
+#          systemctl_status
+# [tools.systeminfo]
+# enabled = true
+
+# Shell: execute commands inside ephemeral Docker containers.
+# Commands are validated against an optional whitelist.
+# Docker hardening: --cap-drop=ALL, --security-opt=no-new-privileges,
+#                   --read-only, --network=none (by default)
+# [tools.shell]
+# enabled = true
+# docker_image = "ubuntu:24.04"
+# network = false
+# memory_limit = "256m"
+# cpu_limit = "0.5"
+# timeout = "30s"
+# workspace = ""
+# whitelist = [
+#     "df -h",
+#     "free -h",
+#     "uptime",
+#     "docker ps",
+#     "docker stats --no-stream",
+#     "systemctl status *",
+#     "journalctl --since '1 hour ago' --no-pager -n 50",
+#     "apt list --upgradable",
+#     "uname -a",
+#     "cat /etc/os-release",
+# ]
+
+# Code execution: sandboxed code execution via self-hosted Piston API.
+# Supports 60+ languages (Python, Go, Rust, C, JavaScript, etc.).
+# [tools.code_exec]
+# enabled = true
+# piston_url = "http://localhost:2000"
+# default_language = "python"
+# run_timeout = 30000          # milliseconds
+# run_memory_limit = 268435456 # bytes (256MB)
+
+# Mail read: read emails from local Thunderbird mbox storage.
+# Supports actions: unread, search, read. Headers + plain text body only.
+# [tools.mail_read]
+# enabled = true
+# thunderbird_profile = "~/.thunderbird/abc123.default-release"
+# mail_dir = "Mail/pop3.example.com"  # relative to profile
+
+# Mail send: send emails via SMTP with STARTTLS.
+# Security: CRLF injection prevention, email validation, TLS required by default.
+# Plain text only — no HTML email.
+# [tools.mail_send]
+# enabled = true
+# smtp_host = "mail.example.com"
+# smtp_port = 587
+# smtp_user = "user@example.com"
+# smtp_password = "vault:smtp-password"  # supports vault: prefix
+# from_address = "user@example.com"
+# require_tls = true                     # default: true
+
+# Web search: search the web via Brave Search API.
+# Free tier: 2000 requests/month. Get an API key at https://brave.com/search/api/
+# [tools.web_search]
+# enabled = true
+# api_key = "vault:brave-search-key"  # supports vault: prefix
+# max_results = 5                     # default: 5, max: 20
+
+# RSS feed reader: fetch and parse RSS 2.0 and Atom feeds.
+# Returns numbered items with title, link, date, and description snippet.
+# [tools.rss]
+# enabled = true
+# max_items = 10  # default: 10, max: 50
+
+# DNS/SSL check: DNS lookups, SSL certificate inspection, whois expiry.
+# Actions: lookup (A/AAAA, MX, TXT records), ssl (cert details, expiry, SANs),
+#          whois_expiry (domain registration expiry via whois command).
+# [tools.dns]
+# enabled = true
+
+# Git operations: read-only git commands on allowed repositories.
+# Supports: log, diff, status, branch, show.
+# Requires git to be installed on the host.
+# [tools.git]
+# enabled = true
+# allowed_repos = [
+#     "/home/user/projects/myapp",
+#     "/home/user/projects/another-repo",
+# ]
+
+# File operations: read-only file access on allowed directories.
+# Actions: read (file contents), list (directory listing),
+#          search (recursive text search), stat (file metadata).
+# Security: symlink resolution, binary detection, path traversal prevention.
+# [tools.file_ops]
+# enabled = true
+# allowed_paths = [
+#     "/home/user/documents",
+#     "/home/user/projects",
+# ]
+
+# Image generation: generate images via ComfyUI (Stable Diffusion).
+# Requires a running ComfyUI instance with a compatible model checkpoint.
+# [tools.image_gen]
+# enabled = true
+# comfyui_host = "http://gpu-rig:8188"
+# output_dir = "/home/user/images/murmur"
+# upload_url = ""                                    # optional URL for sharing generated images
+# checkpoint_name = "sd_xl_base_1.0.safetensors"     # model checkpoint filename
+
+# SearXNG search: query a self-hosted SearXNG instance for web search.
+# Alternative to Brave Search — no API key needed, fully self-hosted.
+# [tools.searxng]
+# enabled = true
+# url = "http://localhost:8080"
+# max_results = 10
+
+# OpenCode: interact with an OpenCode coding agent via REST+SSE API.
+# Multi-step coding agent (distinct from code_exec which is one-shot sandbox).
+# [tools.opencode]
+# enabled = true
+# url = "http://localhost:3000"
+# username = ""
+# password = "vault:opencode-password"
+# session_timeout = "5m"
+
+# --- Client Cron ---
+# Deterministic scheduled jobs executed locally via tool handlers.
+# Schedules use standard 5-field cron syntax (minute hour dom month dow).
+# All times are in UTC.
+#
+# Notification rules:
+#   notify = false           -> never notify (overrides everything)
+#   notify = true            -> always notify
+#   notify_only_on_change    -> only when output changes from previous run
+#   notify_only_on_error     -> only when the tool returns an error
+#   both true                -> notify on error OR change
+#
+# [[cron]]
+# name = "disk-check"
+# schedule = "0 */6 * * *"       # every 6 hours
+# command = "df -h"
+# tool = "shell"
+# notify = true
+# notify_only_on_change = true
+# notify_only_on_error = false
+#
+# [[cron]]
+# name = "uptime-report"
+# schedule = "0 9 * * 1-5"       # weekdays at 9am UTC
+# command = "uptime"
+# tool = "system_info"
+# notify = true
+# notify_only_on_change = false
+# notify_only_on_error = true

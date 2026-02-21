@@ -1,0 +1,177 @@
+# Ergo IRC config for Murmur — private bot network, no flood protection needed.
+# This overrides the default config via environment variables.
+# See: https://ergo.chat/manual.html
+
+# We use allow-environment-overrides in the default config, but it's simpler
+# to just mount a full config. This is a minimal config for a private network.
+
+network:
+    name: Murmur
+
+server:
+    name: murmur.irc
+    listeners:
+        ":6667":
+        ":6697":
+            tls:
+                cert: fullchain.pem
+                key: privkey.pem
+            min-tls-version: 1.2
+    unix-bind-mode: 0777
+    lookup-hostnames: false
+    check-ident: false
+    coerce-ident: '~u'
+    motd: ergo.motd
+    motd-formatting: true
+    enforce-utf8: true
+    casemapping: "precis"
+    max-sendq: 512k
+    relaymsg:
+        enabled: false
+    proxy-allowed-from:
+        - localhost
+    ip-limits:
+        count: false
+        throttle: false
+        max-concurrent-connections: 128
+        window: 10m
+        max-connections-per-window: 128
+        cidr-len-ipv4: 32
+        cidr-len-ipv6: 64
+        exempted:
+            - "localhost"
+            - "0.0.0.0/0"
+    ip-cloaking:
+        enabled: false
+        enabled-for-always-on: false
+        netname: "murmur"
+        cidr-len-ipv4: 32
+        cidr-len-ipv6: 64
+        num-bits: 64
+    compatibility:
+        force-trailing: true
+        send-unprefixed-sasl: true
+        allow-truncation: true
+    # generous line length for our private bot network (no upper bound in Ergo)
+    max-line-len: 8192
+
+accounts:
+    authentication-enabled: true
+    registration:
+        enabled: true
+        allow-before-connect: true
+        throttling:
+            enabled: false
+        bcrypt-cost: 4
+        verify-timeout: "32h"
+        email-verification:
+            enabled: false
+    login-throttling:
+        enabled: false
+    skip-server-password: false
+    login-via-pass-command: true
+    require-sasl:
+        enabled: false
+    nick-reservation:
+        enabled: false
+    multiclient:
+        enabled: true
+        allowed-by-default: true
+        always-on: "opt-in"
+        auto-away: "opt-in"
+    vhosts:
+        enabled: false
+    default-user-modes: ""
+
+channels:
+    default-modes: +nt
+    max-channels-per-client: 100
+    operator-only-creation: false
+    registration:
+        enabled: true
+        operator-only: false
+        max-channels-per-account: 50
+    list-delay: 0s
+    invite-expiration: 24h
+
+oper-classes:
+    "server-admin":
+        title: Server Admin
+        capabilities:
+            - "*"
+
+opers:
+    admin:
+        class: "server-admin"
+        whois-line: is the server administrator
+        hidden: false
+        password: "$2a$04$XFwMVZHdqdfH439sEvYOIetNPgyIkMh.edoVrLTyrkqErsOtF2onW"
+
+logging:
+    -
+        method: stderr
+        type: "* -userinput -useroutput"
+        level: warn
+
+debug:
+    recover-from-errors: true
+
+datastore:
+    path: ircd.db
+    autoupgrade: true
+
+languages:
+    enabled: true
+    default: en
+    path: /ircd-bin/languages
+
+limits:
+    nicklen: 32
+    identlen: 20
+    channellen: 64
+    awaylen: 390
+    kicklen: 390
+    topiclen: 390
+    monitor-entries: 100
+    whowas-entries: 100
+    chan-list-modes: 60
+    registration-messages: 1024
+    multiline:
+        max-bytes: 4096
+        max-lines: 100
+
+# DISABLED — private bot network, no flood protection needed
+fakelag:
+    enabled: false
+    window: 1s
+    burst-limit: 100
+    messages-per-window: 100
+    cooldown: 0s
+
+roleplay:
+    enabled: false
+
+history:
+    enabled: true
+    channel-length: 2048
+    client-length: 256
+    autoresize-window: 3d
+    autoreplay-on-join: 0
+    chathistory-maxmessages: 100
+    znc-maxmessages: 2048
+    restrictions:
+        expire-time: 1w
+        query-cutoff: 'none'
+        grace-period: 1h
+    persistent:
+        enabled: false
+    retention:
+        allow-individual-delete: false
+        enable-account-indexing: false
+    tagmsg-storage:
+        default: false
+        whitelist:
+            - "+draft/react"
+            - "react"
+
+allow-environment-overrides: true

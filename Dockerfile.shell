@@ -1,0 +1,45 @@
+# Shell sandbox image for Murmur's shell tool.
+# Based on Ubuntu 24.04 with common networking, sysadmin, and dev tools.
+FROM ubuntu:24.04
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    # Networking
+    curl \
+    wget \
+    nmap \
+    netcat-openbsd \
+    iputils-ping \
+    traceroute \
+    mtr-tiny \
+    dnsutils \
+    whois \
+    tcpdump \
+    iproute2 \
+    net-tools \
+    openssh-client \
+    socat \
+    # Text processing
+    jq \
+    xmlstarlet \
+    csvtool \
+    # Compression
+    zip \
+    unzip \
+    gzip \
+    bzip2 \
+    xz-utils \
+    # File & system
+    file \
+    tree \
+    less \
+    bc \
+    # Development
+    git \
+    python3 \
+    python3-pip \
+    # Misc
+    ca-certificates \
+    gnupg \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workspace

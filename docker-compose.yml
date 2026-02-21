@@ -1,0 +1,141 @@
+services:
+  ircd:
+    image: ergochat/ergo:latest
+    ports:
+      - "6667:6667"       # plaintext -- for your IRC client to connect
+      - "6697:6697"       # TLS (self-signed cert auto-generated)
+    volumes:
+      - ./configs/ergo.yaml:/ircd/ircd.yaml:ro
+      - ./configs/ergo.motd:/ircd/ergo.motd:ro
+      - ircd-data:/ircd/db
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 6667 || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  piston:
+    image: ghcr.io/engineer-man/piston:latest
+    privileged: true
+    environment:
+      - PISTON_RUN_TIMEOUT=30000
+      - PISTON_COMPILE_TIMEOUT=30000
+      - PISTON_RUN_MEMORY_LIMIT=256000000
+    volumes:
+      - piston-packages:/piston/packages
+    tmpfs:
+      - /piston/jobs:exec,size=256m
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "const http = require('http'); http.get('http://localhost:2000/api/v2/runtimes', r => { process.exit(r.statusCode === 200 ? 0 : 1) }).on('error', () => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+  piston-setup:
+    image: ghcr.io/engineer-man/piston:latest
+    depends_on:
+      piston:
+        condition: service_healthy
+    volumes:
+      - ./scripts/piston-setup.sh:/setup.sh:ro
+      - piston-packages:/piston/packages
+    entrypoint: /bin/sh
+    command: ["/setup.sh"]
+    environment:
+      - PISTON_URL=http://piston:2000
+    restart: "no"
+
+  shell-sandbox:
+    build:
+      context: .
+      dockerfile: Dockerfile.shell
+    image: murmur-shell:latest
+    entrypoint: ["true"]   # build-only, never runs as a service
+    restart: "no"
+
+  murmur-server:
+    build: .
+    command: server --config /etc/murmur/server.toml
+    depends_on:
+      ircd:
+        condition: service_healthy
+      piston:
+        condition: service_healthy
+    ports:
+      - "${MURMUR_API_PORT:-8080}:8080"
+    environment:
+      - MURMUR_VAULT_PASS=${MURMUR_VAULT_PASS:-changeme}
+    volumes:
+      - ./configs/server.docker.toml:/etc/murmur/server.toml:ro
+      - ./configs/system_prompt.md:/data/system_prompt.md:ro
+      - server-data:/data
+      - /var/run/docker.sock:/var/run/docker.sock   # shell tool: Docker-out-of-Docker
+    restart: unless-stopped
+
+  murmur-client:
+    build: .
+    command: client --config /etc/murmur/client.toml
+    depends_on:
+      ircd:
+        condition: service_healthy
+    ports:
+      - "${MURMUR_CLIENT_API_PORT:-8081}:8081"
+    environment:
+      - MURMUR_VAULT_PASS=${MURMUR_VAULT_PASS:-changeme}
+    volumes:
+      - ./configs/client.docker.toml:/etc/murmur/client.toml:ro
+      - client-data:/data
+      - ${THUNDERBIRD_PROFILE:-~/.thunderbird}:/thunderbird:ro
+      - /var/run/docker.sock:/var/run/docker.sock   # shell tool: Docker-out-of-Docker
+    restart: unless-stopped
+
+  # --- Optional services (activated via profiles) ---
+
+  searxng:
+    image: searxng/searxng:latest
+    profiles:
+      - search
+      - full
+    volumes:
+      - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
+      - searxng-data:/etc/searxng
+    environment:
+      - SEARXNG_BASE_URL=http://localhost:8080/
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:8080/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  opencode:
+    build:
+      context: .
+      dockerfile: Dockerfile.opencode
+    profiles:
+      - opencode
+      - full
+    environment:
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+    volumes:
+      - ./opencode/opencode.json:/workspace/.opencode.json:ro
+      - opencode-data:/workspace
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:3000/global/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+volumes:
+  ircd-data:
+  server-data:
+  client-data:
+  piston-packages:
+  searxng-data:
+  opencode-data:

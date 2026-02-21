@@ -1,0 +1,12 @@
+bin/
+.git/
+.llm/
+.idea/
+.vscode/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+.env
+.env.*
+.DS_Store

@@ -1,0 +1,138 @@
+[server]
+data_dir = "~/.murmur"
+system_prompt_file = "~/.murmur/system_prompt.md"
+
+[irc]
+server = "irc.example.com"
+port = 6697
+tls = true
+nick = "murmur"
+user = "murmur"
+realname = "Murmur Agent"
+password = ""
+nickserv_password = ""
+# oper_user = "admin"
+# oper_password = "vault:irc-oper-password"
+
+[irc.channels]
+main = "#murmur"
+bus = "#murmur-bus"
+
+[llm]
+default = "openrouter-claude"
+
+[llm.providers.openrouter-claude]
+api_base = "https://openrouter.ai/api/v1"
+api_key = "vault:openrouter-key"
+model = "anthropic/claude-sonnet-4-5"
+max_tokens = 8192
+temperature = 0.7
+
+# [llm.providers.openrouter-gpt]
+# api_base = "https://openrouter.ai/api/v1"
+# api_key = "vault:openrouter-key"
+# model = "openai/gpt-4.1"
+# max_tokens = 8192
+# temperature = 0.7
+
+# [llm.providers.kimi]
+# api_base = "https://api.moonshot.cn/v1"
+# api_key = "vault:kimi-key"
+# model = "moonshot-v1-128k"
+# max_tokens = 8192
+# temperature = 0.7
+
+# [llm.providers.ollama]
+# api_base = "http://localhost:11434/v1"
+# api_key = "dummy"
+# model = "llama3.1:70b"
+# max_tokens = 4096
+# temperature = 0.7
+
+[memory]
+db_path = "~/.murmur/memory.db"
+max_history = 100
+# summary_model = ""          # LLM provider name for summarization (must exist in [llm.providers])
+# summary_threshold = 80      # message count that triggers summarization (default: 80% of max_history)
+# cross_channel_context = 10  # recent messages per other channel included in system prompt (-1 to disable)
+
+[scheduler]
+enabled = true
+heartbeat_interval = "5m"
+client_timeout = "2m"
+tick_interval = "30s"     # how often to check for due tasks (minimum granularity)
+max_concurrent = 3        # max simultaneous scheduled tasks
+
+[approval]
+# timeout = "2m"  # how long to wait for user !approve/!deny before auto-denying
+
+[security]
+allowed_users = ["yournick"]
+require_nickserv = true
+bus_key = ""
+
+[vault]
+enabled = false
+db_path = "~/.murmur/vault.db"
+passphrase_env = "MURMUR_VAULT_PASS"
+
+# --- Server-side tools ---
+# These tools execute on the server and are available to the LLM agent.
+# Client-side tools (shell, code_exec, etc.) can also be configured here
+# if the server should run them locally instead of routing to clients.
+
+# SearXNG search: query a self-hosted SearXNG instance for web search.
+# Requires a running SearXNG instance (see docker-compose.yml, profile "search").
+# [tools.searxng]
+# enabled = true
+# url = "http://localhost:8080"
+# max_results = 10
+
+# OpenCode: interact with an OpenCode coding agent via REST+SSE API.
+# Requires a running OpenCode instance (see docker-compose.yml, profile "opencode").
+# [tools.opencode]
+# enabled = true
+# url = "http://localhost:3000"
+# username = ""
+# password = "vault:opencode-password"
+# session_timeout = "5m"
+
+# Config management: read and write the server TOML config at runtime.
+# Security deny-list prevents modifying sensitive fields (passwords, API keys, vault).
+# [tools.config_manage]
+# enabled = true
+# config_path = "~/.murmur/server.toml"
+
+# IRC management: join/part channels, send messages, read cross-channel history.
+# [tools.irc_manage]
+# enabled = true
+
+# Shell: execute commands inside ephemeral Docker containers.
+# [tools.shell]
+# enabled = true
+# docker_image = "ubuntu:24.04"
+# network = false
+# memory_limit = "256m"
+# cpu_limit = "0.5"
+# timeout = "30s"
+
+# Code execution: sandboxed code execution via self-hosted Piston API.
+# [tools.code_exec]
+# enabled = true
+# piston_url = "http://localhost:2000"
+# default_language = "python"
+
+# RSS feed reader
+# [tools.rss]
+# enabled = true
+# max_items = 10
+
+# DNS/SSL check
+# [tools.dns]
+# enabled = true
+
+# Web search (Brave Search API)
+# [tools.web_search]
+# enabled = true
+# api_key = "vault:brave-search-key"
+# max_results = 5
