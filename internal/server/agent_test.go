@@ -125,11 +125,12 @@ func newTestAgentEnv(t *testing.T) *testAgentEnv {
 		"test-server",
 		"#test-bus",
 		100,
-		0,             // cross-channel context disabled in tests
-		nil,           // no channel settings by default
-		2*time.Second, // short timeout for tests
-		2*time.Second, // short approval timeout for tests
-		false,         // verbose off in tests
+		0,                    // cross-channel context disabled in tests
+		nil,                  // no channel settings by default
+		2*time.Second,        // short timeout for tests
+		2*time.Second,        // short approval timeout for tests
+		false,                // verbose off in tests
+		config.DebugConfig{}, // no debug logging in tests
 		logger,
 	)
 	agent.sendFunc = env.appendSent
@@ -533,6 +534,7 @@ func TestAgent_SetProvider_PerChannel(t *testing.T) {
 		2*time.Second,
 		2*time.Second,
 		false,
+		config.DebugConfig{},
 		logger,
 	)
 
@@ -612,11 +614,12 @@ func TestAgent_ResolveProvider(t *testing.T) {
 		2*time.Second,
 		2*time.Second,
 		false,
+		config.DebugConfig{},
 		logger,
 	)
 
 	// No override — should resolve to global default.
-	p, err := agent.resolveProvider("#chan1")
+	p, err := agent.resolveProvider("#chan1", "user1", nil)
 	if err != nil {
 		t.Fatalf("resolveProvider: %v", err)
 	}
@@ -628,7 +631,7 @@ func TestAgent_ResolveProvider(t *testing.T) {
 	if err := agent.SetProvider("#chan1", "other-provider"); err != nil {
 		t.Fatalf("SetProvider: %v", err)
 	}
-	p, err = agent.resolveProvider("#chan1")
+	p, err = agent.resolveProvider("#chan1", "user1", nil)
 	if err != nil {
 		t.Fatalf("resolveProvider: %v", err)
 	}
@@ -637,7 +640,7 @@ func TestAgent_ResolveProvider(t *testing.T) {
 	}
 
 	// Other channel still resolves to default.
-	p, err = agent.resolveProvider("#chan2")
+	p, err = agent.resolveProvider("#chan2", "user1", nil)
 	if err != nil {
 		t.Fatalf("resolveProvider: %v", err)
 	}
@@ -651,7 +654,7 @@ func TestAgent_ResolveProvider_NilChannelSettings(t *testing.T) {
 	env := newTestAgentEnv(t)
 
 	// channelSettings is nil in default test env — should fall back to global.
-	p, err := env.agent.resolveProvider("#test")
+	p, err := env.agent.resolveProvider("#test", "user1", nil)
 	if err != nil {
 		t.Fatalf("resolveProvider: %v", err)
 	}
@@ -708,11 +711,12 @@ func TestAgent_ResolveProvider_StaleOverride(t *testing.T) {
 		2*time.Second,
 		2*time.Second,
 		false,
+		config.DebugConfig{},
 		logger,
 	)
 
 	// resolveProvider should fall back to global default when override is stale.
-	p, err := agent.resolveProvider("#chan1")
+	p, err := agent.resolveProvider("#chan1", "user1", nil)
 	if err != nil {
 		t.Fatalf("resolveProvider: %v", err)
 	}
@@ -886,6 +890,7 @@ func TestAgent_NoProviders(t *testing.T) {
 		2*time.Second,
 		2*time.Second,
 		false,
+		config.DebugConfig{},
 		logger,
 	)
 
@@ -1238,6 +1243,7 @@ func TestAgent_ServerToolExecution(t *testing.T) {
 		2*time.Second,
 		2*time.Second,
 		false,
+		config.DebugConfig{},
 		logger,
 	)
 
@@ -1364,6 +1370,7 @@ func TestAgent_ServerToolPriority(t *testing.T) {
 		2*time.Second,
 		2*time.Second,
 		false,
+		config.DebugConfig{},
 		logger,
 	)
 
@@ -1461,6 +1468,7 @@ func TestAgent_ApprovalFlow_Auto(t *testing.T) {
 		2*time.Second,
 		2*time.Second,
 		false,
+		config.DebugConfig{},
 		logger,
 	)
 
@@ -1570,6 +1578,7 @@ func TestAgent_ApprovalFlow_Report(t *testing.T) {
 		2*time.Second,
 		2*time.Second,
 		false,
+		config.DebugConfig{},
 		logger,
 	)
 
@@ -1687,6 +1696,7 @@ func TestAgent_ApprovalFlow_Approve(t *testing.T) {
 		2*time.Second,
 		5*time.Second, // longer approval timeout for this test
 		false,
+		config.DebugConfig{},
 		logger,
 	)
 
@@ -1812,6 +1822,7 @@ func TestAgent_BuildSystemPrompt_ChannelSpecificModel(t *testing.T) {
 		2*time.Second,
 		2*time.Second,
 		false,
+		config.DebugConfig{},
 		logger,
 	)
 
@@ -1916,6 +1927,7 @@ func TestAgent_SyncChannelTopic_SkipsBusChannel(t *testing.T) {
 		2*time.Second,
 		2*time.Second,
 		false,
+		config.DebugConfig{},
 		logger,
 	)
 
@@ -1941,7 +1953,7 @@ func TestAgent_HandleEvent(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	err := env.agent.HandleEvent(ctx, "#test", "backup-script", "backup.completed", "Backup finished", `{"size":"1.2GB"}`)
+	err := env.agent.HandleEvent(ctx, "#test", "_system", "backup-script", "backup.completed", "Backup finished", `{"size":"1.2GB"}`)
 	if err != nil {
 		t.Fatalf("HandleEvent error: %v", err)
 	}
@@ -1993,7 +2005,7 @@ func TestAgent_HandleEvent_NoData(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	err := env.agent.HandleEvent(ctx, "#test", "cron", "job.done", "Cron job finished", "")
+	err := env.agent.HandleEvent(ctx, "#test", "_system", "cron", "job.done", "Cron job finished", "")
 	if err != nil {
 		t.Fatalf("HandleEvent error: %v", err)
 	}
@@ -2050,7 +2062,7 @@ func TestAgent_ExecuteTool_ServerTool(t *testing.T) {
 	agent := NewAgent(
 		providers, "test-provider", serverTools, registry, memory, router,
 		nil, nil, "test", "test-server", "#test-bus", 100, 0, nil,
-		2*time.Second, 2*time.Second, false, logger,
+		2*time.Second, 2*time.Second, false, config.DebugConfig{}, logger,
 	)
 
 	ctx := context.Background()
@@ -2087,7 +2099,7 @@ func TestAgent_ExecuteTool_BusTool(t *testing.T) {
 	agent := NewAgent(
 		providers, "test-provider", nil, registry, memory, router,
 		nil, nil, "test", "test-server", "#test-bus", 100, 0, nil,
-		2*time.Second, 2*time.Second, false, logger,
+		2*time.Second, 2*time.Second, false, config.DebugConfig{}, logger,
 	)
 
 	// Override routeToolFunc to simulate bus routing.
@@ -2304,6 +2316,7 @@ func TestAgent_BuildSystemPrompt_DM(t *testing.T) {
 		2*time.Second,
 		2*time.Second,
 		false,
+		config.DebugConfig{},
 		logger,
 	)
 
@@ -2420,7 +2433,7 @@ func TestAgent_UpdateConfig(t *testing.T) {
 	}
 
 	// Update config.
-	env.agent.UpdateConfig(true, 50, 5, 30*time.Second, "New system prompt")
+	env.agent.UpdateConfig(true, 50, 5, 30*time.Second, "New system prompt", config.DebugConfig{})
 
 	// Verify updated values.
 	cfg = env.agent.loadConfig()

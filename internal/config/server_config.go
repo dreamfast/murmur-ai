@@ -4,6 +4,7 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,6 +25,54 @@ type ServerConfig struct {
 	Vault     VaultConfig     `toml:"vault"`
 	Tools     ToolsConfig     `toml:"tools"`
 	API       APIConfig       `toml:"api"`
+	Dashboard DashboardConfig `toml:"dashboard"`
+	Debug     DebugConfig     `toml:"debug"`
+}
+
+// DashboardConfig holds settings for the web dashboard that provides a
+// browser-based IRC chat interface. Each browser session creates its own
+// IRC connection and authenticates via NickServ IDENTIFY.
+type DashboardConfig struct {
+	// Enabled controls whether the dashboard HTTP server is started.
+	Enabled bool `toml:"enabled"`
+	// Listen is the address to bind the dashboard HTTP server to.
+	// Defaults to "127.0.0.1:8082".
+	Listen string `toml:"listen"`
+	// SessionTimeout is how long a dashboard session stays valid without
+	// activity. Defaults to "24h".
+	SessionTimeout string `toml:"session_timeout"`
+	// ServerPassword is the IRC server password (PASS command) that is
+	// automatically sent when creating IRC connections for dashboard users.
+	// This allows dashboard users to connect without knowing the server
+	// password. Supports "vault:" prefix.
+	ServerPassword string `toml:"server_password"`
+	// Channels is the list of IRC channels that dashboard users auto-join.
+	// If empty, defaults to the main channel from [irc.channels].
+	Channels []string `toml:"channels"`
+}
+
+// DebugConfig holds settings for the debug IRC channel that receives live
+// structured log output. This replaces the old server.debug_channel field
+// with richer controls for filtering what gets logged.
+type DebugConfig struct {
+	// Enabled controls whether debug logging to IRC is active. Must be
+	// explicitly set to true in the [debug] section. The backward compat
+	// path (server.debug_channel) sets this automatically.
+	Enabled bool `toml:"enabled"`
+	// Channel is the IRC channel that receives debug log output (e.g., "#murmur-debug").
+	// Empty means debug logging is disabled regardless of the Enabled flag.
+	Channel string `toml:"channel"`
+	// LogLevel is the minimum slog level for messages sent to the debug channel.
+	// Valid values: "debug", "info", "warn", "error". Defaults to "debug".
+	LogLevel string `toml:"log_level"`
+	// LogToolCalls enables logging of tool call routing and results.
+	LogToolCalls bool `toml:"log_tool_calls"`
+	// LogLLMRequests enables logging of LLM API calls with provider, tokens, and latency.
+	LogLLMRequests bool `toml:"log_llm_requests"`
+	// LogBusProtocol enables logging of bus protocol messages (register, heartbeat, etc.).
+	LogBusProtocol bool `toml:"log_bus_protocol"`
+	// LogPermissions enables logging of permission checks and denials.
+	LogPermissions bool `toml:"log_permissions"`
 }
 
 // APIConfig holds configuration for the REST API server exposed by both
@@ -197,10 +246,21 @@ type ApprovalConfig struct {
 type SecurityConfig struct {
 	// AllowedUsers is the list of IRC nicks allowed to interact with the agent.
 	AllowedUsers []string `toml:"allowed_users"`
-	// RequireNickServ requires users to be identified with NickServ.
+	// RequireNickServ requires users to be identified with NickServ before
+	// their messages are processed by the agent. Defaults to true when
+	// permissions.toml has [users] entries. Commands still work without
+	// identification.
 	RequireNickServ bool `toml:"require_nickserv"`
+	// NickServCacheTTL is how long to cache NickServ identification results.
+	// Defaults to "5m". Set to "0" to disable caching.
+	NickServCacheTTL string `toml:"nickserv_cache_ttl"`
 	// BusKey is a shared secret for bus message authentication (optional, Phase 2).
 	BusKey string `toml:"bus_key"`
+	// PermissionsFile is the path to the permissions TOML file that defines
+	// user and channel permission rules. Defaults to <data_dir>/permissions.toml.
+	// The file is machine-managed by !user/!channel commands and the
+	// permissions_manage tool. Manual edits are supported and applied on reload.
+	PermissionsFile string `toml:"permissions_file"`
 }
 
 // ParsedSchedulerConfig holds parsed duration values from SchedulerConfig.
@@ -295,6 +355,35 @@ func LoadServerConfig(path string) (*ServerConfig, error) {
 		}
 	}
 
+	// Default permissions file path to data_dir/permissions.toml.
+	if cfg.Security.PermissionsFile == "" {
+		cfg.Security.PermissionsFile = filepath.Join(cfg.Server.DataDir, "permissions.toml")
+	} else {
+		cfg.Security.PermissionsFile, err = expandHome(cfg.Security.PermissionsFile)
+		if err != nil {
+			return nil, fmt.Errorf("LoadServerConfig: expanding security.permissions_file: %w", err)
+		}
+	}
+
+	// Backward compat: if server.debug_channel is set but [debug] section is
+	// not configured, populate DebugConfig from the old field. This allows
+	// existing configs to keep working without changes.
+	if cfg.Server.DebugChannel != "" && cfg.Debug.Channel == "" {
+		cfg.Debug.Channel = cfg.Server.DebugChannel
+		cfg.Debug.Enabled = true
+		// Default all log categories to true for backward compat — the old
+		// debug_channel logged everything.
+		cfg.Debug.LogToolCalls = true
+		cfg.Debug.LogLLMRequests = true
+		cfg.Debug.LogBusProtocol = true
+		cfg.Debug.LogPermissions = true
+	}
+
+	// Default debug log level to "debug" when channel is configured.
+	if cfg.Debug.Channel != "" && cfg.Debug.LogLevel == "" {
+		cfg.Debug.LogLevel = "debug"
+	}
+
 	// Default API listen address.
 	if cfg.API.Enabled && cfg.API.Listen == "" {
 		cfg.API.Listen = "127.0.0.1:8080"
@@ -302,6 +391,14 @@ func LoadServerConfig(path string) (*ServerConfig, error) {
 	// Default event retention to 30 days.
 	if cfg.API.EventRetentionDays == 0 {
 		cfg.API.EventRetentionDays = 30
+	}
+
+	// Default dashboard listen address and session timeout.
+	if cfg.Dashboard.Enabled && cfg.Dashboard.Listen == "" {
+		cfg.Dashboard.Listen = "127.0.0.1:8082"
+	}
+	if cfg.Dashboard.SessionTimeout == "" {
+		cfg.Dashboard.SessionTimeout = "24h"
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -345,6 +442,10 @@ func (c *ServerConfig) Validate() error {
 		return err
 	}
 	if err := validatePositiveDuration(c.Approval.Timeout, "approval.timeout"); err != nil {
+		return err
+	}
+
+	if err := validatePositiveDuration(c.Dashboard.SessionTimeout, "dashboard.session_timeout"); err != nil {
 		return err
 	}
 
@@ -418,6 +519,23 @@ func (c *ServerConfig) ParseApprovalTimeout() (time.Duration, error) {
 		return 0, fmt.Errorf("ParseApprovalTimeout: must be positive, got %s", c.Approval.Timeout)
 	}
 	return d, nil
+}
+
+// ParseDebugLevel parses the debug log level string into a slog.Level.
+// Returns slog.LevelDebug if the level string is empty or unrecognized.
+func (c *DebugConfig) ParseDebugLevel() slog.Level {
+	switch strings.ToLower(c.LogLevel) {
+	case "debug", "":
+		return slog.LevelDebug
+	case "info":
+		return slog.LevelInfo
+	case "warn":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	default:
+		return slog.LevelDebug
+	}
 }
 
 // validatePositiveDuration checks that a duration string, if non-empty, parses

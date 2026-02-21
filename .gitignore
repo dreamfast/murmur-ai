@@ -44,6 +44,11 @@ Thumbs.db
 configs/server.docker.toml
 configs/client.docker.toml
 
+# Frontend build output and dependencies (keep .gitkeep for go:embed)
+web/dist/*
+!web/dist/.gitkeep
+web/frontend/node_modules/
+
 # LLM plan files and dev workflow
 .llm/
 .opencode/

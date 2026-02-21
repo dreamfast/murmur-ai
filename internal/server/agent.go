@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"murmur/internal/bus"
+	"murmur/internal/config"
 	"murmur/internal/irc"
 	"murmur/internal/llm"
 )
@@ -39,6 +40,12 @@ const crossChannelMaxChannels = 5
 // file cannot be read.
 const defaultSystemPrompt = `You are Murmur, a personal AI assistant communicating over IRC. Be helpful and concise.`
 
+// requestNickKey is the context key used to propagate the requesting user's
+// IRC nick to server-side tool handlers. This enables defense-in-depth checks
+// (e.g., the permissions_manage tool verifying admin status) without changing
+// the tool handler signature.
+type requestNickKey struct{}
+
 // agentConfig holds the mutable configuration fields of the Agent that can be
 // changed at runtime via hot config reload. All fields are protected by Agent.mu
 // and should be read via Agent.loadConfig() to get a consistent snapshot.
@@ -49,6 +56,7 @@ type agentConfig struct {
 	crossChCtx      int // messages per other channel to include in system prompt (0 = disabled)
 	approvalTimeout time.Duration
 	verbose         bool
+	debug           config.DebugConfig // granular debug log category flags
 }
 
 // Agent runs the LLM agent loop. It ties together LLM providers, tool routing,
@@ -68,6 +76,7 @@ type Agent struct {
 	serverName      string                // server's target name for shell routing
 	busChannel      string                // bus channel name, excluded from cross-channel context
 	channelSettings *ChannelSettingsStore // per-channel provider/settings; may be nil
+	permissions     *PermissionManager    // user/channel permissions; may be nil
 	toolTimeout     time.Duration
 	logger          *slog.Logger
 
@@ -106,7 +115,7 @@ type Agent struct {
 // When verbose is true, the agent sends status messages to IRC (thinking,
 // tool calls, results) so the user can follow what it's doing in real time.
 //
-// TODO: Refactor to an options struct — 18 positional parameters is too many.
+// TODO: Refactor to an options struct — 19 positional parameters is too many.
 func NewAgent(
 	providers map[string]llm.Provider,
 	defaultProvider string,
@@ -125,6 +134,7 @@ func NewAgent(
 	toolTimeout time.Duration,
 	approvalTimeout time.Duration,
 	verbose bool,
+	debug config.DebugConfig,
 	logger *slog.Logger,
 ) *Agent {
 	if serverTools == nil {
@@ -141,6 +151,7 @@ func NewAgent(
 			crossChCtx:      crossChannelContext,
 			approvalTimeout: approvalTimeout,
 			verbose:         verbose,
+			debug:           debug,
 		},
 		serverTools:     serverTools,
 		registry:        registry,
@@ -180,10 +191,19 @@ func (a *Agent) UpdateProviders(providers map[string]llm.Provider, defaultName s
 	a.providers.Store(&providers)
 }
 
+// SetPermissions replaces the agent's permission manager. This is safe for
+// concurrent use — the permissions field is read under mu.RLock in runLoop
+// and written under mu.Lock here.
+func (a *Agent) SetPermissions(pm *PermissionManager) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.permissions = pm
+}
+
 // UpdateConfig updates the agent's simple configuration fields under the
 // mu write lock. This is called during hot config reload for fields that
 // don't require structural changes (no new goroutines, no connection changes).
-func (a *Agent) UpdateConfig(verbose bool, maxHistory, crossChCtx int, approvalTimeout time.Duration, systemPrompt string) {
+func (a *Agent) UpdateConfig(verbose bool, maxHistory, crossChCtx int, approvalTimeout time.Duration, systemPrompt string, debug config.DebugConfig) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.cfg.verbose = verbose
@@ -191,6 +211,7 @@ func (a *Agent) UpdateConfig(verbose bool, maxHistory, crossChCtx int, approvalT
 	a.cfg.crossChCtx = crossChCtx
 	a.cfg.approvalTimeout = approvalTimeout
 	a.cfg.systemPrompt = systemPrompt
+	a.cfg.debug = debug
 }
 
 // loadConfig returns a snapshot of the agent's mutable configuration fields.
@@ -221,12 +242,14 @@ func (a *Agent) HandleMessage(ctx context.Context, channel, nick, message string
 		return
 	}
 
-	a.runLoop(ctx, channel)
+	a.runLoop(ctx, channel, nick)
 }
 
 // RunScheduledTask executes a scheduled task by storing it as a system message
 // and running the LLM agent loop. This is called by the Scheduler for due tasks.
-func (a *Agent) RunScheduledTask(ctx context.Context, channel, taskDescription string) {
+// The createdBy parameter is the nick of the user who created the task; their
+// current permissions are used for tool filtering. If empty, no filtering is applied.
+func (a *Agent) RunScheduledTask(ctx context.Context, channel, taskDescription, createdBy string) {
 	// Acquire per-channel lock.
 	chLock := a.getChannelLock(channel)
 	chLock.Lock()
@@ -239,14 +262,16 @@ func (a *Agent) RunScheduledTask(ctx context.Context, channel, taskDescription s
 		return
 	}
 
-	a.runLoop(ctx, channel)
+	a.runLoop(ctx, channel, createdBy)
 }
 
 // HandleEvent processes an external event through the LLM agent loop. It
-// acquires a per-channel lock, formats the event as a system message, stores
-// it in memory, and runs the agent loop so the LLM can observe and act on it.
-// The data parameter is optional and may be empty.
-func (a *Agent) HandleEvent(ctx context.Context, channel, source, eventType, summary, data string) error {
+// acquires the per-channel lock, stores the event as a system message, and
+// runs the agent loop. The event is formatted as a system message so the LLM
+// can decide how to respond. The nick parameter identifies the user whose
+// permissions should apply; use "_system" for system-level events that should
+// bypass permission filtering.
+func (a *Agent) HandleEvent(ctx context.Context, channel, nick, source, eventType, summary, data string) error {
 	chLock := a.getChannelLock(channel)
 	chLock.Lock()
 	defer chLock.Unlock()
@@ -260,15 +285,20 @@ func (a *Agent) HandleEvent(ctx context.Context, channel, source, eventType, sum
 		return fmt.Errorf("HandleEvent: store message: %w", err)
 	}
 
-	a.runLoop(ctx, channel)
+	a.runLoop(ctx, channel, nick)
 	return nil
 }
 
 // runLoop is the core LLM iteration loop shared by HandleMessage,
 // RunScheduledTask, and HandleEvent. It assumes the per-channel lock is
 // already held and the initial message (user or system) has been stored in
-// memory.
-func (a *Agent) runLoop(ctx context.Context, channel string) {
+// memory. The nick parameter identifies the user for permission filtering;
+// system-initiated actions use "_system" which bypasses filtering.
+func (a *Agent) runLoop(ctx context.Context, channel, nick string) {
+	// Inject the requesting user's nick into the context so server-side tool
+	// handlers can perform defense-in-depth authorization checks.
+	ctx = context.WithValue(ctx, requestNickKey{}, nick)
+
 	// Track consecutive failures per tool to detect retry loops. When a tool
 	// fails maxConsecutiveToolFailures times in a row, we inject a system
 	// message telling the LLM to stop using it.
@@ -284,6 +314,11 @@ func (a *Agent) runLoop(ctx context.Context, channel string) {
 		// Snapshot mutable config fields once per iteration so all reads
 		// within this iteration see a consistent set of values.
 		cfg := a.loadConfig()
+
+		// Snapshot the permission manager under the same lock discipline.
+		a.mu.RLock()
+		pm := a.permissions
+		a.mu.RUnlock()
 
 		// Build the messages array: system prompt + conversation history.
 		history, err := a.memory.GetHistory(channel, cfg.maxHistory)
@@ -356,10 +391,16 @@ func (a *Agent) runLoop(ctx context.Context, channel string) {
 			busTools = filtered
 		}
 
+		// Filter tools based on user permissions. System nicks (starting
+		// with _) and nil PermissionManager bypass filtering.
+		if pm != nil {
+			busTools = pm.FilterTools(busTools, nick, channel, a.GetProviderNames())
+		}
+
 		tools := llm.ConvertBusTools(busTools)
 
 		// Get the provider for this channel (per-channel override or global default).
-		provider, err := a.resolveProvider(channel)
+		provider, err := a.resolveProvider(channel, nick, pm)
 		if err != nil {
 			a.logger.Error("no active provider", "error", err, "channel", channel)
 			a.send(channel, "error: no LLM provider available")
@@ -372,20 +413,36 @@ func (a *Agent) runLoop(ctx context.Context, channel string) {
 			a.status(channel, cfg.verbose, fmt.Sprintf("thinking... [%s, iteration %d]", provider.Name(), i+1))
 		}
 
-		// Call the LLM.
+		// Call the LLM with timing measurement.
+		llmStart := time.Now()
 		resp, err := provider.ChatCompletion(ctx, &llm.ChatRequest{
 			Messages: messages,
 			Tools:    tools,
 		})
+		llmDuration := time.Since(llmStart)
 		if err != nil {
 			a.logger.Error("LLM call failed",
 				"error", err,
 				"provider", provider.Name(),
 				"channel", channel,
 				"iteration", i,
+				"latency", llmDuration,
 			)
 			a.send(channel, fmt.Sprintf("error: LLM call failed: %v", err))
 			return
+		}
+		if cfg.debug.LogLLMRequests {
+			a.logger.Info("llm_request",
+				"provider", provider.Name(),
+				"channel", channel,
+				"iteration", i,
+				"latency", llmDuration,
+				"prompt_tokens", resp.Usage.PromptTokens,
+				"completion_tokens", resp.Usage.CompletionTokens,
+				"total_tokens", resp.Usage.TotalTokens,
+				"tool_calls", len(resp.ToolCalls),
+				"has_content", resp.Content != "",
+			)
 		}
 
 		// If the response has tool calls, process them.
@@ -419,19 +476,29 @@ func (a *Agent) runLoop(ctx context.Context, channel string) {
 
 			// Route each tool call and store results.
 			for _, tc := range resp.ToolCalls {
-				a.logger.Info("routing tool call",
-					"tool", tc.Function.Name,
-					"call_id", tc.ID,
-					"channel", channel,
-				)
+				if cfg.debug.LogToolCalls {
+					a.logger.Info("routing tool call",
+						"tool", tc.Function.Name,
+						"call_id", tc.ID,
+						"channel", channel,
+					)
+				}
 				a.status(channel, cfg.verbose, fmt.Sprintf("calling %s...", tc.Function.Name))
 
+				toolStart := time.Now()
 				result, routeErr := a.routeToolCall(ctx, channel, tc.Function.Name, json.RawMessage(tc.Function.Arguments))
+				toolDuration := time.Since(toolStart)
 				if routeErr != nil {
-					a.logger.Error("tool call failed",
-						"tool", tc.Function.Name,
-						"error", routeErr,
-					)
+					if cfg.debug.LogToolCalls {
+						a.logger.Error("tool_call_result",
+							"tool", tc.Function.Name,
+							"call_id", tc.ID,
+							"channel", channel,
+							"status", "error",
+							"duration", toolDuration,
+							"error", routeErr,
+						)
+					}
 					a.status(channel, cfg.verbose, fmt.Sprintf("%s failed: %s", tc.Function.Name, truncate(routeErr.Error(), 80)))
 					// Feed the error back to the LLM as a tool result.
 					result = fmt.Sprintf("error: %v", routeErr)
@@ -452,6 +519,16 @@ func (a *Agent) runLoop(ctx context.Context, channel string) {
 						)
 					}
 				} else {
+					if cfg.debug.LogToolCalls {
+						a.logger.Info("tool_call_result",
+							"tool", tc.Function.Name,
+							"call_id", tc.ID,
+							"channel", channel,
+							"status", "ok",
+							"duration", toolDuration,
+							"result_bytes", len(result),
+						)
+					}
 					a.status(channel, cfg.verbose, fmt.Sprintf("%s done (%d bytes)", tc.Function.Name, len(result)))
 					// Reset failure count on success.
 					delete(toolFailCounts, tc.Function.Name)
@@ -639,20 +716,23 @@ func (a *Agent) GetProviderForChannel(channel string) string {
 	return a.cfg.activeProvider
 }
 
-// resolveProvider returns the LLM provider to use for the given channel. It
-// checks for a per-channel override first (via channelSettings), then falls
-// back to the global default. If the override references a provider that no
-// longer exists in the config, a warning is logged and the global default is
-// used. Returns an error if no provider can be resolved.
+// resolveProvider returns the LLM provider to use for the given channel and
+// user. It checks for a per-channel override first (via channelSettings),
+// then falls back to the global default. If the resolved provider is not
+// allowed for the user (via PermissionManager), it falls back to the first
+// allowed provider. Returns an error if no provider can be resolved.
+// The pm parameter is a snapshot of the PermissionManager taken under lock
+// by the caller to avoid races during hot reload.
 //
 // ChannelSettingsStore is backed by SQLite and is safe for concurrent use.
-func (a *Agent) resolveProvider(channel string) (llm.Provider, error) {
+func (a *Agent) resolveProvider(channel, nick string, pm *PermissionManager) (llm.Provider, error) {
 	providers := a.loadProviders()
 	if len(providers) == 0 {
 		return nil, fmt.Errorf("no providers configured")
 	}
 
 	// Check per-channel override.
+	var resolved llm.Provider
 	if a.channelSettings != nil {
 		name, err := a.channelSettings.GetProvider(channel)
 		if err != nil {
@@ -662,19 +742,83 @@ func (a *Agent) resolveProvider(channel string) (llm.Provider, error) {
 			)
 		} else if name != "" {
 			if p, ok := providers[name]; ok {
-				return p, nil
+				resolved = p
+			} else {
+				// Channel has an override but the provider doesn't exist — log
+				// and fall through to global default.
+				a.logger.Warn("per-channel provider not found, falling back to global default",
+					"channel", channel,
+					"provider", name,
+				)
 			}
-			// Channel has an override but the provider doesn't exist — log
-			// and fall through to global default.
-			a.logger.Warn("per-channel provider not found, falling back to global default",
-				"channel", channel,
-				"provider", name,
-			)
 		}
 	}
 
-	// Fall back to global default.
-	return a.getActiveProvider()
+	// Fall back to global default if no per-channel override resolved.
+	if resolved == nil {
+		p, err := a.getActiveProvider()
+		if err != nil {
+			return nil, err
+		}
+		resolved = p
+	}
+
+	// Check model permissions if PermissionManager is configured.
+	// System nicks (_system, etc.) and empty nicks (legacy scheduled tasks) bypass.
+	if pm != nil && nick != "" && !strings.HasPrefix(nick, "_") {
+		allToolNames := a.getAllToolNames()
+		allModelNames := a.GetProviderNames()
+		if !pm.IsModelAllowed(nick, channel, resolved.Name(), allToolNames, allModelNames) {
+			// Find the first allowed model.
+			ep := pm.GetEffective(nick, channel, allToolNames, allModelNames)
+			for _, modelName := range ep.Models {
+				if p, ok := providers[modelName]; ok {
+					cfg := a.loadConfig()
+					if cfg.debug.LogPermissions {
+						a.logger.Info("permission_denial",
+							"nick", nick,
+							"channel", channel,
+							"resource", "model",
+							"denied", resolved.Name(),
+							"fallback", modelName,
+						)
+					}
+					return p, nil
+				}
+			}
+			return nil, fmt.Errorf("no allowed LLM provider for user %q in %s", nick, channel)
+		}
+	}
+
+	return resolved, nil
+}
+
+// getAllToolNames returns the names of all currently available tools (server + client).
+func (a *Agent) getAllToolNames() []string {
+	var serverDefs []bus.ToolDef
+	if a.serverTools != nil {
+		serverDefs = a.serverTools.AllToolDefs()
+	}
+	var clientDefs []bus.ToolDef
+	if a.registry != nil {
+		clientDefs = a.registry.AllTools()
+	}
+
+	seen := make(map[string]struct{}, len(serverDefs)+len(clientDefs))
+	names := make([]string, 0, len(serverDefs)+len(clientDefs))
+	for _, td := range serverDefs {
+		if _, ok := seen[td.Name]; !ok {
+			seen[td.Name] = struct{}{}
+			names = append(names, td.Name)
+		}
+	}
+	for _, td := range clientDefs {
+		if _, ok := seen[td.Name]; !ok {
+			seen[td.Name] = struct{}{}
+			names = append(names, td.Name)
+		}
+	}
+	return names
 }
 
 // GetProviderNames returns all available provider names, sorted alphabetically.

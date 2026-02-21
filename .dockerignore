@@ -10,3 +10,5 @@ bin/
 .env
 .env.*
 .DS_Store
+web/frontend/node_modules/
+web/dist/

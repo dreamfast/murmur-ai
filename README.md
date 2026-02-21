@@ -9,12 +9,12 @@
 The name comes from a "murmuration" -- the coordinated movement of a flock of starlings. Each client is a bird in the flock.
 
 ```
-         You (IRC client)          curl / webhooks
-              |                         |
-     Private IRC Server          REST API (:8080/:8081)
-              |                         |
-       Murmur Server          <-- LLM agent loop, memory, scheduler, REST API
-              |
+         You (IRC client)     Web Dashboard (:8082)     curl / webhooks
+              |                      |                        |
+     Private IRC Server        Murmur Server           REST API (:8080)
+              |                      |
+       Murmur Server          <-- LLM agent loop, memory, scheduler,
+              |                   permissions, dashboard, REST API
        #murmur-bus (IRC)
               |
     +---------+---------+
@@ -35,9 +35,9 @@ Murmur's approach is to use IRC as the message bus and physically separate the L
 | **Language** | Go | TypeScript | Rust | Python |
 | **Architecture** | Client-server over IRC (server = LLM brain, clients = tool providers on separate machines) | Client-server (Gateway + companion app nodes over WebSocket) | Monolithic binary with layered modules | Single process |
 | **Communication bus** | IRC (battle-tested protocol with built-in auth, TLS, channel ACLs, flood protection) | WebSocket control plane (`ws://127.0.0.1:18789`) | Internal module calls | Internal function calls |
-| **Chat channels** | IRC (any client) + REST API + DMs | 14+ (WhatsApp, Telegram, Slack, Discord, Signal, iMessage, Teams, etc.) | Claims 20 (Slack, Discord, Telegram, IRC, Matrix, Teams, etc.) | Telegram + CLI + web dashboard |
+| **Chat channels** | IRC (any client) + web dashboard + REST API + DMs | 14+ (WhatsApp, Telegram, Slack, Discord, Signal, iMessage, Teams, etc.) | Claims 20 (Slack, Discord, Telegram, IRC, Matrix, Teams, etc.) | Telegram + CLI + web dashboard |
 | **Execution isolation** | Docker containers with `--network=none`, `--cap-drop=ALL`, `--read-only` + physical network separation (clients on different machines) | Docker sandbox for non-main sessions; main session has full host access | Docker rootless / Bubblewrap / Native sandbox with seccomp profiles | Python-level filtering (workspace-only file access, blocked shell patterns) |
-| **Approval flow** | Per-client autonomy levels (`report`/`approve`/`auto`) — each machine independently declares its policy | DM pairing for unknown senders | RBAC with deny-precedence | Session budgets and rate limiting |
+| **Approval flow** | Per-user + per-channel + per-client autonomy levels (`report`/`approve`/`auto`) — layered permissions with NickServ identity verification | DM pairing for unknown senders | RBAC with deny-precedence | Session budgets and rate limiting |
 | **Command restriction** | Per-client whitelists, config key deny-lists, HMAC-authenticated bus | Per-channel allowlists, SSRF protection | 45+ blocked command patterns, static analysis, typosquatting scanner | Blocked dangerous commands, workspace-only file access |
 | **Network isolation** | Tool clients can run on air-gapped machines; Docker `--network=none` for shell; bus channel invite-only + HMAC | Gateway on localhost; non-main sessions sandboxed | Sandbox profiles (Minimal to Unrestricted) | No open ports (Telegram polling, localhost dashboard) |
 | **Secrets management** | Encrypted vault (AES-256-GCM + Argon2id), `vault:` config references | Unknown | AES-256-GCM encrypted memory | Config file |
@@ -72,52 +72,30 @@ git clone https://github.com/yourusername/murmur.git
 cd murmur
 ```
 
-### 2. Run the setup script
+### 2. Run the setup wizard
 
-This builds the containers and stores your API key in the encrypted vault:
+The interactive setup wizard handles everything -- building containers, configuring the IRC server, creating your admin account, storing secrets in the encrypted vault, and optionally enabling the web dashboard:
 
 ```bash
 ./scripts/setup.sh
 ```
 
-It will ask for:
-- **Vault passphrase** -- encrypts your secrets at rest. Pick something you'll remember.
-- **LLM API key** -- your OpenRouter, OpenAI, or other provider key.
+The wizard walks you through 8 steps:
 
-Or pass them as environment variables:
+1. **Installation mode** -- Docker (recommended) or bare metal
+2. **Vault passphrase** -- encrypts your secrets at rest
+3. **LLM provider** -- OpenRouter, OpenAI, Anthropic, Ollama, or custom endpoint
+4. **Admin account** -- your IRC nick and NickServ password (auto-registered on the bundled Ergo server)
+5. **IRC server password** -- optional, protects the IRC server from unauthorized connections
+6. **Web dashboard** -- optional browser-based chat interface (port 8082)
+7. **Search** -- SearXNG (self-hosted) or Brave Search API
+8. **Tools** -- code execution (Piston), shell, and other tools
 
-```bash
-MURMUR_VAULT_PASS=mypassphrase LLM_API_KEY=sk-or-v1-... ./scripts/setup.sh
-```
+The wizard generates all config files, builds Docker images, registers your admin account on the IRC server, stores secrets in the vault, starts all services, and runs a health check.
 
-### 3. Start everything
+Use `--dry-run` to preview what the wizard would do without making changes.
 
-```bash
-MURMUR_VAULT_PASS=mypassphrase docker compose up -d
-```
-
-Or create a `.env` file (see `.env.example`):
-
-```bash
-cp .env.example .env
-# Edit .env with your vault passphrase
-docker compose up -d
-```
-
-But first, copy the example configs:
-
-```bash
-cp configs/server.docker.toml.example configs/server.docker.toml
-cp configs/client.docker.toml.example configs/client.docker.toml
-# Edit to taste (LLM provider, tools, etc.)
-```
-
-This starts three containers:
-- **ircd** -- Ergo IRC server (port 6667)
-- **murmur-server** -- the agent brain
-- **murmur-client** -- a tool provider (system info, DNS, RSS out of the box)
-
-### 4. Connect and talk
+### 3. Connect and talk
 
 Point your IRC client at `localhost:6667` and join `#murmur`:
 
@@ -129,14 +107,24 @@ hey murmur, what's the uptime on this machine?
 
 That's it. You're talking to your agent.
 
-You can also DM the bot directly -- private messages work the same as channel messages, with separate conversation history per user.
+You can also DM the bot directly -- private messages work the same as channel messages, with separate conversation history per user. Or open the web dashboard at `http://localhost:8082` if you enabled it during setup.
 
-### 5. Check the logs
+### 4. Check the logs
 
 ```bash
 docker compose logs -f murmur-server
 docker compose logs -f murmur-client
 ```
+
+### Setting up remote clients
+
+The setup wizard also supports configuring standalone clients on remote machines:
+
+```bash
+./scripts/setup.sh client
+```
+
+This walks you through client identity, IRC connection details, tool selection, and vault setup. See [Running Clients on Other Machines](#running-clients-on-other-machines) for manual setup.
 
 ### Changing the LLM provider or model
 
@@ -232,6 +220,194 @@ Manage reminders with the same task commands:
 ```
 !tasks                        # list all tasks and reminders
 !task remove 5                # remove a reminder by ID
+```
+
+---
+
+## Multi-User Permissions
+
+Murmur supports fine-grained per-user and per-channel permissions via a separate `permissions.toml` file. This is optional -- without it, all users in `security.allowed_users` have full access.
+
+### How it works
+
+Permissions are layered: each user has permissions, each channel has permissions, and the effective permissions are the **intersection** (most restrictive wins). NickServ identity verification prevents nick spoofing.
+
+```
+User permissions  ∩  Channel permissions  =  Effective permissions
+(what the user    ∩  (what the channel     =  (what this user can
+ is allowed)         allows)                   do in this channel)
+```
+
+### Configuration
+
+Create `permissions.toml` (default location: `<data_dir>/permissions.toml`):
+
+```toml
+# Default permissions for users not explicitly listed.
+[users.default]
+role = "user"
+tools = ["*"]                    # allowed tools (* = all, prefix_* = glob)
+deny_tools = []                  # deny list overrides allowed tools
+autonomy = "approve"             # report | approve | auto
+# allowed_models = ["*"]
+# max_messages_per_hour = 60     # -1 = unlimited
+
+# Admin user — full access, no rate limit.
+[users.alice]
+role = "admin"
+tools = ["*"]
+autonomy = "auto"
+max_messages_per_hour = -1
+api_key = "webhook-key-for-alice"  # optional per-user API key
+
+# Restricted user — limited tools, report-only.
+[users.guest]
+role = "user"
+tools = ["note_*", "rss_read"]
+deny_tools = ["shell", "code_exec"]
+autonomy = "report"
+max_messages_per_hour = 10
+
+# Channel restrictions — intersected with user permissions.
+[channels."#public"]
+tools = ["note_*", "rss_read", "web_search"]
+deny_tools = ["shell"]
+autonomy = "approve"
+```
+
+Reference it in `server.toml`:
+
+```toml
+[security]
+permissions_file = "~/.murmur/permissions.toml"
+require_nickserv = true           # verify nick identity via NickServ WHOIS
+```
+
+### Permission resolution
+
+- **Tools**: `(user_tools ∩ channel_tools) - user_deny - channel_deny`
+- **Autonomy**: most restrictive wins (`report` > `approve` > `auto`)
+- **Models**: `(user_models ∩ channel_models) - user_deny_models`
+- **Glob patterns**: `"*"` matches all, `"note_*"` matches prefix
+- **Admin role**: admins get access to `!user`, `!channel` commands and the `permissions_manage` LLM tool
+
+### Admin commands
+
+Admins can manage permissions at runtime via IRC commands:
+
+```
+!user list                        # list all configured users
+!user info alice                  # show alice's permissions
+!user add bob admin               # add bob as admin
+!user remove guest                # remove guest
+!user bob tools shell,dns_check   # set bob's allowed tools
+!user bob deny code_exec          # add to bob's deny list
+!user bob autonomy auto           # set bob's autonomy level
+!user bob ratelimit 30            # set bob's rate limit
+
+!channel list                     # list configured channels
+!channel info #public             # show channel permissions
+!channel #public tools note_*,rss # set channel's allowed tools
+!channel #public deny shell       # add to channel's deny list
+!channel #public autonomy approve # set channel's autonomy
+```
+
+Changes are written atomically to `permissions.toml` and take effect immediately (auto-reload).
+
+### Natural language management
+
+The `permissions_manage` LLM tool lets admins manage permissions conversationally:
+
+```
+give bob access to the shell and dns tools
+restrict #public to only note and rss tools
+what permissions does alice have?
+set the rate limit for guest to 5 messages per hour
+```
+
+The tool is only visible to admin users (defense-in-depth: the handler also validates admin status).
+
+### Per-user API keys
+
+Each user can have an `api_key` for webhook events. When an event arrives with a per-user key, it's processed with that user's permissions:
+
+```toml
+[users.alice]
+api_key = "alices-webhook-key"
+```
+
+```bash
+curl -X POST http://localhost:8080/api/v1/events \
+  -H "Authorization: Bearer alices-webhook-key" \
+  -d '{"source": "github", "summary": "new PR opened"}'
+```
+
+### NickServ verification
+
+When `require_nickserv = true` (default when permissions are configured), the server verifies nick identity via WHOIS before processing messages. Unidentified nicks receive a message asking them to identify with NickServ. Results are cached for 5 minutes with singleflight deduplication.
+
+---
+
+## Web Dashboard
+
+A browser-based chat interface for Murmur. Each browser session creates its own IRC connection, so you appear as your own nick in the channel.
+
+### Features
+
+- **Real-time chat** -- WebSocket bridge to IRC with message rendering (IRC colors, markdown, code blocks)
+- **Server overview** -- status cards showing uptime, provider, connected clients, and tools
+- **Admin panel** -- client list with tools and autonomy badges, quick action buttons
+- **Tool call cards** -- collapsible cards for tool approval requests with approve/deny buttons
+- **Command autocomplete** -- type `!` to see available commands with descriptions
+- **Unread badges** -- notification count on the chat tab when messages arrive while viewing other pages
+- **Mobile responsive** -- slide-out sidebar, hamburger menu, optimized layouts for phone and tablet
+- **Dark theme** -- Hack monospace font, IRC-inspired color palette
+- **HMAC-signed requests** -- every API call is signed with a per-session key (HMAC-SHA256, 30s timestamp window)
+
+### Enabling the dashboard
+
+Add to `server.toml`:
+
+```toml
+[dashboard]
+enabled = true
+listen = "127.0.0.1:8082"        # bind address (use 0.0.0.0 in Docker)
+session_timeout = "24h"           # how long sessions stay valid
+server_password = "vault:irc-server-password"  # auto-sent for dashboard users
+```
+
+Or enable it during the setup wizard (step 6).
+
+### Authentication
+
+Login with your IRC nick and NickServ password. The dashboard creates an IRC connection on your behalf and authenticates via NickServ IDENTIFY. The IRC server password (if configured) is sent automatically -- dashboard users don't need to know it.
+
+Sessions use HttpOnly/Secure/SameSite=Strict cookies. Each session gets a unique signing key (32 bytes, crypto/rand) returned at login. All subsequent requests must include HMAC-SHA256 signatures with a fresh timestamp.
+
+### Architecture
+
+```
+Browser  →  WebSocket  →  Dashboard Handler  →  IRC Bridge  →  Ergo IRC Server
+                              (Go HTTP)           (girc)          (same as CLI)
+```
+
+Each browser tab gets its own IRC connection. The bridge relays PRIVMSG, JOIN, PART, TOPIC, MODE, and NAMES between WebSocket and IRC. The dashboard is served from the same `murmur server` binary -- no separate process needed.
+
+### Building the frontend
+
+The Vue.js frontend is built during `make build` and embedded into the Go binary via `//go:embed`. No separate frontend server is needed in production.
+
+```bash
+make build              # builds frontend (pnpm) + Go binary
+make build-go-only      # skip frontend build (uses existing web/dist/)
+```
+
+Development:
+
+```bash
+cd web/frontend
+pnpm install
+pnpm dev                # Vite dev server with hot reload
 ```
 
 ---
@@ -483,6 +659,8 @@ Config changes can be applied without restarting the server. Three ways to trigg
 | `cross_channel_context` | Yes |
 | `approval_timeout` | Yes |
 | `allowed_users` | Yes |
+| Permissions (`permissions.toml`) | Yes |
+| Debug config (`[debug]` section) | Yes |
 | Debug channel (enable/disable) | Yes |
 | IRC connection (server, port, nick, TLS) | No -- restart required |
 | Database path | No -- restart required |
@@ -508,8 +686,14 @@ docker exec murmur-server kill -HUP 1
 A dedicated IRC channel that receives live structured log output from the server. Useful for real-time debugging without tailing container logs.
 
 ```toml
-[server]
-debug_channel = "#murmur-debug"
+[debug]
+enabled = true
+channel = "#murmur-debug"
+log_level = "debug"              # minimum level: debug, info, warn, error
+log_tool_calls = true            # tool call routing and results
+log_llm_requests = true          # LLM API calls with provider, tokens, latency
+log_bus_protocol = false         # bus protocol messages
+log_permissions = true           # permission checks and denials
 ```
 
 The server joins the debug channel on startup and forwards `slog` output as formatted IRC messages. Control it at runtime:
@@ -522,6 +706,10 @@ The server joins the debug channel on startup and forwards `slog` output as form
 ```
 
 Log messages are batched (up to 5 per send, every 500ms) and use a drop-newest buffer (capacity 100) to avoid flooding IRC when log volume is high.
+
+The granular toggles let you focus on specific subsystems. For example, enable only `log_permissions` to debug access control issues without the noise of every LLM call.
+
+**Backward compatibility**: The old `server.debug_channel` field still works but is deprecated. If set without a `[debug]` section, it's automatically migrated.
 
 ---
 
@@ -618,6 +806,8 @@ These are handled directly, no LLM involved:
 | `!pending` | List pending tool call approvals |
 | `!tasks` | List scheduled tasks and reminders |
 | `!task` | Manage tasks (`add`, `remove`, `enable`, `disable`) |
+| `!user` | Manage user permissions -- `list`, `info`, `add`, `remove`, field setters (admin only) |
+| `!channel` | Manage channel permissions -- `list`, `info`, field setters (admin only) |
 | `!debug` | Toggle debug IRC channel logging |
 | `!reload` | Reload configuration from disk |
 | `!help` | Show all commands |
@@ -647,24 +837,41 @@ Tools are capabilities provided by clients or the server. The server discovers c
 | `config_manage` | Read/write server TOML config at runtime (auto-reloads) | Server | Nothing extra |
 | `reminder_add` | Set one-time reminders with absolute or relative times | Server | Nothing extra |
 | `note_*` | Persistent key-value notes | Server | Nothing extra |
+| `permissions_manage` | Natural language permission management (admin only) | Server | permissions.toml |
 | `tool_create/list/delete/enable/disable` | Create and manage custom tools at runtime | Server | Nothing extra |
 
 ## Autonomy Levels
 
-Each client declares how tool calls are handled:
+Autonomy controls how tool calls are handled. It can be set at three levels -- the most restrictive wins:
 
 | Level | Behavior |
 |-------|----------|
-| `report` | Tool calls are **blocked**. Client is read-only. |
+| `report` | Tool calls are **blocked**. Read-only. |
 | `approve` | Tool calls **wait for user approval** via `!approve`/`!deny`. |
 | `auto` | Tool calls **execute immediately**. |
 
-Set in the client config:
+**Per-client** (in `client.toml`):
 
 ```toml
 [client]
 autonomy = "approve"
 ```
+
+**Per-user** (in `permissions.toml`):
+
+```toml
+[users.guest]
+autonomy = "report"             # this user can never execute tools
+```
+
+**Per-channel** (in `permissions.toml`):
+
+```toml
+[channels."#public"]
+autonomy = "approve"            # all tool calls in this channel need approval
+```
+
+The effective autonomy is the most restrictive of all three: if the client is `auto`, the user is `auto`, but the channel is `approve`, the result is `approve`.
 
 ## Flood Protection
 
@@ -773,9 +980,10 @@ Set `bus_key` in both server and client configs when shell or code execution too
 murmur/
 ├── cmd/murmur/main.go              # CLI entry point
 ├── internal/
-│   ├── server/                      # Agent loop, memory, scheduler, commands, flood protection,
+│   ├── server/                      # Agent loop, memory, scheduler, commands, permissions,
 │   │                                # custom tools, channel settings, REST API, hot reload
 │   ├── client/                      # Tool dispatch, client-side cron, REST API
+│   ├── dashboard/                   # Web dashboard (HTTP handler, WebSocket-IRC bridge, sessions)
 │   ├── tools/                       # All tool implementations
 │   ├── api/                         # Shared REST API helpers (JSON, auth, middleware)
 │   ├── bus/                         # IRC bus protocol (chunking, HMAC, multi-part)
@@ -784,17 +992,22 @@ murmur/
 │   ├── config/                      # TOML config loading and validation
 │   ├── db/                          # SQLite + migrations
 │   └── vault/                       # Encrypted secrets store
+├── web/
+│   ├── frontend/                    # Vue.js 3 dashboard (Vite, Tailwind CSS 4, pnpm)
+│   ├── dist/                        # Built frontend (embedded into Go binary)
+│   └── embed.go                     # go:embed directive for static files
 ├── configs/
 │   ├── server.docker.toml.example   # Server config template for Docker Compose
 │   ├── client.docker.toml.example   # Client config template for Docker Compose
 │   ├── server.toml.example          # Server config reference (bare metal)
 │   ├── client.toml.example          # Client config reference (bare metal)
+│   ├── permissions.toml.example     # User/channel permissions reference
 │   ├── system_prompt.md             # Default system prompt
 │   └── ergo.yaml                    # Ergo IRC server config
 ├── scripts/
-│   └── setup.sh                     # First-time setup script
+│   └── setup.sh                     # Interactive setup wizard (server + client modes)
 ├── Makefile
-├── Dockerfile
+├── Dockerfile                       # Multi-stage: Node (pnpm) → Go → Alpine
 ├── docker-compose.yml
 └── .env.example
 ```
@@ -802,11 +1015,14 @@ murmur/
 ## Building from Source
 
 ```bash
-make build                # bin/murmur for current platform
+make build                # build frontend (pnpm) + Go binary → bin/murmur
+make build-go-only        # skip frontend, use existing web/dist/
 make build-all            # cross-compile for linux/darwin/windows
 make test                 # run all tests
 make lint                 # run golangci-lint
 ```
+
+The `make build` target runs `pnpm install && pnpm build` in `web/frontend/` first, then compiles the Go binary with the built frontend embedded. If pnpm is not installed, the frontend build is skipped gracefully and the existing `web/dist/` is used.
 
 Run without Docker:
 
@@ -850,6 +1066,18 @@ docker compose run --rm -e MURMUR_VAULT_PASS=mypassphrase \
   murmur-server vault set api-key --db /data/vault.db --value "your-secret-key"
 ```
 
+### Per-user API keys
+
+When multi-user permissions are configured, each user can have their own API key. Events sent with a per-user key are processed with that user's permissions (tool filtering, model restrictions, rate limits):
+
+```toml
+# permissions.toml
+[users.alice]
+api_key = "alices-webhook-key"
+```
+
+If no per-user key matches, the global `api.api_key` is used (admin-equivalent). All key comparisons use constant-time algorithms.
+
 ### Server Endpoints
 
 | Method | Path | Description |
@@ -859,6 +1087,16 @@ docker compose run --rm -e MURMUR_VAULT_PASS=mypassphrase \
 | `GET /api/v1/status` | Server uptime, client count, LLM provider | |
 | `GET /api/v1/clients` | List connected clients with tools | |
 | `GET /api/v1/health` | Health check | Returns 200 OK |
+
+### Dashboard Endpoints (port 8082)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST /dashboard/login` | Authenticate with nick + NickServ password | Returns session cookie + signing key |
+| `POST /dashboard/logout` | End session (requires signature) | |
+| `GET /dashboard/status` | Server status (requires session + signature) | |
+| `GET /ws` | WebSocket IRC bridge (requires signed query params) | |
+| `GET /*` | Embedded Vue.js SPA | |
 
 ### Client Endpoints
 
@@ -938,18 +1176,22 @@ block_private_ips = true              # default: true
 
 ## Security Notes
 
+- **Multi-user permissions** -- per-user and per-channel tool/model/autonomy restrictions via `permissions.toml`. Effective permissions are the intersection (most restrictive wins). NickServ identity verification prevents nick spoofing. Admin commands and the `permissions_manage` tool have defense-in-depth admin checks.
+- **Per-user rate limiting** -- configurable `max_messages_per_hour` per user (sliding window). Admins can set `-1` for unlimited. Stacks with the existing per-nick flood guard.
 - **Bus channel** -- set `#murmur-bus` to invite-only on your IRC server. Enable `bus_key` for HMAC authentication.
 - **Shell tool** -- runs inside Docker with `--cap-drop=ALL`, `--security-opt=no-new-privileges`, `--read-only`, `--network=none`. Use whitelists.
 - **Code execution** -- Piston sandboxes code via Isolate with configurable memory and timeout limits.
 - **Custom tools** -- shell backends use single-quote escaping to prevent injection. Pipeline backends prevent nesting.
 - **File/git tools** -- only access explicitly allowlisted paths. Symlinks that escape the allowlist are rejected.
-- **Config management** -- sensitive keys (vault, security, passwords, API keys) are protected by a deny-list. Writes auto-reload.
+- **Config management** -- sensitive keys (vault, security, passwords, API keys, user/channel permissions) are protected by a deny-list. Writes auto-reload.
 - **Vault** -- AES-256-GCM encryption, Argon2id key derivation. Never stored in plaintext.
 - **Allowed users** -- set `security.allowed_users` to restrict who can talk to the bot. Reloadable without restart.
-- **Autonomy levels** -- use `approve` for clients with dangerous tools.
+- **Autonomy levels** -- use `approve` for clients with dangerous tools. Per-user and per-channel autonomy overrides are intersected with client autonomy.
 - **Flood protection** -- per-nick rate limiting (3 msgs/10s) and per-channel bounded queues (5 deep) prevent abuse.
 - **Tool circuit breaker** -- tools that fail repeatedly are automatically disabled for the current request.
-- **REST API** -- bind to `127.0.0.1` outside Docker. Use API keys. The `http_request` tool blocks private IPs by default to prevent SSRF.
+- **REST API** -- bind to `127.0.0.1` outside Docker. Use API keys. Per-user API keys scope webhook events to user permissions. The `http_request` tool blocks private IPs by default to prevent SSRF.
+- **Web dashboard** -- HMAC-SHA256 signed requests with per-session keys (32 bytes, crypto/rand). HttpOnly/Secure/SameSite=Strict cookies. Login rate limiting (5/min/IP). WebSocket auth via signed query params. Security headers (X-Frame-Options DENY, CSP, X-Content-Type-Options). Path traversal protection on static file serving.
+- **Setup wizard** -- IRC protocol injection prevention (`validate_irc_input` rejects CR/LF). Secure `.env` file permissions (umask 077). TOML escaping for all user input. Ergo config modifications go to a generated file (never modifies tracked config).
 - **IRC operator** -- OPER credentials support `vault:` prefix. Input validation prevents IRC command injection.
 - **DMs** -- private message conversations are isolated per user. Cross-channel context is excluded to prevent information leakage.
 - **Hot reload** -- only safe fields are reloadable. IRC connection, database, vault, and tool configs require a restart.

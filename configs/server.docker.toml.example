@@ -7,7 +7,7 @@ data_dir = "/data"
 system_prompt_file = "/data/system_prompt.md"
 name = "server"
 verbose = true
-# debug_channel = "#murmur-debug"  # IRC channel for live slog output (empty = disabled)
+# debug_channel = "#murmur-debug"  # DEPRECATED: use [debug] section below
 
 [irc]
 server = "ircd"
@@ -71,6 +71,7 @@ max_concurrent = 3
 [security]
 allowed_users = []    # empty = allow everyone (set your IRC nick to restrict)
 bus_key = ""
+# permissions_file = "/data/permissions.toml"  # user/channel permissions (default: <data_dir>/permissions.toml)
 
 # --- Server-side tools (no client needed) ---
 
@@ -140,3 +141,13 @@ event_retention_days = 30
 enabled = true
 db_path = "/data/vault.db"
 passphrase_env = "MURMUR_VAULT_PASS"
+
+# --- Debug channel ---
+# [debug]
+# enabled = true
+# channel = "#murmur-debug"
+# log_level = "debug"          # minimum level: debug, info, warn, error
+# log_tool_calls = true        # log tool call routing and results
+# log_llm_requests = true      # log LLM API calls with provider, tokens, latency
+# log_bus_protocol = false     # log bus protocol messages (reserved for future use)
+# log_permissions = true       # log permission checks and denials

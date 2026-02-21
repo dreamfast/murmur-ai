@@ -2,22 +2,30 @@ package tools
 
 import (
 	"database/sql"
+	"fmt"
 	"strings"
 	"testing"
 
 	_ "modernc.org/sqlite"
 )
 
-// setupTestMailDB creates an in-memory SQLite database with the Thunderbird
-// global-messages-db schema and seeds it with test data. Returns a *mailDB
-// that should be closed by the caller.
+// setupTestMailDB creates a shared-cache in-memory SQLite database with the
+// Thunderbird global-messages-db schema and seeds it with test data. Returns
+// a *mailDB whose per-query connections see the same shared data.
 func setupTestMailDB(t *testing.T) *mailDB {
 	t.Helper()
 
-	db, err := sql.Open("sqlite", ":memory:")
+	// Use a unique shared-cache name per test so parallel tests don't collide.
+	// file::memory:?cache=shared would share across all, so we use a unique name.
+	dsn := fmt.Sprintf("file:%s?mode=memory&cache=shared", t.Name())
+
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		t.Fatalf("open in-memory db: %v", err)
 	}
+	// Keep at least one connection open so the shared-cache database
+	// persists for the lifetime of the test.
+	db.SetMaxIdleConns(1)
 
 	// Create the Thunderbird schema.
 	schema := `
@@ -77,7 +85,7 @@ func setupTestMailDB(t *testing.T) *mailDB {
 		}
 	}
 
-	// Seed messages. jsonAttributes key 59 = read status (true=read, false=unread).
+	// Seed messages. jsonAttributes key 61 = read status (non-zero=read, 0/null=unread).
 	// Dates are in microseconds since Unix epoch.
 	messages := []struct {
 		id       int
@@ -88,18 +96,18 @@ func setupTestMailDB(t *testing.T) *mailDB {
 		deleted  int
 	}{
 		// Riverlab Inbox — 3 messages, 1 unread.
-		{1, 1, 1700000000000000, "msg-001@example.com", `{"59":true}`, 0},
-		{2, 1, 1700100000000000, "msg-002@example.com", `{"59":false}`, 0},
-		{3, 1, 1700200000000000, "msg-003@example.com", `{"59":true}`, 0},
+		{1, 1, 1700000000000000, "msg-001@example.com", `{"61":1}`, 0},
+		{2, 1, 1700100000000000, "msg-002@example.com", `{"61":0}`, 0},
+		{3, 1, 1700200000000000, "msg-003@example.com", `{"61":1}`, 0},
 		// Riverlab Sent — 1 message, read.
-		{4, 2, 1700050000000000, "msg-004@example.com", `{"59":true}`, 0},
+		{4, 2, 1700050000000000, "msg-004@example.com", `{"61":1}`, 0},
 		// Personal Inbox — 2 messages, 1 unread.
-		{5, 3, 1700300000000000, "msg-005@example.com", `{"59":false}`, 0},
-		{6, 3, 1700400000000000, "msg-006@example.com", `{"59":true}`, 0},
+		{5, 3, 1700300000000000, "msg-005@example.com", `{"61":0}`, 0},
+		{6, 3, 1700400000000000, "msg-006@example.com", `{"61":1}`, 0},
 		// Archive — 1 message, read.
-		{7, 4, 1700500000000000, "msg-007@example.com", `{"59":true}`, 0},
+		{7, 4, 1700500000000000, "msg-007@example.com", `{"61":1}`, 0},
 		// Deleted message — should never appear.
-		{8, 1, 1700600000000000, "msg-008@example.com", `{"59":false}`, 1},
+		{8, 1, 1700600000000000, "msg-008@example.com", `{"61":0}`, 1},
 	}
 	for _, m := range messages {
 		if _, err := db.Exec("INSERT INTO messages (id, folderID, date, headerMessageID, jsonAttributes, deleted, conversationID) VALUES (?, ?, ?, ?, ?, ?, 0)",
@@ -135,7 +143,7 @@ func setupTestMailDB(t *testing.T) *mailDB {
 	}
 
 	t.Cleanup(func() { db.Close() })
-	return &mailDB{db: db}
+	return &mailDB{dsn: dsn}
 }
 
 func TestMailDB_Unread(t *testing.T) {

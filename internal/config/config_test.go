@@ -1,6 +1,7 @@
 package config
 
 import (
+	"log/slog"
 	"os"
 	"path/filepath"
 	"testing"
@@ -1769,6 +1770,180 @@ timeout = "not-a-duration"
 	_, err := LoadServerConfig(path)
 	if err == nil {
 		t.Fatal("expected error for invalid HTTP tool timeout, got nil")
+	}
+}
+
+func TestDebugConfigParsing(t *testing.T) {
+	t.Parallel()
+
+	content := `
+[irc]
+server = "irc.example.com"
+nick = "murmur"
+
+[irc.channels]
+main = "#murmur"
+bus = "#murmur-bus"
+
+[debug]
+enabled = true
+channel = "#murmur-debug"
+log_level = "info"
+log_tool_calls = true
+log_llm_requests = true
+log_bus_protocol = false
+log_permissions = true
+`
+	path := writeTempFile(t, "server.toml", content)
+
+	cfg, err := LoadServerConfig(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !cfg.Debug.Enabled {
+		t.Error("Debug.Enabled = false, want true")
+	}
+	if cfg.Debug.Channel != "#murmur-debug" {
+		t.Errorf("Debug.Channel = %q, want %q", cfg.Debug.Channel, "#murmur-debug")
+	}
+	if cfg.Debug.LogLevel != "info" {
+		t.Errorf("Debug.LogLevel = %q, want %q", cfg.Debug.LogLevel, "info")
+	}
+	if !cfg.Debug.LogToolCalls {
+		t.Error("Debug.LogToolCalls = false, want true")
+	}
+	if !cfg.Debug.LogLLMRequests {
+		t.Error("Debug.LogLLMRequests = false, want true")
+	}
+	if cfg.Debug.LogBusProtocol {
+		t.Error("Debug.LogBusProtocol = true, want false")
+	}
+	if !cfg.Debug.LogPermissions {
+		t.Error("Debug.LogPermissions = false, want true")
+	}
+
+	level := cfg.Debug.ParseDebugLevel()
+	if level != slog.LevelInfo {
+		t.Errorf("ParseDebugLevel() = %v, want %v", level, slog.LevelInfo)
+	}
+}
+
+func TestDebugConfigDefaults(t *testing.T) {
+	t.Parallel()
+
+	content := `
+[irc]
+server = "irc.example.com"
+nick = "murmur"
+
+[irc.channels]
+main = "#murmur"
+bus = "#murmur-bus"
+
+[debug]
+channel = "#debug"
+`
+	path := writeTempFile(t, "server.toml", content)
+
+	cfg, err := LoadServerConfig(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Channel is set but enabled is not explicitly set — TOML zero value is
+	// false. Users must explicitly set enabled = true in the new [debug] section.
+	// (Backward compat from server.debug_channel sets it automatically.)
+	if cfg.Debug.Enabled {
+		t.Error("Debug.Enabled should be false when not explicitly set in [debug] section")
+	}
+	// LogLevel should default to "debug".
+	if cfg.Debug.LogLevel != "debug" {
+		t.Errorf("Debug.LogLevel = %q, want default %q", cfg.Debug.LogLevel, "debug")
+	}
+	level := cfg.Debug.ParseDebugLevel()
+	if level != slog.LevelDebug {
+		t.Errorf("ParseDebugLevel() = %v, want %v", level, slog.LevelDebug)
+	}
+	// Log categories should default to false (TOML zero value).
+	if cfg.Debug.LogToolCalls {
+		t.Error("Debug.LogToolCalls should default to false")
+	}
+	if cfg.Debug.LogLLMRequests {
+		t.Error("Debug.LogLLMRequests should default to false")
+	}
+}
+
+func TestDebugChannelBackwardCompat(t *testing.T) {
+	t.Parallel()
+
+	content := `
+[server]
+debug_channel = "#old-debug"
+
+[irc]
+server = "irc.example.com"
+nick = "murmur"
+
+[irc.channels]
+main = "#murmur"
+bus = "#murmur-bus"
+`
+	path := writeTempFile(t, "server.toml", content)
+
+	cfg, err := LoadServerConfig(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Old server.debug_channel should populate [debug] section.
+	if cfg.Debug.Channel != "#old-debug" {
+		t.Errorf("Debug.Channel = %q, want %q (from server.debug_channel)", cfg.Debug.Channel, "#old-debug")
+	}
+	if !cfg.Debug.Enabled {
+		t.Error("Debug.Enabled should be true from backward compat")
+	}
+	// Backward compat should enable all log categories.
+	if !cfg.Debug.LogToolCalls {
+		t.Error("Debug.LogToolCalls should be true from backward compat")
+	}
+	if !cfg.Debug.LogLLMRequests {
+		t.Error("Debug.LogLLMRequests should be true from backward compat")
+	}
+	if !cfg.Debug.LogBusProtocol {
+		t.Error("Debug.LogBusProtocol should be true from backward compat")
+	}
+	if !cfg.Debug.LogPermissions {
+		t.Error("Debug.LogPermissions should be true from backward compat")
+	}
+}
+
+func TestDebugConfigParseDebugLevel_AllLevels(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		level string
+		want  slog.Level
+	}{
+		{"debug", slog.LevelDebug},
+		{"info", slog.LevelInfo},
+		{"warn", slog.LevelWarn},
+		{"error", slog.LevelError},
+		{"DEBUG", slog.LevelDebug},
+		{"INFO", slog.LevelInfo},
+		{"", slog.LevelDebug},
+		{"unknown", slog.LevelDebug},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.level, func(t *testing.T) {
+			t.Parallel()
+			dc := &DebugConfig{LogLevel: tt.level}
+			got := dc.ParseDebugLevel()
+			if got != tt.want {
+				t.Errorf("ParseDebugLevel(%q) = %v, want %v", tt.level, got, tt.want)
+			}
+		})
 	}
 }
 

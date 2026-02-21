@@ -16,6 +16,7 @@ import (
 	"murmur/internal/api"
 	"murmur/internal/bus"
 	"murmur/internal/config"
+	"murmur/internal/dashboard"
 	"murmur/internal/db"
 	"murmur/internal/irc"
 	"murmur/internal/llm"
@@ -48,6 +49,10 @@ type Server struct {
 	scheduler       *Scheduler
 	commands        *CommandHandler
 	agent           *Agent
+	permissions     *PermissionManager
+	nickserv        atomic.Pointer[NickServVerifier] // NickServ identity verification; nil if disabled
+	permCleanupStop context.CancelFunc               // stops the PM cleanup goroutine; nil if PM not active
+	monitorCtx      context.Context                  // lifecycle context for background goroutines; set in Run()
 
 	// allowedUsers is an atomic copy of the allowed users list, used by
 	// isAllowed() for lock-free reads. Updated during Reload().
@@ -70,6 +75,9 @@ type Server struct {
 
 	// httpServer is the REST API HTTP server, nil when API is disabled.
 	httpServer *http.Server
+
+	// dashboardServer is the dashboard HTTP server, nil when dashboard is disabled.
+	dashboardServer *http.Server
 
 	// ircLogHandler is the IRC debug channel log handler, nil when debug
 	// channel is not configured. Exposed so commands can toggle it.
@@ -107,11 +115,19 @@ func New(cfg *config.ServerConfig, configPath string, logger *slog.Logger) (*Ser
 	// both stderr and the IRC channel. The IRC handler starts disabled and
 	// is activated after the IRC connection is established in Run().
 	var ircLogHandler *irc.IRCLogHandler
-	if cfg.Server.DebugChannel != "" {
-		ircLogHandler = irc.NewIRCLogHandler(cfg.Server.DebugChannel, slog.LevelDebug)
+	if cfg.Debug.Channel != "" {
+		debugLevel := cfg.Debug.ParseDebugLevel()
+		ircLogHandler = irc.NewIRCLogHandler(cfg.Debug.Channel, debugLevel)
+		if !cfg.Debug.Enabled {
+			ircLogHandler.SetEnabled(false)
+		}
 		multiHandler := irc.NewMultiHandler(logger.Handler(), ircLogHandler)
 		logger = slog.New(multiHandler)
-		logger.Info("debug channel configured", "channel", cfg.Server.DebugChannel)
+		logger.Info("debug channel configured",
+			"channel", cfg.Debug.Channel,
+			"level", debugLevel.String(),
+			"enabled", cfg.Debug.Enabled,
+		)
 	}
 
 	channels := []string{cfg.IRC.Channels.Main, cfg.IRC.Channels.Bus}
@@ -262,6 +278,22 @@ func New(cfg *config.ServerConfig, configPath string, logger *slog.Logger) (*Ser
 	// Create the approval manager for the tool call approval flow.
 	approvals := NewApprovalManager(logger)
 
+	// Load permissions config and create the permission manager.
+	permCfg, err := config.LoadPermissionsConfig(cfg.Security.PermissionsFile)
+	if err != nil {
+		database.Close()
+		return nil, fmt.Errorf("server.New: load permissions config: %w", err)
+	}
+	var pm *PermissionManager
+	if len(permCfg.Users) > 0 || len(permCfg.Channels) > 0 {
+		pm = NewPermissionManager(permCfg, logger)
+		pm.SetLogPermissions(cfg.Debug.LogPermissions)
+		logger.Info("permissions loaded",
+			"users", len(permCfg.Users),
+			"channels", len(permCfg.Channels),
+		)
+	}
+
 	// Create the agent (may have zero providers — commands still work).
 	agent := NewAgent(
 		providers,
@@ -281,8 +313,41 @@ func New(cfg *config.ServerConfig, configPath string, logger *slog.Logger) (*Ser
 		2*time.Minute,
 		approvalTimeout,
 		cfg.Server.Verbose,
+		cfg.Debug,
 		logger,
 	)
+
+	// Wire the permission manager into the agent.
+	agent.SetPermissions(pm)
+
+	// Create NickServ verifier if permissions require identity verification.
+	// Default: enabled when permissions.toml has [users] entries.
+	var nickserv *NickServVerifier
+	requireNickServ := cfg.Security.RequireNickServ || len(permCfg.Users) > 0
+	if requireNickServ {
+		cacheTTL := defaultNickServCacheTTL
+		if cfg.Security.NickServCacheTTL != "" {
+			ttl, err := time.ParseDuration(cfg.Security.NickServCacheTTL)
+			if err != nil {
+				database.Close()
+				return nil, fmt.Errorf("server.New: parse nickserv_cache_ttl: %w", err)
+			}
+			if ttl < 0 {
+				database.Close()
+				return nil, fmt.Errorf("server.New: nickserv_cache_ttl must be non-negative")
+			}
+			cacheTTL = ttl
+		}
+		whoisFn := func(nick string) (string, error) {
+			result, err := conn.Whois(nick)
+			if err != nil {
+				return "", err
+			}
+			return result.Account, nil
+		}
+		nickserv = NewNickServVerifier(whoisFn, cacheTTL, logger)
+		logger.Info("NickServ verification enabled", "cache_ttl", cacheTTL)
+	}
 
 	// Create the task scheduler (may be nil if not enabled).
 	var scheduler *Scheduler
@@ -346,16 +411,35 @@ func New(cfg *config.ServerConfig, configPath string, logger *slog.Logger) (*Ser
 		scheduler:       scheduler,
 		commands:        commands,
 		agent:           agent,
+		permissions:     pm,
 		flood:           flood,
 		startTime:       time.Now(),
 		ircLogHandler:   ircLogHandler,
 	}
 	s.allowedUsers.Store(&cfg.Security.AllowedUsers)
+	if nickserv != nil {
+		s.nickserv.Store(nickserv)
+	}
 
 	// Wire the reloader to the command handler now that the server exists.
 	// This breaks the circular dependency: commands needs a Reloader, but
 	// the server needs commands to be created first.
 	commands.reloader = s
+
+	// Wire permissions into the command handler for admin commands (!user, !channel).
+	// Also register the permissions_manage LLM tool when a PermissionsWriter
+	// can be created (requires both PM and a permissions file path).
+	if pm != nil {
+		commands.permissions.Store(pm)
+		if cfg.Security.PermissionsFile != "" {
+			pw := NewPermissionsWriter(cfg.Security.PermissionsFile, logger)
+			commands.permWriter.Store(pw)
+			if err := RegisterPermissionsTool(serverTools, pw, pm, s, logger); err != nil {
+				database.Close()
+				return nil, fmt.Errorf("server.New: %w", err)
+			}
+		}
+	}
 
 	// Wire the late-binding reload pointer for the config_manage tool.
 	reloadPtr = s
@@ -403,11 +487,11 @@ func New(cfg *config.ServerConfig, configPath string, logger *slog.Logger) (*Ser
 	// Join the debug channel and activate the IRC log handler on connect.
 	if ircLogHandler != nil {
 		conn.OnConnect(func() {
-			if err := conn.Join(cfg.Server.DebugChannel); err != nil {
-				logger.Warn("failed to join debug channel", "channel", cfg.Server.DebugChannel, "error", err)
+			if err := conn.Join(cfg.Debug.Channel); err != nil {
+				logger.Warn("failed to join debug channel", "channel", cfg.Debug.Channel, "error", err)
 			}
 			ircLogHandler.SetConnection(conn)
-			logger.Info("debug channel active", "channel", cfg.Server.DebugChannel)
+			logger.Info("debug channel active", "channel", cfg.Debug.Channel)
 		})
 	}
 
@@ -435,6 +519,7 @@ func (s *Server) Run(ctx context.Context) error {
 	// when Connect returns (either from context cancellation or fatal error).
 	monitorCtx, monitorCancel := context.WithCancel(ctx)
 	defer monitorCancel()
+	s.monitorCtx = monitorCtx
 
 	// Start the registry heartbeat monitor.
 	var monitorWg sync.WaitGroup
@@ -443,6 +528,13 @@ func (s *Server) Run(ctx context.Context) error {
 		defer monitorWg.Done()
 		s.registry.StartMonitor(monitorCtx)
 	}()
+
+	// Start the permission manager cleanup goroutine.
+	if s.permissions != nil {
+		cleanupCtx, cleanupCancel := context.WithCancel(monitorCtx)
+		s.permCleanupStop = cleanupCancel
+		s.permissions.StartCleanup(cleanupCtx)
+	}
 
 	// Start the task scheduler if enabled.
 	if s.scheduler != nil {
@@ -475,6 +567,39 @@ func (s *Server) Run(ctx context.Context) error {
 			defer monitorWg.Done()
 			<-monitorCtx.Done()
 			api.GracefulShutdown(context.Background(), s.httpServer, s.logger)
+		}()
+	}
+
+	// Start the dashboard server if enabled.
+	if startCfg.Dashboard.Enabled {
+		sessionTimeout, parseErr := time.ParseDuration(startCfg.Dashboard.SessionTimeout)
+		if parseErr != nil {
+			s.logger.Warn("invalid dashboard.session_timeout, using 24h", "error", parseErr)
+			sessionTimeout = 24 * time.Hour
+		}
+
+		sessions := dashboard.NewSessionStore(sessionTimeout, s.logger)
+		dashHandler := dashboard.NewHandler(sessions, startCfg.Dashboard, startCfg.IRC, s.statusProvider(), s.logger)
+		s.dashboardServer = api.NewHTTPServer(startCfg.Dashboard.Listen, dashHandler, s.logger)
+
+		done := make(chan struct{})
+		sessions.StartCleanup(done)
+
+		monitorWg.Add(1)
+		go func() {
+			defer monitorWg.Done()
+			s.logger.Info("starting dashboard server", "listen", startCfg.Dashboard.Listen)
+			if err := s.dashboardServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				s.logger.Error("dashboard server error", "error", err)
+			}
+		}()
+
+		monitorWg.Add(1)
+		go func() {
+			defer monitorWg.Done()
+			<-monitorCtx.Done()
+			close(done) // stop session cleanup
+			api.GracefulShutdown(context.Background(), s.dashboardServer, s.logger)
 		}()
 	}
 
@@ -568,28 +693,115 @@ func (s *Server) Reload() error {
 		return fmt.Errorf("Reload: %w", err)
 	}
 
+	// Reload permissions config.
+	permCfg, err := config.LoadPermissionsConfig(cfg.Security.PermissionsFile)
+	if err != nil {
+		return fmt.Errorf("Reload: load permissions config: %w", err)
+	}
+	if s.permissions != nil {
+		s.permissions.Update(permCfg)
+		s.permissions.SetLogPermissions(cfg.Debug.LogPermissions)
+		s.logger.Info("permissions reloaded",
+			"users", len(permCfg.Users),
+			"channels", len(permCfg.Channels),
+		)
+	} else if len(permCfg.Users) > 0 || len(permCfg.Channels) > 0 {
+		// Permissions were added after initial startup — create a new manager
+		// and start its cleanup goroutine.
+		pm := NewPermissionManager(permCfg, s.logger)
+		pm.SetLogPermissions(cfg.Debug.LogPermissions)
+		s.agent.SetPermissions(pm)
+		s.permissions = pm
+		// Wire into command handler for admin commands.
+		s.commands.permissions.Store(pm)
+		if cfg.Security.PermissionsFile != "" && s.commands.permWriter.Load() == nil {
+			pw := NewPermissionsWriter(cfg.Security.PermissionsFile, s.logger)
+			s.commands.permWriter.Store(pw)
+			// Register the permissions_manage LLM tool if not already present.
+			if !s.serverTools.HasTool("permissions_manage") {
+				if err := RegisterPermissionsTool(s.serverTools, pw, pm, s, s.logger); err != nil {
+					s.logger.Error("Reload: failed to register permissions_manage tool", "error", err)
+				}
+			}
+		}
+		// Derive cleanup context from the server's lifecycle context. If Reload()
+		// is called before Run() (monitorCtx not yet set), fall back to
+		// context.Background() — the goroutine will be cleaned up when Run()
+		// eventually sets up proper lifecycle management.
+		parentCtx := s.monitorCtx
+		if parentCtx == nil {
+			parentCtx = context.Background()
+		}
+		cleanupCtx, cleanupCancel := context.WithCancel(parentCtx)
+		s.permCleanupStop = cleanupCancel
+		pm.StartCleanup(cleanupCtx)
+		s.logger.Info("permissions enabled via reload",
+			"users", len(permCfg.Users),
+			"channels", len(permCfg.Channels),
+		)
+	}
+
+	// Update NickServ verifier: recreate on enable or TTL change, disable if
+	// no longer required. Always recreating when enabled is cheap (just a
+	// struct with empty maps) and ensures TTL changes take effect.
+	requireNickServ := cfg.Security.RequireNickServ || len(permCfg.Users) > 0
+	if requireNickServ {
+		cacheTTL := defaultNickServCacheTTL
+		if cfg.Security.NickServCacheTTL != "" {
+			ttl, err := time.ParseDuration(cfg.Security.NickServCacheTTL)
+			if err != nil {
+				return fmt.Errorf("Reload: parse nickserv_cache_ttl: %w", err)
+			}
+			if ttl < 0 {
+				return fmt.Errorf("Reload: nickserv_cache_ttl must be non-negative")
+			}
+			cacheTTL = ttl
+		}
+		whoisFn := func(nick string) (string, error) {
+			result, err := s.conn.Whois(nick)
+			if err != nil {
+				return "", err
+			}
+			return result.Account, nil
+		}
+		s.nickserv.Store(NewNickServVerifier(whoisFn, cacheTTL, s.logger))
+		s.logger.Info("NickServ verification reloaded", "cache_ttl", cacheTTL)
+	} else if !requireNickServ && s.nickserv.Load() != nil {
+		s.nickserv.Store(nil)
+		s.logger.Info("NickServ verification disabled via reload")
+	}
+
 	// Apply changes atomically to each component.
 	s.agent.UpdateProviders(providers, cfg.LLM.Default)
-	s.agent.UpdateConfig(cfg.Server.Verbose, cfg.Memory.MaxHistory, cfg.Memory.CrossChannelContext, approvalTimeout, systemPrompt)
+	s.agent.UpdateConfig(cfg.Server.Verbose, cfg.Memory.MaxHistory, cfg.Memory.CrossChannelContext, approvalTimeout, systemPrompt, cfg.Debug)
 	s.commands.UpdateAllowedUsers(cfg.Security.AllowedUsers)
 	s.allowedUsers.Store(&cfg.Security.AllowedUsers)
 	s.memory.UpdateConfig(cfg.Memory.MaxHistory, cfg.Memory.SummaryThreshold)
 
-	// Toggle debug channel handler.
+	// Toggle debug channel handler and update level.
 	if s.ircLogHandler != nil {
-		oldDebugCh := s.loadCfg().Server.DebugChannel
-		if cfg.Server.DebugChannel == "" {
+		oldDebugCh := s.loadCfg().Debug.Channel
+		if cfg.Debug.Channel == "" || !cfg.Debug.Enabled {
 			s.ircLogHandler.SetEnabled(false)
 			s.logger.Info("debug channel disabled by reload")
 		} else {
 			s.ircLogHandler.SetEnabled(true)
-			if oldDebugCh != cfg.Server.DebugChannel {
-				s.logger.Warn("debug_channel name changed; new channel requires restart to take effect",
+			s.ircLogHandler.SetLevel(cfg.Debug.ParseDebugLevel())
+			if oldDebugCh != cfg.Debug.Channel {
+				s.logger.Warn("debug channel name changed; new channel requires restart to take effect",
 					"old", oldDebugCh,
-					"new", cfg.Server.DebugChannel,
+					"new", cfg.Debug.Channel,
 				)
 			}
-			s.logger.Info("debug channel enabled by reload", "channel", cfg.Server.DebugChannel)
+			s.logger.Info("debug channel updated by reload",
+				"channel", cfg.Debug.Channel,
+				"enabled", cfg.Debug.Enabled,
+				"level", cfg.Debug.LogLevel,
+				"log_tool_calls", cfg.Debug.LogToolCalls,
+				"log_llm_requests", cfg.Debug.LogLLMRequests,
+				"log_bus_protocol", cfg.Debug.LogBusProtocol,
+				"log_permissions", cfg.Debug.LogPermissions,
+			)
 		}
 	}
 
@@ -673,7 +885,7 @@ func (s *Server) registerBusHandlers() {
 					s.logger.Error("bus: agent event goroutine panicked", "recover", rec)
 				}
 			}()
-			if err := s.agent.HandleEvent(context.Background(), channel, m.Source, m.EventType, m.Summary, m.Data); err != nil {
+			if err := s.agent.HandleEvent(context.Background(), channel, "_system", m.Source, m.EventType, m.Summary, m.Data); err != nil {
 				s.logger.Error("bus: agent HandleEvent failed", "error", err, "event_id", m.EventID)
 				return
 			}
@@ -705,9 +917,6 @@ func (s *Server) registerBusHandlers() {
 // It checks authorization, dispatches ! commands, and spawns agent loops
 // for regular messages. The ctx parameter is the server's run context,
 // passed via closure from Run() to avoid storing it as a struct field.
-//
-// TODO: Enforce SecurityConfig.RequireNickServ — verify NickServ identification
-// before processing messages from allowed users. (Phase 3)
 func (s *Server) handleUserMessage(ctx context.Context, channel, nick, message string) {
 	s.logger.Debug("user message received",
 		"channel", channel,
@@ -730,9 +939,17 @@ func (s *Server) handleUserMessage(ctx context.Context, channel, nick, message s
 		return
 	}
 
-	// Try command handler first. Commands bypass flood protection so that
-	// !flush and !forget always work even during a flood.
+	// Try command handler first. Commands bypass flood protection and
+	// NickServ verification so that !help, !status, etc. always work.
 	if s.commands.HandleCommand(channel, nick, message) {
+		return
+	}
+
+	// NickServ identity verification: if enabled, require users to be
+	// identified before their messages reach the agent. Commands (above)
+	// still work without identification.
+	if nv := s.nickserv.Load(); nv != nil && !nv.IsIdentified(nick) {
+		s.conn.Send(channel, nick+": you must be identified with NickServ to use this bot")
 		return
 	}
 
@@ -750,6 +967,18 @@ func (s *Server) handleUserMessage(ctx context.Context, channel, nick, message s
 			"channel", channel,
 			"nick", nick,
 		)
+		return
+	}
+
+	// Per-user rate limiting from permissions config. This is a longer-term
+	// hourly rate limit (vs the flood guard's short burst protection).
+	// Admins with max_messages_per_hour = -1 bypass this check.
+	if pm := s.permissions; pm != nil && !pm.CheckRateLimit(nick) {
+		s.logger.Info("message dropped by permissions rate limit",
+			"channel", channel,
+			"nick", nick,
+		)
+		s.conn.Send(channel, nick+": rate limit exceeded, please try again later")
 		return
 	}
 
@@ -804,4 +1033,49 @@ func (s *Server) loadCfg() *config.ServerConfig {
 // Registry returns the server's client registry for external access.
 func (s *Server) Registry() *Registry {
 	return s.registry
+}
+
+// statusProvider returns a dashboard.StatusProvider backed by this server's
+// live state. The returned adapter captures a pointer to the server and reads
+// current values on each call, so it always reflects the latest state.
+func (s *Server) statusProvider() dashboard.StatusProvider {
+	return &serverStatusAdapter{s: s}
+}
+
+// serverStatusAdapter implements dashboard.StatusProvider by reading live
+// state from a *Server. It is a thin wrapper to avoid a circular import
+// between internal/dashboard and internal/server.
+type serverStatusAdapter struct {
+	s *Server
+}
+
+// GetStatus returns a snapshot of the server's current status.
+func (a *serverStatusAdapter) GetStatus() dashboard.StatusInfo {
+	uptime := time.Since(a.s.startTime)
+	clients := a.s.registry.GetOnlineClients()
+	toolCount := len(a.s.registry.AllTools()) + len(a.s.serverTools.AllToolDefs())
+
+	details := make([]dashboard.ClientDetail, 0, len(clients))
+	for _, c := range clients {
+		toolNames := make([]string, 0, len(c.Tools))
+		for _, t := range c.Tools {
+			toolNames = append(toolNames, t.Name)
+		}
+		details = append(details, dashboard.ClientDetail{
+			ClientID: c.ClientID,
+			Hostname: c.Hostname,
+			Autonomy: c.Autonomy,
+			Tools:    toolNames,
+		})
+	}
+
+	return dashboard.StatusInfo{
+		ServerName:    a.s.loadCfg().Server.Name,
+		Provider:      a.s.agent.GetProvider(),
+		Clients:       len(clients),
+		Tools:         toolCount,
+		Uptime:        uptime,
+		UptimeHuman:   uptime.Truncate(time.Second).String(),
+		ClientDetails: details,
+	}
 }

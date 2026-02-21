@@ -129,6 +129,13 @@ var migrations = []string{
 	// 'run_at' is the absolute fire time for one-shot tasks (NULL for cron tasks).
 	`ALTER TABLE scheduled_tasks ADD COLUMN type TEXT NOT NULL DEFAULT 'cron';
 	 ALTER TABLE scheduled_tasks ADD COLUMN run_at DATETIME;`,
+
+	// Migration 8: Add created_by column to scheduled_tasks for permission tracking.
+	// Stores the IRC nick of the user who created the task. When the scheduler
+	// fires the task, the creator's current permissions are used for tool filtering.
+	// Empty string (default) means legacy tasks with no creator — these bypass
+	// permission filtering for backward compatibility.
+	`ALTER TABLE scheduled_tasks ADD COLUMN created_by TEXT NOT NULL DEFAULT '';`,
 }
 
 // Migrate runs all pending schema migrations. It creates the schema_version

@@ -85,7 +85,7 @@ func RegisterSchedulerTools(registry *ToolRegistry, scheduler *Scheduler, defaul
 				},
 				"required": ["schedule", "description"]
 			}`),
-			Handler: func(_ context.Context, args map[string]any) (string, error) {
+			Handler: func(ctx context.Context, args map[string]any) (string, error) {
 				schedule, err := tools.RequireStringArg(args, "schedule")
 				if err != nil {
 					return "", err
@@ -96,7 +96,15 @@ func RegisterSchedulerTools(registry *ToolRegistry, scheduler *Scheduler, defaul
 				}
 				channel := tools.OptionalStringArg(args, "channel", defaultChannel)
 
-				id, err := scheduler.AddTask(description, schedule, description, channel)
+				// Extract the requesting user's nick from context for permission tracking.
+				// Fail closed: if the nick is missing, reject the request rather than
+				// creating a task that bypasses permission filtering.
+				createdBy, ok := ctx.Value(requestNickKey{}).(string)
+				if !ok || createdBy == "" {
+					return "", fmt.Errorf("task_add: unable to identify task creator from context")
+				}
+
+				id, err := scheduler.AddTask(description, schedule, description, channel, createdBy)
 				if err != nil {
 					return "", fmt.Errorf("task_add: %w", err)
 				}
@@ -120,7 +128,7 @@ func RegisterSchedulerTools(registry *ToolRegistry, scheduler *Scheduler, defaul
 				},
 				"required": ["message", "time"]
 			}`),
-			Handler: func(_ context.Context, args map[string]any) (string, error) {
+			Handler: func(ctx context.Context, args map[string]any) (string, error) {
 				message, err := tools.RequireStringArg(args, "message")
 				if err != nil {
 					return "", err
@@ -136,8 +144,16 @@ func RegisterSchedulerTools(registry *ToolRegistry, scheduler *Scheduler, defaul
 					return "", fmt.Errorf("reminder_add: %w", err)
 				}
 
+				// Extract the requesting user's nick from context for permission tracking.
+				// Fail closed: if the nick is missing, reject the request rather than
+				// creating a task that bypasses permission filtering.
+				createdBy, ok := ctx.Value(requestNickKey{}).(string)
+				if !ok || createdBy == "" {
+					return "", fmt.Errorf("reminder_add: unable to identify task creator from context")
+				}
+
 				action := "[Reminder] " + message
-				id, err := scheduler.AddOneShotTask(message, runAt, action, channel)
+				id, err := scheduler.AddOneShotTask(message, runAt, action, channel, createdBy)
 				if err != nil {
 					return "", fmt.Errorf("reminder_add: %w", err)
 				}
@@ -175,8 +191,12 @@ func RegisterSchedulerTools(registry *ToolRegistry, scheduler *Scheduler, defaul
 							schedInfo = "at " + t.RunAt.Time.UTC().Format("2006-01-02 15:04 UTC")
 						}
 					}
-					lines = append(lines, fmt.Sprintf("  #%d [%s] [%s] %s — %q (next: %s)",
-						t.ID, typeLabel, status, schedInfo, t.Name, nextRun))
+					creator := ""
+					if t.CreatedBy != "" {
+						creator = ", by:" + t.CreatedBy
+					}
+					lines = append(lines, fmt.Sprintf("  #%d [%s] [%s] %s — %q (next: %s%s)",
+						t.ID, typeLabel, status, schedInfo, t.Name, nextRun, creator))
 				}
 				return "Scheduled tasks:\n" + strings.Join(lines, "\n"), nil
 			},

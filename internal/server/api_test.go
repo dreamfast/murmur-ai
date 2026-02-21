@@ -73,6 +73,7 @@ func newTestAPIEnv(t *testing.T) *testAPIEnv {
 		2*time.Second,
 		2*time.Second,
 		false,
+		config.DebugConfig{},
 		logger,
 	)
 	// Suppress IRC sends in tests.
@@ -668,7 +669,7 @@ func TestAPI_AuthMiddleware_EmptyConfigKey(t *testing.T) {
 	providers := map[string]llm.Provider{"test-provider": mock}
 
 	agent := NewAgent(providers, "test-provider", serverTools, registry, memory, router,
-		nil, nil, "test", "test-server", "#test-bus", 100, 0, nil, 2*time.Second, 2*time.Second, false, logger)
+		nil, nil, "test", "test-server", "#test-bus", 100, 0, nil, 2*time.Second, 2*time.Second, false, config.DebugConfig{}, logger)
 	agent.sendFunc = func(_, _ string) {}
 
 	cfg := &config.ServerConfig{}
@@ -734,5 +735,142 @@ func TestAPI_StatusToolCount(t *testing.T) {
 	clientCount := data["clients"].(float64)
 	if clientCount != 1 {
 		t.Errorf("clients = %v, want 1", clientCount)
+	}
+}
+
+// newTestAPIEnvWithPerms creates a test API environment with a PermissionManager
+// that has per-user API keys configured.
+func newTestAPIEnvWithPerms(t *testing.T) *testAPIEnv {
+	t.Helper()
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := database.Migrate(); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	t.Cleanup(func() { database.Close() })
+
+	registry := NewRegistry(2*time.Minute, logger)
+	memory := NewMemory(database, 100, 80, nil, logger)
+	sender := bus.NewSender(nil, "#murmur-bus", "", 0, logger)
+	router := NewRouter(registry, sender, logger)
+	serverTools := NewToolRegistry()
+
+	mock := &llm.MockProvider{
+		NameVal: "test-provider",
+		Responses: []*llm.ChatResponse{
+			{Content: "event processed"},
+		},
+	}
+	providers := map[string]llm.Provider{"test-provider": mock}
+
+	agent := NewAgent(
+		providers,
+		"test-provider",
+		serverTools,
+		registry,
+		memory,
+		router,
+		nil, nil,
+		"You are a test assistant.",
+		"test-server",
+		"#test-bus",
+		100, 0, nil,
+		2*time.Second,
+		2*time.Second,
+		false,
+		config.DebugConfig{},
+		logger,
+	)
+	agent.sendFunc = func(_, _ string) {}
+
+	// Create a PermissionManager with per-user API keys.
+	permCfg := &config.PermissionsConfig{
+		Users: map[string]config.UserPermissions{
+			"alice": {Role: "user", APIKey: "alice-secret-key"},
+			"admin": {Role: "admin", APIKey: "admin-secret-key"},
+		},
+	}
+	pm := NewPermissionManager(permCfg, logger)
+
+	cfg := &config.ServerConfig{}
+	cfg.Server.Name = "test-murmur"
+	cfg.IRC.Channels.Main = "#murmur"
+	cfg.API.Enabled = true
+	cfg.API.Listen = "127.0.0.1:0"
+	cfg.API.APIKey = "global-secret"
+
+	s := &Server{
+		cfg:         cfg,
+		registry:    registry,
+		logger:      logger,
+		database:    database,
+		serverTools: serverTools,
+		agent:       agent,
+		permissions: pm,
+		startTime:   time.Now(),
+	}
+
+	handler := newServerAPIMux(s)
+
+	return &testAPIEnv{
+		server:  s,
+		handler: handler,
+	}
+}
+
+func TestAPI_PostEvent_PerUserKey(t *testing.T) {
+	t.Parallel()
+	env := newTestAPIEnvWithPerms(t)
+
+	body := `{"source":"webhook","event_type":"deploy","summary":"Deploy started","event_id":"per-user-1"}`
+	req := httptest.NewRequest("POST", "/api/v1/events", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer alice-secret-key")
+	w := httptest.NewRecorder()
+	env.handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusAccepted, w.Body.String())
+	}
+
+	env.server.agentWg.Wait()
+}
+
+func TestAPI_PostEvent_GlobalKey(t *testing.T) {
+	t.Parallel()
+	env := newTestAPIEnvWithPerms(t)
+
+	body := `{"source":"webhook","event_type":"deploy","summary":"Deploy started","event_id":"global-1"}`
+	req := httptest.NewRequest("POST", "/api/v1/events", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer global-secret")
+	w := httptest.NewRecorder()
+	env.handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusAccepted, w.Body.String())
+	}
+
+	env.server.agentWg.Wait()
+}
+
+func TestAPI_PostEvent_InvalidKey(t *testing.T) {
+	t.Parallel()
+	env := newTestAPIEnvWithPerms(t)
+
+	body := `{"source":"webhook","event_type":"deploy","summary":"Deploy started"}`
+	req := httptest.NewRequest("POST", "/api/v1/events", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer wrong-key")
+	w := httptest.NewRecorder()
+	env.handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusUnauthorized)
 	}
 }
