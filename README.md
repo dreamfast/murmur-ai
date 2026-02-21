@@ -24,6 +24,37 @@ The name comes from a "murmuration" -- the coordinated movement of a flock of st
   files     dns,rss   comfyui
 ```
 
+## How It Compares
+
+Murmur takes a fundamentally different architectural approach from other AI assistants. Instead of running as a monolithic process with direct system access, Murmur uses IRC as a message bus to separate the LLM brain from tool execution. The server never touches your filesystem or runs shell commands -- clients on remote machines do that, each with their own autonomy level and tool whitelist.
+
+This isn't about being "better" -- it's a different set of tradeoffs. The table below compares the approaches factually.
+
+| | Murmur | Claude Code | Codex CLI | Cline | Open Interpreter | Aider | Goose | SWE-agent |
+|---|---|---|---|---|---|---|---|---|
+| **Architecture** | Client-server over IRC | Monolithic CLI | Monolithic CLI | VS Code extension | Monolithic CLI | Monolithic CLI | Monolithic CLI/app | Python + Docker |
+| **Execution isolation** | Docker containers + network separation (clients run on separate machines) | OS sandbox (Seatbelt/Landlock) | OS sandbox (Seatbelt/Landlock) | VS Code terminal (no sandbox) | None | N/A (edit-only) | Docker optional | Docker (default) |
+| **Approval flow** | Per-client autonomy levels (`report`/`approve`/`auto`) | Permission prompts | Sandbox modes + approval policies | Per-action GUI approval | Basic y/n prompt | N/A | Unknown | None (automated) |
+| **Command restriction** | Whitelists per client, deny-lists for config | Allowlists/blocklists | Protected paths, trust classification | User approval gate | None | N/A | Unknown | Custom ACI tools |
+| **Network isolation** | Tool execution on air-gapped clients possible; `--network=none` Docker | Sandbox can disable network | Network disabled by default in sandbox | None | None | N/A | Unknown | Container-scoped |
+| **Multi-LLM** | Any OpenAI-compatible endpoint (OpenRouter, Ollama, Kimi, GLM, etc.) | Anthropic only | OpenAI only | Yes (many providers) | Yes (LiteLLM) | Yes (LiteLLM) | Yes (any LLM) | Yes |
+| **Secrets management** | Encrypted vault (AES-256-GCM + Argon2id) | None (env vars) | None (env vars) | None (env vars) | None | None | None | None |
+| **Self-hosted** | Fully (IRC server, LLM, tools -- no external dependencies) | Needs Anthropic API | Needs OpenAI API | BYOK (needs API) | Yes (with Ollama) | Yes (with Ollama) | Yes | Yes |
+| **Communication** | IRC (any client) + REST API | Terminal CLI | Terminal CLI | VS Code IDE | Terminal CLI | Terminal CLI | CLI + Desktop app | CLI + Web GUI |
+| **Custom tools** | LLM creates tools at runtime (shell, HTTP, code, pipeline backends) | MCP servers | MCP servers, Skills | MCP servers | Code generation | Config commands | MCP servers | YAML tool bundles |
+| **Distributed** | Yes (multiple clients across machines) | No | No | No | No | No | No | No |
+| **Hot reload** | SIGHUP / `!reload` / auto-reload on config change | No | No | No | No | No | No | No |
+| **License** | MIT | Proprietary | Apache-2.0 | Apache-2.0 | AGPL-3.0 | Apache-2.0 | Apache-2.0 | MIT |
+
+**Key architectural differences:**
+
+- **IRC as the bus**: The server and clients communicate over IRC, a battle-tested protocol with built-in authentication (NickServ), channel access control (+i, +k), TLS, and flood protection. No custom networking code needed -- IRC handles message routing, presence, and access control.
+- **Physical separation**: Tool-executing clients can run on entirely different machines, networks, or even air-gapped systems. The LLM server never has direct access to the tools it invokes.
+- **Per-client security policies**: Each client independently declares its autonomy level and tool whitelist. A laptop client might require approval for every shell command while a monitoring VPS runs system checks automatically.
+- **No vendor lock-in**: Works with any OpenAI-compatible LLM endpoint. Switch providers per-channel at runtime. Run fully offline with Ollama.
+
+---
+
 ## Getting Started
 
 Everything runs in Docker. You need **Docker** and **an LLM API key** (OpenRouter, OpenAI, or any OpenAI-compatible endpoint).
@@ -92,6 +123,8 @@ hey murmur, what's the uptime on this machine?
 
 That's it. You're talking to your agent.
 
+You can also DM the bot directly -- private messages work the same as channel messages, with separate conversation history per user.
+
 ### 5. Check the logs
 
 ```bash
@@ -137,7 +170,7 @@ Switch models at runtime in IRC:
 
 Each channel can use a different provider. The setting is persisted across restarts.
 
-Restart the server after config changes: `docker compose restart murmur-server`
+Config changes can be applied without restarting -- see [Hot Config Reload](#hot-config-reload).
 
 ### Adding more secrets to the vault
 
@@ -158,6 +191,41 @@ Then reference them in config files with the `vault:` prefix:
 
 ```toml
 api_key = "vault:brave-search-key"
+```
+
+---
+
+## Private Messages (DMs)
+
+The bot responds to private messages the same way it responds in channels. Each user gets their own conversation history, separate from any channel.
+
+- DM the bot's nick directly in your IRC client
+- Commands (`!status`, `!model`, `!help`, etc.) work in DMs
+- Cross-channel context is excluded from DMs to keep private conversations focused
+- The system prompt tells the LLM it's in a private conversation with the user's nick
+
+No configuration needed -- DM support is always enabled.
+
+---
+
+## Reminders
+
+The LLM can set one-time reminders that fire at a specific time. Just ask naturally:
+
+```
+remind me to check the deployment in 2 hours
+set a reminder for 2026-03-01T09:00:00Z to review the quarterly report
+```
+
+The LLM uses the `reminder_add` tool with either absolute (ISO 8601) or relative (`+2h`, `+30m`, `+1d`) times. When the reminder fires, the message is delivered to the channel where it was set.
+
+Reminders are stored in SQLite alongside recurring scheduled tasks. After firing, they auto-disable and are cleaned up after 30 days.
+
+Manage reminders with the same task commands:
+
+```
+!tasks                        # list all tasks and reminders
+!task remove 5                # remove a reminder by ID
 ```
 
 ---
@@ -385,6 +453,70 @@ config_path = "/etc/murmur/server.toml"
 
 Sensitive keys (`security.*`, `vault.*`, `irc.password`, `api.api_key`, `llm.providers.*.api_key`) are protected -- the LLM cannot read or modify them. Vault references are masked in output.
 
+When the `config_manage` tool writes a value, the config is automatically reloaded -- no restart needed.
+
+---
+
+## Hot Config Reload
+
+Config changes can be applied without restarting the server. Three ways to trigger a reload:
+
+1. **SIGHUP signal**: `kill -HUP <pid>` or `docker kill -s HUP murmur-server`
+2. **IRC command**: `!reload`
+3. **Automatic**: The `config_manage` tool triggers a reload after every successful write
+
+### What reloads
+
+| Setting | Reloadable |
+|---------|-----------|
+| LLM providers (add, remove, change models/keys) | Yes |
+| Default provider | Yes |
+| System prompt | Yes |
+| `verbose` mode | Yes |
+| `max_history` / `summary_threshold` | Yes |
+| `cross_channel_context` | Yes |
+| `approval_timeout` | Yes |
+| `allowed_users` | Yes |
+| Debug channel (enable/disable) | Yes |
+| IRC connection (server, port, nick, TLS) | No -- restart required |
+| Database path | No -- restart required |
+| Vault config | No -- restart required |
+| API listen address | No -- restart required |
+| Bus key | No -- restart required |
+| Tool configs (shell, code_exec, etc.) | No -- restart required |
+
+### Example
+
+```bash
+# Change the default model without restarting
+docker exec murmur-server kill -HUP 1
+
+# Or from IRC
+!reload
+```
+
+---
+
+## Debug IRC Channel
+
+A dedicated IRC channel that receives live structured log output from the server. Useful for real-time debugging without tailing container logs.
+
+```toml
+[server]
+debug_channel = "#murmur-debug"
+```
+
+The server joins the debug channel on startup and forwards `slog` output as formatted IRC messages. Control it at runtime:
+
+```
+!debug              # toggle on/off
+!debug on           # enable
+!debug off          # disable
+!debug level debug  # set minimum log level (debug, info, warn, error)
+```
+
+Log messages are batched (up to 5 per send, every 500ms) and use a drop-newest buffer (capacity 100) to avoid flooding IRC when log volume is high.
+
 ---
 
 ## Running Clients on Other Machines
@@ -478,8 +610,10 @@ These are handled directly, no LLM involved:
 | `!approve` | Approve the pending tool call |
 | `!deny` | Deny the pending tool call |
 | `!pending` | List pending tool call approvals |
-| `!tasks` | List scheduled tasks |
+| `!tasks` | List scheduled tasks and reminders |
 | `!task` | Manage tasks (`add`, `remove`, `enable`, `disable`) |
+| `!debug` | Toggle debug IRC channel logging |
+| `!reload` | Reload configuration from disk |
 | `!help` | Show all commands |
 
 Everything else you type goes to the LLM agent loop.
@@ -504,7 +638,8 @@ Tools are capabilities provided by clients or the server. The server discovers c
 | `file_ops` | Read, list, search, stat files | Client | Mounted directories |
 | `http_request` | Make outbound HTTP requests with SSRF protection | Server | Nothing extra |
 | `irc_manage` | Join/part channels, send messages, set topics, kick/ban/op, read history | Server | Nothing extra |
-| `config_manage` | Read/write server TOML config at runtime | Server | Nothing extra |
+| `config_manage` | Read/write server TOML config at runtime (auto-reloads) | Server | Nothing extra |
+| `reminder_add` | Set one-time reminders with absolute or relative times | Server | Nothing extra |
 | `note_*` | Persistent key-value notes | Server | Nothing extra |
 | `tool_create/list/delete/enable/disable` | Create and manage custom tools at runtime | Server | Nothing extra |
 
@@ -575,7 +710,7 @@ LLM-driven recurring tasks. The agent decides what tools to use.
 
 ## Conversation Memory
 
-Conversation history is stored in SQLite per channel.
+Conversation history is stored in SQLite per channel (and per user for DMs).
 
 ```toml
 [memory]
@@ -592,6 +727,8 @@ When history exceeds `summary_threshold`, the older half of messages is summariz
 ### Cross-Channel Context
 
 The LLM receives recent messages from up to 5 other joined channels as part of its system prompt. This gives the agent awareness of activity happening elsewhere -- for example, news posted to `#news` can be referenced from `#murmur`. Set `cross_channel_context = -1` to disable.
+
+Cross-channel context is excluded from DMs to keep private conversations focused and avoid leaking channel activity.
 
 `!forget` clears all history and summaries for the current channel.
 
@@ -631,12 +768,12 @@ murmur/
 ├── cmd/murmur/main.go              # CLI entry point
 ├── internal/
 │   ├── server/                      # Agent loop, memory, scheduler, commands, flood protection,
-│   │                                # custom tools, channel settings, REST API
+│   │                                # custom tools, channel settings, REST API, hot reload
 │   ├── client/                      # Tool dispatch, client-side cron, REST API
 │   ├── tools/                       # All tool implementations
 │   ├── api/                         # Shared REST API helpers (JSON, auth, middleware)
 │   ├── bus/                         # IRC bus protocol (chunking, HMAC, multi-part)
-│   ├── irc/                         # IRC connection management (OPER, SAMODE, chanop)
+│   ├── irc/                         # IRC connection management (OPER, SAMODE, chanop, debug log handler)
 │   ├── llm/                         # LLM provider interface (OpenAI-compatible)
 │   ├── config/                      # TOML config loading and validation
 │   ├── db/                          # SQLite + migrations
@@ -800,14 +937,16 @@ block_private_ips = true              # default: true
 - **Code execution** -- Piston sandboxes code via Isolate with configurable memory and timeout limits.
 - **Custom tools** -- shell backends use single-quote escaping to prevent injection. Pipeline backends prevent nesting.
 - **File/git tools** -- only access explicitly allowlisted paths. Symlinks that escape the allowlist are rejected.
-- **Config management** -- sensitive keys (vault, security, passwords, API keys) are protected by a deny-list.
+- **Config management** -- sensitive keys (vault, security, passwords, API keys) are protected by a deny-list. Writes auto-reload.
 - **Vault** -- AES-256-GCM encryption, Argon2id key derivation. Never stored in plaintext.
-- **Allowed users** -- set `security.allowed_users` to restrict who can talk to the bot.
+- **Allowed users** -- set `security.allowed_users` to restrict who can talk to the bot. Reloadable without restart.
 - **Autonomy levels** -- use `approve` for clients with dangerous tools.
 - **Flood protection** -- per-nick rate limiting (3 msgs/10s) and per-channel bounded queues (5 deep) prevent abuse.
 - **Tool circuit breaker** -- tools that fail repeatedly are automatically disabled for the current request.
 - **REST API** -- bind to `127.0.0.1` outside Docker. Use API keys. The `http_request` tool blocks private IPs by default to prevent SSRF.
 - **IRC operator** -- OPER credentials support `vault:` prefix. Input validation prevents IRC command injection.
+- **DMs** -- private message conversations are isolated per user. Cross-channel context is excluded to prevent information leakage.
+- **Hot reload** -- only safe fields are reloadable. IRC connection, database, vault, and tool configs require a restart.
 
 ## License
 
