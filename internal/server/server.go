@@ -912,6 +912,18 @@ func (s *Server) handleUserMessage(ctx context.Context, channel, nick, message s
 		return
 	}
 
+	// Per-user rate limiting from permissions config. This is a longer-term
+	// hourly rate limit (vs the flood guard's short burst protection).
+	// Admins with max_messages_per_hour = -1 bypass this check.
+	if pm := s.permissions; pm != nil && !pm.CheckRateLimit(nick) {
+		s.logger.Info("message dropped by permissions rate limit",
+			"channel", channel,
+			"nick", nick,
+		)
+		s.conn.Send(channel, nick+": rate limit exceeded, please try again later")
+		return
+	}
+
 	// Enqueue the message into the channel's bounded queue. A single
 	// worker goroutine per channel processes messages sequentially.
 	// If the queue is full, the message is dropped (flood protection).
