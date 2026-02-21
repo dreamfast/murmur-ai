@@ -202,6 +202,73 @@ func NewBridge(ctx context.Context, ws *websocket.Conn, cfg BridgeConfig, logger
 		}
 	})
 
+	client.Handlers.AddBg(girc.QUIT, func(_ *girc.Client, e girc.Event) {
+		if e.Source == nil {
+			return
+		}
+		b.sendWS(WSMessage{
+			Type:      "quit",
+			Nick:      e.Source.Name,
+			Text:      e.Last(),
+			Timestamp: eventTimestamp(e),
+		})
+	})
+
+	client.Handlers.AddBg(girc.KICK, func(_ *girc.Client, e girc.Event) {
+		if len(e.Params) < 2 {
+			return
+		}
+		b.sendWS(WSMessage{
+			Type:      "kick",
+			Channel:   e.Params[0],
+			Nick:      e.Params[1],   // kicked user
+			Text:      e.Last(),      // reason
+			Mode:      e.Source.Name, // kicker (reuse Mode field)
+			Timestamp: eventTimestamp(e),
+		})
+	})
+
+	client.Handlers.AddBg(girc.NICK, func(_ *girc.Client, e girc.Event) {
+		if e.Source == nil || len(e.Params) < 1 {
+			return
+		}
+		b.sendWS(WSMessage{
+			Type:      "nick",
+			Nick:      e.Source.Name, // old nick
+			Text:      e.Params[0],   // new nick
+			Timestamp: eventTimestamp(e),
+		})
+	})
+
+	// RPL_TOPIC (332): server sends the existing channel topic on join.
+	// This is distinct from TOPIC (user-initiated topic change).
+	client.Handlers.AddBg(girc.RPL_TOPIC, func(_ *girc.Client, e girc.Event) {
+		if len(e.Params) < 2 {
+			return
+		}
+		b.sendWS(WSMessage{
+			Type:    "topic",
+			Channel: e.Params[1],
+			Topic:   e.Last(),
+			// No Nick — this is the server reporting the existing topic,
+			// not a user changing it. The frontend uses the absence of
+			// Nick to distinguish RPL_TOPIC from TOPIC change events.
+		})
+	})
+
+	client.Handlers.AddBg(girc.NOTICE, func(_ *girc.Client, e girc.Event) {
+		if len(e.Params) < 1 || e.Source == nil {
+			return
+		}
+		b.sendWS(WSMessage{
+			Type:      "notice",
+			Channel:   e.Params[0],
+			Nick:      e.Source.Name,
+			Text:      e.Last(),
+			Timestamp: eventTimestamp(e),
+		})
+	})
+
 	return b, nil
 }
 

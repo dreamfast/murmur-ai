@@ -138,6 +138,106 @@ func TestWSMessageTimestampJSON(t *testing.T) {
 	}
 }
 
+func TestWSMessageNewTypes(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now().UnixMilli()
+
+	tests := []struct {
+		name string
+		msg  WSMessage
+		// Fields expected to be present in the JSON output.
+		wantFields []string
+	}{
+		{
+			name: "quit message",
+			msg: WSMessage{
+				Type:      "quit",
+				Nick:      "departing_user",
+				Text:      "Goodbye!",
+				Timestamp: now,
+			},
+			wantFields: []string{"type", "nick", "text", "timestamp"},
+		},
+		{
+			name: "kick message",
+			msg: WSMessage{
+				Type:      "kick",
+				Channel:   "#test",
+				Nick:      "kicked_user",
+				Text:      "misbehaving",
+				Mode:      "op_user",
+				Timestamp: now,
+			},
+			wantFields: []string{"type", "channel", "nick", "text", "mode", "timestamp"},
+		},
+		{
+			name: "nick change message",
+			msg: WSMessage{
+				Type:      "nick",
+				Nick:      "old_nick",
+				Text:      "new_nick",
+				Timestamp: now,
+			},
+			wantFields: []string{"type", "nick", "text", "timestamp"},
+		},
+		{
+			name: "notice message",
+			msg: WSMessage{
+				Type:      "notice",
+				Channel:   "#test",
+				Nick:      "NickServ",
+				Text:      "You are now identified",
+				Timestamp: now,
+			},
+			wantFields: []string{"type", "channel", "nick", "text", "timestamp"},
+		},
+		{
+			name: "RPL_TOPIC (no nick)",
+			msg: WSMessage{
+				Type:    "topic",
+				Channel: "#test",
+				Topic:   "Welcome to #test",
+			},
+			wantFields: []string{"type", "channel", "topic"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			data, err := json.Marshal(tt.msg)
+			if err != nil {
+				t.Fatalf("Marshal error: %v", err)
+			}
+
+			var raw map[string]interface{}
+			if err := json.Unmarshal(data, &raw); err != nil {
+				t.Fatalf("Unmarshal error: %v", err)
+			}
+
+			for _, field := range tt.wantFields {
+				if _, ok := raw[field]; !ok {
+					t.Errorf("missing field %q in JSON: %s", field, data)
+				}
+			}
+
+			// Verify round-trip.
+			var decoded WSMessage
+			if err := json.Unmarshal(data, &decoded); err != nil {
+				t.Fatalf("round-trip Unmarshal error: %v", err)
+			}
+			if decoded.Type != tt.msg.Type {
+				t.Errorf("Type = %q, want %q", decoded.Type, tt.msg.Type)
+			}
+			if decoded.Nick != tt.msg.Nick {
+				t.Errorf("Nick = %q, want %q", decoded.Nick, tt.msg.Nick)
+			}
+		})
+	}
+}
+
 func TestEventTimestamp(t *testing.T) {
 	t.Parallel()
 
