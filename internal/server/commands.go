@@ -74,6 +74,8 @@ type CommandHandler struct {
 	flood        FloodFlusher
 	debug        DebugToggler
 	reloader     Reloader
+	permissions  atomic.Pointer[PermissionManager] // nil when permissions are not configured
+	permWriter   atomic.Pointer[PermissionsWriter] // nil when permissions file is not configured
 	allowedUsers atomic.Pointer[[]string]
 	startTime    time.Time
 	logger       *slog.Logger
@@ -171,6 +173,10 @@ func (h *CommandHandler) HandleCommand(channel, nick, message string) bool {
 		h.cmdTasks(channel)
 	case "!task":
 		h.cmdTask(channel, args)
+	case "!user":
+		h.cmdUser(channel, nick, args)
+	case "!channel":
+		h.cmdChannel(channel, nick, args)
 	case "!debug":
 		h.cmdDebug(channel, args)
 	case "!reload":
@@ -678,6 +684,8 @@ func (h *CommandHandler) cmdHelp(channel string) {
   !pending — list pending tool call approvals
   !tasks — list scheduled tasks and reminders
   !task add/remove/enable/disable — manage scheduled tasks (30s granularity, UTC)
+  !user list/info/add/remove/<nick> — manage user permissions (admin)
+  !channel list/info/<channel> — manage channel permissions (admin)
   !debug [on|off|level <level>] — toggle debug IRC channel logging
   !reload — reload configuration from disk
   !help — show this help`

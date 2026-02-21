@@ -412,6 +412,14 @@ func New(cfg *config.ServerConfig, configPath string, logger *slog.Logger) (*Ser
 	// the server needs commands to be created first.
 	commands.reloader = s
 
+	// Wire permissions into the command handler for admin commands (!user, !channel).
+	if pm != nil {
+		commands.permissions.Store(pm)
+		if cfg.Security.PermissionsFile != "" {
+			commands.permWriter.Store(NewPermissionsWriter(cfg.Security.PermissionsFile, logger))
+		}
+	}
+
 	// Wire the late-binding reload pointer for the config_manage tool.
 	reloadPtr = s
 
@@ -648,6 +656,11 @@ func (s *Server) Reload() error {
 		pm := NewPermissionManager(permCfg, s.logger)
 		s.agent.SetPermissions(pm)
 		s.permissions = pm
+		// Wire into command handler for admin commands.
+		s.commands.permissions.Store(pm)
+		if cfg.Security.PermissionsFile != "" && s.commands.permWriter.Load() == nil {
+			s.commands.permWriter.Store(NewPermissionsWriter(cfg.Security.PermissionsFile, s.logger))
+		}
 		// Derive cleanup context from the server's lifecycle context. If Reload()
 		// is called before Run() (monitorCtx not yet set), fall back to
 		// context.Background() — the goroutine will be cleaned up when Run()

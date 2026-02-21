@@ -23,6 +23,8 @@ var configDenyPatterns = []string{
 	`^irc\.nickserv_password$`,
 	`^api\.api_key$`,
 	`^llm\.providers\.[^.]+\.api_key$`,
+	`^users\.`,
+	`^channels\.`,
 }
 
 // compiledDenyPatterns is the compiled version of configDenyPatterns.
