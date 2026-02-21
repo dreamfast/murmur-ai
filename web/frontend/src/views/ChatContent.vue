@@ -52,7 +52,8 @@
               class="flex-shrink-0 font-mono text-sm font-bold leading-6"
               :style="{ color: nickColor(msg.nick) }"
             >{{ msg.nick }}</span>
-            <span class="min-w-0 break-words font-mono text-sm leading-6 text-text-primary">{{ msg.text }}</span>
+            <!-- eslint-disable-next-line vue/no-v-html -- parseIRCColors escapes HTML before adding style spans -->
+            <span class="min-w-0 break-words font-mono text-sm leading-6 text-text-primary" v-html="parseIRCColors(msg.text)"></span>
           </template>
         </div>
       </div>
@@ -87,6 +88,7 @@
 import { ref, watch, nextTick, onMounted } from "vue";
 import { SESSION_NICK_KEY } from "../constants.js";
 import { useWebSocket, WS_STATE } from "../composables/useWebSocket.js";
+import { parseIRCColors } from "../utils/ircColors.js";
 
 const nick = sessionStorage.getItem(SESSION_NICK_KEY) || "unknown";
 const channel = "#murmur";
