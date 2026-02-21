@@ -55,27 +55,31 @@ type Handler struct {
 	cfg      config.DashboardConfig
 	ircCfg   config.IRCConfig
 	logger   *slog.Logger
+	status   StatusProvider // may be nil if no provider is configured
 
 	// rateMu protects loginAttempts for per-IP rate limiting.
 	rateMu        sync.Mutex
 	loginAttempts map[string][]time.Time
 }
 
-// NewHandler creates a dashboard HTTP handler.
-func NewHandler(sessions *SessionStore, cfg config.DashboardConfig, ircCfg config.IRCConfig, logger *slog.Logger) *Handler {
+// NewHandler creates a dashboard HTTP handler. The status parameter may be nil
+// if no StatusProvider is available; the /dashboard/status endpoint will return
+// 503 Service Unavailable in that case.
+func NewHandler(sessions *SessionStore, cfg config.DashboardConfig, ircCfg config.IRCConfig, status StatusProvider, logger *slog.Logger) *Handler {
 	return &Handler{
 		sessions:      sessions,
 		cfg:           cfg,
 		ircCfg:        ircCfg,
 		logger:        logger.With("component", "dashboard"),
+		status:        status,
 		loginAttempts: make(map[string][]time.Time),
 	}
 }
 
 // ServeHTTP implements http.Handler and routes requests to the appropriate
 // endpoint. Security headers are set on every response. Signed endpoints
-// (logout, WebSocket) require valid X-Request-Timestamp and X-Request-Signature
-// headers to prevent replay attacks.
+// (logout, status, WebSocket) require valid X-Request-Timestamp and
+// X-Request-Signature headers to prevent replay attacks.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Set security headers on all responses.
 	w.Header().Set("X-Frame-Options", "DENY")
@@ -88,6 +92,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleLogin(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/dashboard/logout":
 		h.handleLogout(w, r)
+	case r.Method == http.MethodGet && r.URL.Path == "/dashboard/status":
+		h.handleStatus(w, r)
 	case r.URL.Path == "/ws":
 		h.handleWebSocket(w, r)
 	default:
@@ -168,6 +174,36 @@ func (h *Handler) handleLogout(w http.ResponseWriter, r *http.Request) {
 	// Clear the cookie regardless.
 	SetCookie(w, r, "", -1)
 	h.jsonResponse(w, http.StatusOK, loginResponse{OK: true})
+}
+
+// handleStatus returns server status information as JSON. Requires a valid
+// session cookie and signed request. Returns 503 if no StatusProvider is
+// configured.
+func (h *Handler) handleStatus(w http.ResponseWriter, r *http.Request) {
+	sess := h.sessions.GetFromRequest(r)
+	if sess == nil {
+		h.jsonResponse(w, http.StatusUnauthorized, loginResponse{
+			Error: "unauthorized",
+		})
+		return
+	}
+
+	if !h.verifySignature(r, sess, "") {
+		h.jsonResponse(w, http.StatusForbidden, loginResponse{
+			Error: "invalid or expired request signature",
+		})
+		return
+	}
+
+	if h.status == nil {
+		h.jsonResponse(w, http.StatusServiceUnavailable, loginResponse{
+			Error: "status not available",
+		})
+		return
+	}
+
+	info := h.status.GetStatus()
+	h.jsonResponse(w, http.StatusOK, info)
 }
 
 // handleWebSocket upgrades the connection and starts the IRC bridge.

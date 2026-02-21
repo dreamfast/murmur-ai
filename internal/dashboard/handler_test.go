@@ -17,6 +17,15 @@ import (
 	"murmur/internal/config"
 )
 
+// mockStatusProvider implements StatusProvider for tests.
+type mockStatusProvider struct {
+	info StatusInfo
+}
+
+func (m *mockStatusProvider) GetStatus() StatusInfo {
+	return m.info
+}
+
 func testHandler(t *testing.T) (*Handler, *SessionStore) {
 	t.Helper()
 
@@ -36,7 +45,30 @@ func testHandler(t *testing.T) (*Handler, *SessionStore) {
 		},
 	}
 
-	h := NewHandler(store, cfg, ircCfg, logger)
+	h := NewHandler(store, cfg, ircCfg, nil, logger)
+	return h, store
+}
+
+func testHandlerWithStatus(t *testing.T, sp StatusProvider) (*Handler, *SessionStore) {
+	t.Helper()
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	store := NewSessionStore(time.Hour, logger)
+
+	cfg := config.DashboardConfig{
+		Enabled:        true,
+		Listen:         "127.0.0.1:8082",
+		SessionTimeout: "1h",
+	}
+	ircCfg := config.IRCConfig{
+		Server: "localhost",
+		Port:   6667,
+		Channels: config.ChannelsConfig{
+			Main: "#murmur",
+		},
+	}
+
+	h := NewHandler(store, cfg, ircCfg, sp, logger)
 	return h, store
 }
 
@@ -483,6 +515,7 @@ func TestRouting(t *testing.T) {
 		{"login", http.MethodPost, "/dashboard/login", http.StatusBadRequest}, // no body
 		{"logout no session", http.MethodPost, "/dashboard/logout", http.StatusOK},
 		{"websocket no session", http.MethodGet, "/ws", http.StatusUnauthorized},
+		{"status no session", http.MethodGet, "/dashboard/status", http.StatusUnauthorized},
 		{"static root", http.MethodGet, "/", http.StatusOK},
 	}
 
@@ -498,5 +531,135 @@ func TestRouting(t *testing.T) {
 				t.Errorf("status = %d, want %d", w.Code, tt.wantStatus)
 			}
 		})
+	}
+}
+
+func TestStatusRequiresSession(t *testing.T) {
+	t.Parallel()
+
+	h, _ := testHandler(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/dashboard/status", nil)
+	w := httptest.NewRecorder()
+	h.handleStatus(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestStatusRequiresSignature(t *testing.T) {
+	t.Parallel()
+
+	sp := &mockStatusProvider{info: StatusInfo{ServerName: "test"}}
+	h, store := testHandlerWithStatus(t, sp)
+	sess, _ := store.Create("statususer")
+
+	// Request with session but no signature should be rejected.
+	req := httptest.NewRequest(http.MethodGet, "/dashboard/status", nil)
+	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: sess.ID})
+	w := httptest.NewRecorder()
+	h.handleStatus(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusForbidden)
+	}
+}
+
+func TestStatusReturnsData(t *testing.T) {
+	t.Parallel()
+
+	sp := &mockStatusProvider{info: StatusInfo{
+		ServerName:  "test-server",
+		Provider:    "openrouter",
+		Clients:     3,
+		Tools:       12,
+		Uptime:      2 * time.Hour,
+		UptimeHuman: "2h0m0s",
+	}}
+	h, store := testHandlerWithStatus(t, sp)
+	sess, _ := store.Create("statususer")
+
+	req := httptest.NewRequest(http.MethodGet, "/dashboard/status", nil)
+	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: sess.ID})
+	testSignRequest(t, req, sess, "")
+	w := httptest.NewRecorder()
+	h.handleStatus(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	var info StatusInfo
+	if err := json.NewDecoder(w.Body).Decode(&info); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+
+	if info.ServerName != "test-server" {
+		t.Errorf("ServerName = %q, want %q", info.ServerName, "test-server")
+	}
+	if info.Provider != "openrouter" {
+		t.Errorf("Provider = %q, want %q", info.Provider, "openrouter")
+	}
+	if info.Clients != 3 {
+		t.Errorf("Clients = %d, want %d", info.Clients, 3)
+	}
+	if info.Tools != 12 {
+		t.Errorf("Tools = %d, want %d", info.Tools, 12)
+	}
+	if info.UptimeHuman != "2h0m0s" {
+		t.Errorf("UptimeHuman = %q, want %q", info.UptimeHuman, "2h0m0s")
+	}
+}
+
+func TestStatusNoProvider(t *testing.T) {
+	t.Parallel()
+
+	// Handler with nil StatusProvider.
+	h, store := testHandler(t)
+	sess, _ := store.Create("noprovider")
+
+	req := httptest.NewRequest(http.MethodGet, "/dashboard/status", nil)
+	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: sess.ID})
+	testSignRequest(t, req, sess, "")
+	w := httptest.NewRecorder()
+	h.handleStatus(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusServiceUnavailable)
+	}
+
+	var resp loginResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Error != "status not available" {
+		t.Errorf("error = %q, want %q", resp.Error, "status not available")
+	}
+}
+
+func TestStatusRoutedViaServeHTTP(t *testing.T) {
+	t.Parallel()
+
+	sp := &mockStatusProvider{info: StatusInfo{ServerName: "routed"}}
+	h, store := testHandlerWithStatus(t, sp)
+	sess, _ := store.Create("routeuser")
+
+	req := httptest.NewRequest(http.MethodGet, "/dashboard/status", nil)
+	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: sess.ID})
+	testSignRequest(t, req, sess, "")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	var info StatusInfo
+	if err := json.NewDecoder(w.Body).Decode(&info); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if info.ServerName != "routed" {
+		t.Errorf("ServerName = %q, want %q", info.ServerName, "routed")
 	}
 }

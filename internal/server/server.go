@@ -579,7 +579,7 @@ func (s *Server) Run(ctx context.Context) error {
 		}
 
 		sessions := dashboard.NewSessionStore(sessionTimeout, s.logger)
-		dashHandler := dashboard.NewHandler(sessions, startCfg.Dashboard, startCfg.IRC, s.logger)
+		dashHandler := dashboard.NewHandler(sessions, startCfg.Dashboard, startCfg.IRC, s.statusProvider(), s.logger)
 		s.dashboardServer = api.NewHTTPServer(startCfg.Dashboard.Listen, dashHandler, s.logger)
 
 		done := make(chan struct{})
@@ -1033,4 +1033,34 @@ func (s *Server) loadCfg() *config.ServerConfig {
 // Registry returns the server's client registry for external access.
 func (s *Server) Registry() *Registry {
 	return s.registry
+}
+
+// statusProvider returns a dashboard.StatusProvider backed by this server's
+// live state. The returned adapter captures a pointer to the server and reads
+// current values on each call, so it always reflects the latest state.
+func (s *Server) statusProvider() dashboard.StatusProvider {
+	return &serverStatusAdapter{s: s}
+}
+
+// serverStatusAdapter implements dashboard.StatusProvider by reading live
+// state from a *Server. It is a thin wrapper to avoid a circular import
+// between internal/dashboard and internal/server.
+type serverStatusAdapter struct {
+	s *Server
+}
+
+// GetStatus returns a snapshot of the server's current status.
+func (a *serverStatusAdapter) GetStatus() dashboard.StatusInfo {
+	uptime := time.Since(a.s.startTime)
+	clients := a.s.registry.GetOnlineClients()
+	toolCount := len(a.s.registry.AllTools()) + len(a.s.serverTools.AllToolDefs())
+
+	return dashboard.StatusInfo{
+		ServerName:  a.s.loadCfg().Server.Name,
+		Provider:    a.s.agent.GetProvider(),
+		Clients:     len(clients),
+		Tools:       toolCount,
+		Uptime:      uptime,
+		UptimeHuman: uptime.Truncate(time.Second).String(),
+	}
 }

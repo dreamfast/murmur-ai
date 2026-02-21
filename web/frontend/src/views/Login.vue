@@ -115,7 +115,7 @@ async function handleLogin() {
       sessionStorage.setItem(SESSION_SIGNING_KEY, data.signing_key);
     }
 
-    router.push({ name: "chat" });
+    router.push({ name: "overview" });
   } catch {
     error.value = "Network error — is the server running?";
   } finally {

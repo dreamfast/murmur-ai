@@ -10,12 +10,23 @@ const routes = [
   },
   {
     path: "/",
-    name: "chat",
     component: () => import("../views/Chat.vue"),
     meta: { requiresAuth: true },
+    children: [
+      {
+        path: "",
+        name: "overview",
+        component: () => import("../views/Overview.vue"),
+      },
+      {
+        path: "chat",
+        name: "chat",
+        component: () => import("../views/ChatContent.vue"),
+      },
+    ],
   },
   {
-    // Catch-all redirect to chat (or login if not authed).
+    // Catch-all redirect to overview (or login if not authed).
     path: "/:pathMatch(.*)*",
     redirect: "/",
   },
@@ -38,7 +49,7 @@ router.beforeEach((to) => {
   }
 
   if (to.meta.guest && hasSession) {
-    return { name: "chat" };
+    return { name: "overview" };
   }
 });
 

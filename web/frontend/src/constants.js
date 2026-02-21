@@ -20,4 +20,5 @@ export const SESSION_SIGNING_KEY = "murmur_signing_key";
 export const API = Object.freeze({
   LOGIN: "/dashboard/login",
   LOGOUT: "/dashboard/logout",
+  STATUS: "/dashboard/status",
 });
