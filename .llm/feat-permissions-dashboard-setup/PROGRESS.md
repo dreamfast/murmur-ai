@@ -2,7 +2,7 @@
 
 > Status: IN PROGRESS
 > Branch: feat/permissions-dashboard-setup
-> Updated: 2026-02-21T8
+> Updated: 2026-02-21T15
 
 ## Phase 1: Foundation
 
@@ -17,14 +17,14 @@
 | 7 | Per-User API Keys for Webhooks | `done` | fce0563 |
 | 8 | Scheduled Task Permission Tracking | `done` | 4214aa8 |
 | 9 | Enhanced Debug Channel Logging | `done` | fa7f8f8 |
-| 10 | Config Examples, System Prompt, and Deny List Updates | `in_progress` | — |
+| 10 | Config Examples, System Prompt, and Deny List Updates | `done` | 171b625 |
 
 ## Phase 2: Setup & Deployment
 
 | # | Task | Status | Commit |
 |---|------|--------|--------|
-| 11 | Interactive Setup Script (Docker Mode) | `pending` | — |
-| 12 | Client Setup Mode | `pending` | — |
+| 11 | Interactive Setup Script (Docker Mode) | `done` | 2a6deae |
+| 12 | Client Setup Mode | `in_progress` | — |
 | 13 | Multi-Stage Dockerfile with Vue.js Build | `pending` | — |
 | 14 | Dashboard Backend — WebSocket Handler and IRC Bridge | `pending` | — |
 

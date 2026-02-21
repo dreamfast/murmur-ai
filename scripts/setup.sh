@@ -4,6 +4,7 @@
 #
 # Usage:
 #   ./scripts/setup.sh              # full server+client setup (interactive)
+#   ./scripts/setup.sh client       # standalone client setup (remote machine)
 #   ./scripts/setup.sh --dry-run    # show what would be done without writing
 #   ./scripts/setup.sh --help       # show help
 #
@@ -307,11 +308,13 @@ vault_store_bare() {
 
 DRY_RUN="false"
 SHOW_HELP="false"
+SETUP_MODE="server"
 
 for arg in "$@"; do
 	case "$arg" in
 	--dry-run) DRY_RUN="true" ;;
 	--help | -h) SHOW_HELP="true" ;;
+	client) SETUP_MODE="client" ;;
 	*)
 		err "Unknown argument: $arg"
 		exit 1
@@ -324,7 +327,8 @@ if [[ "$SHOW_HELP" == "true" ]]; then
 Murmur Setup Wizard
 
 Usage:
-  ./scripts/setup.sh              Interactive setup
+  ./scripts/setup.sh              Full server + local client setup
+  ./scripts/setup.sh client       Standalone client setup (for remote machines)
   ./scripts/setup.sh --dry-run    Preview without writing files
   ./scripts/setup.sh --help       Show this help
 
@@ -340,14 +344,419 @@ fi
 
 # ─── Main ────────────────────────────────────────────────────────────────────
 
-TOTAL_STEPS=8
-
 banner
 
 if [[ "$DRY_RUN" == "true" ]]; then
 	warn "Dry-run mode — no files will be written, no commands will be executed."
 	echo ""
 fi
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Client Setup Mode
+# ═══════════════════════════════════════════════════════════════════════════════
+
+if [[ "$SETUP_MODE" == "client" ]]; then
+	TOTAL_STEPS=4
+
+	info "${BOLD}Standalone client setup${RESET}"
+	info "This configures a Murmur client to connect to an existing server."
+	echo ""
+
+	# ─── Step 1: Client Identity ─────────────────────────────────────────────
+
+	step 1 "Client Identity"
+	info "Each client needs a unique ID and hostname."
+
+	CLIENT_ID=""
+	ask CLIENT_ID "Client ID (unique name for this machine)" "$(hostname -s 2>/dev/null || echo "my-client")"
+
+	CLIENT_HOSTNAME=""
+	ask CLIENT_HOSTNAME "Hostname" "$(hostname -s 2>/dev/null || echo "unknown")"
+
+	CLIENT_AUTONOMY=""
+	ask_choice CLIENT_AUTONOMY "Autonomy level" "auto|approve|report" "auto"
+
+	success "Client: ${BOLD}$CLIENT_ID${RESET} ($CLIENT_HOSTNAME, $CLIENT_AUTONOMY)"
+
+	# ─── Step 2: IRC Connection ──────────────────────────────────────────────
+
+	step 2 "IRC Connection"
+	info "Connect to the same IRC server your Murmur server uses."
+
+	IRC_SERVER=""
+	ask IRC_SERVER "IRC server address" "localhost"
+
+	IRC_PORT=""
+	ask IRC_PORT "IRC port" "6667"
+	if ! [[ "$IRC_PORT" =~ ^[0-9]+$ ]] || ((IRC_PORT < 1 || IRC_PORT > 65535)); then
+		err "IRC port must be a number between 1 and 65535."
+		exit 1
+	fi
+
+	IRC_TLS="false"
+	if ask_yesno "Use TLS?" "n"; then
+		IRC_TLS="true"
+	fi
+
+	CLIENT_NICK=""
+	ask CLIENT_NICK "Client IRC nick" "murmur-${CLIENT_ID}"
+	validate_irc_input "$CLIENT_NICK" "Client IRC nick"
+
+	IRC_PASSWORD=""
+	if ask_yesno "IRC server password required?" "n"; then
+		ask_secret IRC_PASSWORD "IRC server password"
+		validate_irc_input "$IRC_PASSWORD" "IRC server password"
+	fi
+
+	BUS_KEY=""
+	ask BUS_KEY "Bus key (from server setup)" ""
+	if [[ -n "$BUS_KEY" ]]; then
+		validate_irc_input "$BUS_KEY" "Bus key"
+	else
+		warn "No bus key set — strongly recommended when shell/code_exec tools are enabled."
+	fi
+
+	success "IRC: ${BOLD}$IRC_SERVER:$IRC_PORT${RESET} (TLS: $IRC_TLS)"
+
+	# ─── Step 3: Tools ───────────────────────────────────────────────────────
+
+	step 3 "Client Tools"
+	info "Select which tools this client provides."
+
+	CLIENT_TOOLS=""
+	ask_multi CLIENT_TOOLS "Enable client-side tools" \
+		"systeminfo|shell|code_exec|mail_read|mail_send|web_search|rss|dns|git|file_ops|image_gen|searxng" \
+		"systeminfo|shell"
+
+	# Parse selections
+	CT_SYSTEMINFO="false"
+	CT_SHELL="false"
+	CT_CODE_EXEC="false"
+	CT_MAIL_READ="false"
+	CT_MAIL_SEND="false"
+	CT_WEB_SEARCH="false"
+	CT_RSS="false"
+	CT_DNS="false"
+	CT_GIT="false"
+	CT_FILE_OPS="false"
+	CT_IMAGE_GEN="false"
+	CT_SEARXNG="false"
+
+	IFS='|' read -ra CT_SELECTED <<<"$CLIENT_TOOLS"
+	for tool in "${CT_SELECTED[@]}"; do
+		case "$tool" in
+		systeminfo) CT_SYSTEMINFO="true" ;;
+		shell) CT_SHELL="true" ;;
+		code_exec) CT_CODE_EXEC="true" ;;
+		mail_read) CT_MAIL_READ="true" ;;
+		mail_send) CT_MAIL_SEND="true" ;;
+		web_search) CT_WEB_SEARCH="true" ;;
+		rss) CT_RSS="true" ;;
+		dns) CT_DNS="true" ;;
+		git) CT_GIT="true" ;;
+		file_ops) CT_FILE_OPS="true" ;;
+		image_gen) CT_IMAGE_GEN="true" ;;
+		searxng) CT_SEARXNG="true" ;;
+		esac
+	done
+
+	success "Tools: ${CT_SELECTED[*]:-none}"
+
+	# ─── Step 4: Vault (optional) ────────────────────────────────────────────
+
+	step 4 "Vault & API"
+	info "Optional: enable the encrypted vault for secrets and the REST API."
+
+	VAULT_ENABLED="false"
+	VAULT_PASS=""
+	API_ENABLED="false"
+	API_KEY=""
+
+	if ask_yesno "Enable vault for this client?" "n"; then
+		VAULT_ENABLED="true"
+		ask_secret VAULT_PASS "Vault passphrase"
+		if [[ -z "$VAULT_PASS" ]]; then
+			VAULT_PASS="$(generate_passphrase)"
+			success "Generated passphrase: ${BOLD}$VAULT_PASS${RESET}"
+		fi
+	fi
+
+	if ask_yesno "Enable REST API for this client?" "n"; then
+		API_ENABLED="true"
+		API_KEY="$(generate_api_key)"
+		if [[ "$VAULT_ENABLED" != "true" ]]; then
+			warn "REST API requires vault for secure key storage — enabling vault."
+			VAULT_ENABLED="true"
+			ask_secret VAULT_PASS "Vault passphrase"
+			if [[ -z "$VAULT_PASS" ]]; then
+				VAULT_PASS="$(generate_passphrase)"
+				success "Generated passphrase: ${BOLD}$VAULT_PASS${RESET}"
+			fi
+		fi
+		success "Generated API key"
+	fi
+
+	# ─── Generate client config ──────────────────────────────────────────────
+
+	divider
+	info "${BOLD}Generating client configuration...${RESET}"
+
+	IRC_PASSWORD_TOML="$(toml_escape "$IRC_PASSWORD")"
+	CLIENT_NICK_SAFE="$(toml_escape "$CLIENT_NICK")"
+	BUS_KEY_TOML="$(toml_escape "$BUS_KEY")"
+
+	generate_standalone_client_config() {
+		local irc_password_line=""
+		if [[ -n "$IRC_PASSWORD" ]]; then
+			irc_password_line="password = \"$IRC_PASSWORD_TOML\""
+		else
+			irc_password_line="# password = \"\""
+		fi
+
+		cat <<TOML
+# Murmur client configuration — generated by setup wizard
+
+[client]
+id = "$(toml_escape "$CLIENT_ID")"
+hostname = "$(toml_escape "$CLIENT_HOSTNAME")"
+autonomy = "$CLIENT_AUTONOMY"
+
+[irc]
+server = "$(toml_escape "$IRC_SERVER")"
+port = $IRC_PORT
+tls = $IRC_TLS
+nick = "$CLIENT_NICK_SAFE"
+user = "$CLIENT_NICK_SAFE"
+realname = "Murmur Client"
+$irc_password_line
+bus_channel = "#murmur-bus"
+max_line_len = 8192
+
+[heartbeat]
+interval = "30s"
+
+[security]
+bus_key = "$BUS_KEY_TOML"
+TOML
+
+		if [[ "$VAULT_ENABLED" == "true" ]]; then
+			cat <<TOML
+
+[vault]
+enabled = true
+db_path = "$DEFAULT_DATA_DIR/vault.db"
+passphrase_env = "MURMUR_VAULT_PASS"
+TOML
+		fi
+
+		# Tools
+		if [[ "$CT_SYSTEMINFO" == "true" ]]; then
+			cat <<'TOML'
+
+[tools.systeminfo]
+enabled = true
+TOML
+		fi
+
+		if [[ "$CT_SHELL" == "true" ]]; then
+			cat <<'TOML'
+
+[tools.shell]
+enabled = true
+docker_image = "ubuntu:24.04"
+network = false
+memory_limit = "256m"
+cpu_limit = "0.5"
+timeout = "30s"
+TOML
+		fi
+
+		if [[ "$CT_CODE_EXEC" == "true" ]]; then
+			cat <<'TOML'
+
+[tools.code_exec]
+enabled = true
+piston_url = "http://localhost:2000"
+default_language = "python"
+TOML
+		fi
+
+		if [[ "$CT_MAIL_READ" == "true" ]]; then
+			cat <<'TOML'
+
+# [tools.mail_read]
+# enabled = true
+# thunderbird_profile = "~/.thunderbird/abc123.default-release"
+# mail_dir = "Mail/pop3.example.com"
+TOML
+		fi
+
+		if [[ "$CT_MAIL_SEND" == "true" ]]; then
+			cat <<'TOML'
+
+# [tools.mail_send]
+# enabled = true
+# smtp_host = "smtp.example.com"
+# smtp_port = 587
+# smtp_user = "you@example.com"
+# smtp_password = "vault:smtp-password"
+# from_address = "you@example.com"
+TOML
+		fi
+
+		if [[ "$CT_WEB_SEARCH" == "true" ]]; then
+			cat <<'TOML'
+
+# [tools.web_search]
+# enabled = true
+# api_key = "vault:brave-search-key"
+# max_results = 5
+TOML
+		fi
+
+		if [[ "$CT_RSS" == "true" ]]; then
+			cat <<'TOML'
+
+[tools.rss]
+enabled = true
+max_items = 10
+TOML
+		fi
+
+		if [[ "$CT_DNS" == "true" ]]; then
+			cat <<'TOML'
+
+[tools.dns]
+enabled = true
+TOML
+		fi
+
+		if [[ "$CT_GIT" == "true" ]]; then
+			cat <<'TOML'
+
+# [tools.git]
+# enabled = true
+# allowed_repos = [
+#     "/home/user/projects/myapp",
+# ]
+TOML
+		fi
+
+		if [[ "$CT_FILE_OPS" == "true" ]]; then
+			cat <<'TOML'
+
+# [tools.file_ops]
+# enabled = true
+# allowed_paths = [
+#     "/home/user/documents",
+# ]
+TOML
+		fi
+
+		if [[ "$CT_IMAGE_GEN" == "true" ]]; then
+			cat <<'TOML'
+
+# [tools.image_gen]
+# enabled = true
+# comfyui_host = "http://localhost:8188"
+# output_dir = "/home/user/images/murmur"
+# checkpoint_name = "sd_xl_base_1.0.safetensors"
+TOML
+		fi
+
+		if [[ "$CT_SEARXNG" == "true" ]]; then
+			cat <<'TOML'
+
+[tools.searxng]
+enabled = true
+url = "http://localhost:8080"
+max_results = 10
+TOML
+		fi
+
+		if [[ "$API_ENABLED" == "true" ]]; then
+			cat <<'TOML'
+
+[api]
+enabled = true
+listen = "0.0.0.0:8081"
+api_key = "vault:api-key"
+TOML
+		fi
+	}
+
+	CLIENT_CONFIG="$(generate_standalone_client_config)"
+	write_file "$DEFAULT_DATA_DIR/client.toml" "$CLIENT_CONFIG"
+
+	# Store vault secrets if vault enabled
+	if [[ "$VAULT_ENABLED" == "true" && "$DRY_RUN" != "true" ]]; then
+		# Need to build binary first if not present
+		MURMUR_BIN=""
+		if [[ -x "$PROJECT_DIR/bin/murmur" ]]; then
+			MURMUR_BIN="$PROJECT_DIR/bin/murmur"
+		elif command -v murmur &>/dev/null; then
+			MURMUR_BIN="murmur"
+		elif check_command go; then
+			info "Building murmur binary..."
+			make -C "$PROJECT_DIR" build
+			if [[ -x "$PROJECT_DIR/bin/murmur" ]]; then
+				MURMUR_BIN="$PROJECT_DIR/bin/murmur"
+				success "Binary built"
+			fi
+		fi
+
+		if [[ -n "$MURMUR_BIN" ]]; then
+			if [[ "$API_ENABLED" == "true" && -n "$API_KEY" ]]; then
+				printf '%s' "$API_KEY" | MURMUR_VAULT_PASS="$VAULT_PASS" "$MURMUR_BIN" \
+					vault set "api-key" --db "$DEFAULT_DATA_DIR/vault.db"
+				success "Stored api-key"
+			fi
+		elif [[ "$API_ENABLED" == "true" ]]; then
+			err "Cannot store API key in vault — murmur binary not found and Go not installed."
+			warn "Install Go and run manually from the project directory:"
+			warn "  make build && echo '<api-key>' | MURMUR_VAULT_PASS='<passphrase>' ./bin/murmur vault set api-key --db $DEFAULT_DATA_DIR/vault.db"
+			warn "Until then, the REST API will not authenticate correctly."
+		fi
+	elif [[ "$VAULT_ENABLED" == "true" && "$DRY_RUN" == "true" ]]; then
+		info "[dry-run] Would store vault secrets"
+	fi
+
+	# ─── Client Summary ──────────────────────────────────────────────────────
+
+	divider
+	echo ""
+	echo "${GREEN}${BOLD}  Client setup complete!${RESET}"
+	echo ""
+	echo "  ${BOLD}Config file:${RESET}"
+	echo "    ${DIM}$DEFAULT_DATA_DIR/client.toml${RESET}"
+	echo ""
+	echo "  ${BOLD}Start the client:${RESET}"
+	if [[ "$VAULT_ENABLED" == "true" ]]; then
+		echo "    ${DIM}MURMUR_VAULT_PASS=\"$VAULT_PASS\" murmur client --config $DEFAULT_DATA_DIR/client.toml${RESET}"
+	else
+		echo "    ${DIM}murmur client --config $DEFAULT_DATA_DIR/client.toml${RESET}"
+	fi
+	echo ""
+	if [[ -n "$BUS_KEY" ]]; then
+		echo "  ${BOLD}Bus key:${RESET} ${DIM}$BUS_KEY${RESET}"
+	fi
+	if [[ "$API_ENABLED" == "true" ]]; then
+		echo "  ${BOLD}API key:${RESET} ${DIM}$API_KEY${RESET}"
+	fi
+	if [[ "$VAULT_ENABLED" == "true" ]]; then
+		echo "  ${BOLD}Vault passphrase:${RESET} ${YELLOW}$VAULT_PASS${RESET}"
+	fi
+	echo ""
+	echo "  ${DIM}Some tools (web_search, mail, git, file_ops, image_gen) need manual config — edit client.toml.${RESET}"
+	echo ""
+	exit 0
+fi
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Server Setup Mode (default)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+TOTAL_STEPS=8
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Step 1: Installation Mode
