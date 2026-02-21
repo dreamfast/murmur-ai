@@ -30,6 +30,8 @@ type WSMessage struct {
 	Mode string `json:"mode,omitempty"`
 	// Error is an error message (for error events).
 	Error string `json:"error,omitempty"`
+	// Channels is the list of joined channels (for connected events).
+	Channels []string `json:"channels,omitempty"`
 }
 
 // Bridge connects a single WebSocket client to an IRC connection.
@@ -108,7 +110,7 @@ func NewBridge(ctx context.Context, ws *websocket.Conn, cfg BridgeConfig, logger
 		for _, ch := range cfg.Channels {
 			client.Cmd.Join(ch)
 		}
-		b.sendWS(WSMessage{Type: "connected", Nick: cfg.Nick})
+		b.sendWS(WSMessage{Type: "connected", Nick: cfg.Nick, Channels: cfg.Channels})
 	})
 
 	client.Handlers.AddBg(girc.PRIVMSG, func(_ *girc.Client, e girc.Event) {
@@ -197,7 +199,7 @@ func (b *Bridge) Run() {
 		defer b.wg.Done()
 		if err := b.irc.Connect(); err != nil {
 			b.logger.Error("IRC connection error", "error", err)
-			b.sendWS(WSMessage{Type: "error", Error: "IRC connection failed"})
+			b.sendWS(WSMessage{Type: "error", Error: "IRC connection failed: " + err.Error()})
 		}
 		b.cancel()
 	}()

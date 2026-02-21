@@ -9,6 +9,9 @@
  * The WebSocket connection is managed here so it persists across child
  * route changes (Overview, Chat, Admin). This enables unread message
  * tracking when the user is not on the chat page.
+ *
+ * Multi-channel support: messages are stored globally with a channel field.
+ * Per-channel state (users, topic, unread count) is stored in channelState.
  */
 
 import { reactive, shallowRef } from "vue";
@@ -35,6 +38,9 @@ const MAX_MESSAGES = 1000;
 /** Monotonic counter for generating unique message IDs. */
 let msgIdCounter = 0;
 
+/** The user's own IRC nick (set on "connected" message). */
+let ownNick = "";
+
 /** @type {import('vue').ShallowRef<WebSocket|null>} */
 const ws = shallowRef(null);
 let reconnectAttempts = 0;
@@ -42,19 +48,72 @@ let reconnectTimer = null;
 let intentionalClose = false;
 
 export const chatStore = reactive({
-  /** Sorted list of nicks in the current channel. */
-  users: [],
-  /** Current channel topic. */
-  topic: "",
-  /** Current channel name. */
-  channel: "#murmur",
-  /** Reactive array of chat messages. */
+  /** List of available channel names. */
+  channels: [],
+  /** Currently active/selected channel. */
+  activeChannel: "",
+  /** Per-channel state: { [channel]: { users: [], topic: "", unread: 0 } }. */
+  channelState: {},
+  /** Reactive array of chat messages (all channels). */
   messages: [],
   /** Reactive connection state (WS_STATE enum). */
   wsState: WS_STATE.DISCONNECTED,
-  /** Number of unread messages since the user last viewed the chat. */
+  /** Total unread messages across all channels (for badge when not on chat page). */
   unreadCount: 0,
 });
+
+/**
+ * Get or create per-channel state.
+ * @param {string} channel
+ * @returns {{ users: string[], topic: string, unread: number }}
+ */
+function getChannelState(channel) {
+  if (!chatStore.channelState[channel]) {
+    chatStore.channelState[channel] = { users: [], topic: "", unread: 0 };
+  }
+  return chatStore.channelState[channel];
+}
+
+/**
+ * Switch the active channel.
+ * @param {string} channel
+ */
+export function setActiveChannel(channel) {
+  chatStore.activeChannel = channel;
+  // Clear unread for this channel.
+  const state = getChannelState(channel);
+  state.unread = 0;
+}
+
+/**
+ * Join a new channel via the WebSocket bridge.
+ * @param {string} channel
+ */
+export function wsJoin(channel) {
+  if (ws.value && ws.value.readyState === WebSocket.OPEN) {
+    ws.value.send(JSON.stringify({ type: "join", channel }));
+    if (!chatStore.channels.includes(channel)) {
+      chatStore.channels = [...chatStore.channels, channel].sort();
+    }
+    getChannelState(channel);
+  }
+}
+
+/**
+ * Part (leave) a channel via the WebSocket bridge.
+ * @param {string} channel
+ */
+export function wsPart(channel) {
+  if (ws.value && ws.value.readyState === WebSocket.OPEN) {
+    ws.value.send(JSON.stringify({ type: "part", channel }));
+    chatStore.channels = chatStore.channels.filter((c) => c !== channel);
+    delete chatStore.channelState[channel];
+    // If we left the active channel, switch to the first available.
+    if (chatStore.activeChannel === channel && chatStore.channels.length > 0) {
+      setActiveChannel(chatStore.channels[0]);
+    }
+  }
+}
 
 /**
  * Connect to the WebSocket bridge.
@@ -135,12 +194,23 @@ export function clearUnread() {
 /** Handle an incoming WebSocket message from the bridge. */
 function handleMessage(msg) {
   const now = Date.now();
-  const channel = chatStore.channel;
 
   switch (msg.type) {
     case "connected":
       chatStore.wsState = WS_STATE.CONNECTED;
-      addSystemMessage(`Connected to IRC as ${msg.nick}`, now);
+      ownNick = msg.nick || "";
+      // Populate channel list from the server.
+      if (msg.channels && msg.channels.length > 0) {
+        chatStore.channels = [...msg.channels].sort();
+        for (const ch of msg.channels) {
+          getChannelState(ch);
+        }
+        // Set active channel to first if not already set.
+        if (!chatStore.activeChannel || !chatStore.channels.includes(chatStore.activeChannel)) {
+          chatStore.activeChannel = chatStore.channels[0];
+        }
+      }
+      addSystemMessage(null, `Connected to IRC as ${msg.nick}`, now);
       break;
 
     case "message":
@@ -152,50 +222,86 @@ function handleMessage(msg) {
         channel: msg.channel,
         time: now,
       });
+      // Track unread for non-active channels.
+      if (msg.channel && msg.channel !== chatStore.activeChannel) {
+        const state = getChannelState(msg.channel);
+        state.unread++;
+      }
       break;
 
-    case "join":
-      if (msg.channel === channel) {
-        addSystemMessage(`${msg.nick} joined ${msg.channel}`, now);
-        if (!chatStore.users.includes(msg.nick)) {
-          chatStore.users = [...chatStore.users, msg.nick].sort();
+    case "join": {
+      const ch = msg.channel;
+      if (ch) {
+        // If we joined a new channel, add it to the channel list.
+        if (msg.nick === ownNick && !chatStore.channels.includes(ch)) {
+          chatStore.channels = [...chatStore.channels, ch].sort();
+          getChannelState(ch);
+        }
+        addSystemMessage(ch, `${msg.nick} joined ${ch}`, now);
+        const state = getChannelState(ch);
+        if (!state.users.includes(msg.nick)) {
+          state.users = [...state.users, msg.nick].sort();
         }
       }
       break;
+    }
 
-    case "part":
-      if (msg.channel === channel) {
+    case "part": {
+      const ch = msg.channel;
+      if (ch) {
         const reason = msg.text ? ` (${msg.text})` : "";
-        addSystemMessage(`${msg.nick} left ${msg.channel}${reason}`, now);
-        chatStore.users = chatStore.users.filter((u) => u !== msg.nick);
+        addSystemMessage(ch, `${msg.nick} left ${ch}${reason}`, now);
+        // If we left the channel, remove it from the list.
+        if (msg.nick === ownNick) {
+          chatStore.channels = chatStore.channels.filter((c) => c !== ch);
+          delete chatStore.channelState[ch];
+          if (chatStore.activeChannel === ch && chatStore.channels.length > 0) {
+            chatStore.activeChannel = chatStore.channels[0];
+          }
+        } else {
+          const state = getChannelState(ch);
+          state.users = state.users.filter((u) => u !== msg.nick);
+        }
       }
       break;
+    }
 
-    case "topic":
-      if (msg.channel === channel) {
-        chatStore.topic = msg.topic;
-        addSystemMessage(`${msg.nick} set topic: ${msg.topic}`, now);
+    case "topic": {
+      const ch = msg.channel;
+      if (ch) {
+        const state = getChannelState(ch);
+        state.topic = msg.topic;
+        addSystemMessage(ch, `${msg.nick} set topic: ${msg.topic}`, now);
       }
       break;
+    }
 
-    case "names":
-      if (msg.channel === channel && msg.users) {
-        chatStore.users = [...msg.users].sort();
+    case "names": {
+      const ch = msg.channel;
+      if (ch && msg.users) {
+        const state = getChannelState(ch);
+        state.users = [...msg.users].sort();
       }
       break;
+    }
 
-    case "mode":
-      if (msg.channel === channel) {
-        addSystemMessage(
-          `${msg.nick} set mode ${msg.mode} on ${msg.channel}`,
-          now,
-        );
+    case "mode": {
+      const ch = msg.channel;
+      if (ch) {
+        addSystemMessage(ch, `${msg.nick} set mode ${msg.mode} on ${ch}`, now);
       }
       break;
+    }
 
     case "error":
       chatStore.wsState = WS_STATE.ERROR;
-      addSystemMessage(`Error: ${msg.error}`, now);
+      addSystemMessage(null, `Error: ${msg.error}`, now);
+      // Fatal errors (config/auth) should not trigger reconnect — the same
+      // credentials will just fail again in a loop.
+      if (msg.error && msg.error.includes("IRC connection failed")) {
+        intentionalClose = true;
+        clearReconnectTimer();
+      }
       break;
   }
 }
@@ -206,11 +312,17 @@ function appendMessage(msg) {
   chatStore.messages = updated.length > MAX_MESSAGES ? updated.slice(-MAX_MESSAGES) : updated;
 }
 
-/** Add a system/event message to the message list. */
-function addSystemMessage(text, time) {
+/**
+ * Add a system/event message to the message list.
+ * @param {string|null} channel — the channel this event belongs to, or null for global.
+ * @param {string} text
+ * @param {number} time
+ */
+function addSystemMessage(channel, text, time) {
   appendMessage({
     id: `${time}-${++msgIdCounter}`,
     type: "system",
+    channel: channel,
     text,
     time,
   });

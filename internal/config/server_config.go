@@ -46,6 +46,9 @@ type DashboardConfig struct {
 	// This allows dashboard users to connect without knowing the server
 	// password. Supports "vault:" prefix.
 	ServerPassword string `toml:"server_password"`
+	// Channels is the list of IRC channels that dashboard users auto-join.
+	// If empty, defaults to the main channel from [irc.channels].
+	Channels []string `toml:"channels"`
 }
 
 // DebugConfig holds settings for the debug IRC channel that receives live

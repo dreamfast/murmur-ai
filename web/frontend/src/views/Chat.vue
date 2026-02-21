@@ -37,27 +37,43 @@
           <span class="text-base">&#x1F4CA;</span>
           <span class="font-mono">Overview</span>
         </router-link>
-        <router-link
-          :to="{ name: 'chat' }"
-          class="flex items-center gap-2 rounded px-3 py-2 text-sm transition"
+
+        <!-- Channel list -->
+        <div class="mt-2 mb-1 px-3 text-xs font-medium uppercase tracking-wider text-text-muted">Channels</div>
+        <button
+          v-for="ch in chatStore.channels"
+          :key="ch"
+          class="flex items-center gap-2 rounded px-3 py-1.5 text-sm transition"
           :class="
-            $route.name === 'chat'
+            $route.name === 'chat' && chatStore.activeChannel === ch
               ? 'bg-bg-hover text-text-primary'
               : 'text-text-secondary hover:bg-bg-hover hover:text-text-primary'
           "
-          @click="sidebarOpen = false"
+          @click="switchChannel(ch)"
         >
-          <span class="text-base">&#x1F4AC;</span>
-          <span class="font-mono">#murmur</span>
-          <!-- Unread message badge -->
+          <span class="font-mono text-xs">#</span>
+          <span class="truncate font-mono">{{ ch.replace(/^#/, '') }}</span>
+          <!-- Per-channel unread badge -->
           <span
-            v-if="chatStore.unreadCount > 0 && $route.name !== 'chat'"
+            v-if="channelUnread(ch) > 0 && chatStore.activeChannel !== ch"
             class="ml-auto flex h-5 min-w-5 items-center justify-center rounded-full bg-accent px-1.5 text-xs font-bold text-white"
-          >{{ chatStore.unreadCount > 99 ? '99+' : chatStore.unreadCount }}</span>
-        </router-link>
+          >{{ channelUnread(ch) > 99 ? '99+' : channelUnread(ch) }}</span>
+        </button>
+
+        <!-- Join channel input -->
+        <form class="mt-1 px-1" @submit.prevent="handleJoinChannel">
+          <input
+            v-model="joinChannelInput"
+            type="text"
+            placeholder="Join #channel..."
+            class="w-full rounded border border-border bg-bg-input px-2 py-1 font-mono text-xs text-text-primary placeholder-text-muted outline-none transition focus:border-border-focus"
+          />
+        </form>
+
+        <!-- Admin link -->
         <router-link
           :to="{ name: 'admin' }"
-          class="flex items-center gap-2 rounded px-3 py-2 text-sm transition"
+          class="mt-2 flex items-center gap-2 rounded px-3 py-2 text-sm transition"
           :class="
             $route.name === 'admin'
               ? 'bg-bg-hover text-text-primary'
@@ -69,15 +85,15 @@
           <span class="font-mono">Admin</span>
         </router-link>
       </nav>
-      <!-- User list (visible when on chat route) -->
-      <div v-if="$route.name === 'chat' && chatStore.users.length > 0" class="flex flex-1 flex-col border-t border-border">
+      <!-- User list for active channel (visible when on chat route) -->
+      <div v-if="$route.name === 'chat' && activeUsers.length > 0" class="flex flex-1 flex-col border-t border-border">
         <div class="flex items-center justify-between px-3 py-2">
           <span class="text-xs font-medium uppercase tracking-wider text-text-muted">Users</span>
-          <span class="rounded bg-bg-tertiary px-1.5 py-0.5 text-xs text-text-muted">{{ chatStore.users.length }}</span>
+          <span class="rounded bg-bg-tertiary px-1.5 py-0.5 text-xs text-text-muted">{{ activeUsers.length }}</span>
         </div>
         <div class="max-h-48 overflow-y-auto px-3 pb-3 md:max-h-none md:flex-1">
           <div
-            v-for="user in chatStore.users"
+            v-for="user in activeUsers"
             :key="user"
             class="flex items-center gap-2 rounded px-2 py-1 text-sm"
           >
@@ -105,9 +121,9 @@
           </button>
           <span class="flex-shrink-0 font-mono text-sm text-text-secondary">{{ pageTitle }}</span>
           <span
-            v-if="$route.name === 'chat' && chatStore.topic"
+            v-if="$route.name === 'chat' && activeTopic"
             class="hidden truncate text-xs text-text-muted sm:inline"
-          >— {{ chatStore.topic }}</span>
+          >— {{ activeTopic }}</span>
         </div>
         <div class="flex items-center gap-3">
           <span class="hidden font-mono text-xs text-text-muted sm:inline">{{ nick }}</span>
@@ -131,12 +147,13 @@ import { ref, computed, watch, onMounted, onUnmounted } from "vue";
 import { useRouter, useRoute } from "vue-router";
 import { SESSION_NICK_KEY, SESSION_SIGNING_KEY, API } from "../constants.js";
 import { signedFetch } from "../api.js";
-import { chatStore, wsConnect, wsDisconnect, clearUnread } from "../stores/chatStore.js";
+import { chatStore, wsConnect, wsDisconnect, clearUnread, setActiveChannel, wsJoin } from "../stores/chatStore.js";
 
 const router = useRouter();
 const route = useRoute();
 const nick = ref(sessionStorage.getItem(SESSION_NICK_KEY) || "unknown");
 const sidebarOpen = ref(false);
+const joinChannelInput = ref("");
 
 // Track the previous message count to detect new messages for unread tracking.
 let lastSeenMessageCount = 0;
@@ -181,12 +198,56 @@ watch(
   },
 );
 
+/** Get unread count for a specific channel. */
+function channelUnread(ch) {
+  const state = chatStore.channelState[ch];
+  return state ? state.unread : 0;
+}
+
+/** Users in the active channel. */
+const activeUsers = computed(() => {
+  const state = chatStore.channelState[chatStore.activeChannel];
+  return state ? state.users : [];
+});
+
+/** Topic of the active channel. */
+const activeTopic = computed(() => {
+  const state = chatStore.channelState[chatStore.activeChannel];
+  return state ? state.topic : "";
+});
+
+/** Switch to a channel and navigate to chat view. */
+function switchChannel(ch) {
+  setActiveChannel(ch);
+  sidebarOpen.value = false;
+  if (route.name !== "chat") {
+    router.push({ name: "chat" });
+  }
+}
+
+/** Join a new channel from the input. */
+function handleJoinChannel() {
+  let ch = joinChannelInput.value.trim();
+  if (!ch) return;
+  // Ensure channel starts with #.
+  if (!ch.startsWith("#")) {
+    ch = "#" + ch;
+  }
+  wsJoin(ch);
+  setActiveChannel(ch);
+  joinChannelInput.value = "";
+  sidebarOpen.value = false;
+  if (route.name !== "chat") {
+    router.push({ name: "chat" });
+  }
+}
+
 const pageTitle = computed(() => {
   switch (route.name) {
     case "overview":
       return "Overview";
     case "chat":
-      return "#murmur";
+      return chatStore.activeChannel || "#murmur";
     case "admin":
       return "Admin Panel";
     default:

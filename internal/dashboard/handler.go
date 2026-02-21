@@ -1,6 +1,7 @@
 package dashboard
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -49,6 +50,10 @@ type loginResponse struct {
 	Error      string `json:"error,omitempty"`
 }
 
+// CredentialVerifier is a function that verifies IRC credentials.
+// It returns nil if authentication succeeds, or an error describing the failure.
+type CredentialVerifier func(ctx context.Context, server string, port int, tls bool, serverPass, nick, password string) error
+
 // Handler serves the dashboard HTTP endpoints and static files.
 type Handler struct {
 	sessions *SessionStore
@@ -56,6 +61,7 @@ type Handler struct {
 	ircCfg   config.IRCConfig
 	logger   *slog.Logger
 	status   StatusProvider // may be nil if no provider is configured
+	verify   CredentialVerifier
 
 	// rateMu protects loginAttempts for per-IP rate limiting.
 	rateMu        sync.Mutex
@@ -72,6 +78,7 @@ func NewHandler(sessions *SessionStore, cfg config.DashboardConfig, ircCfg confi
 		ircCfg:        ircCfg,
 		logger:        logger.With("component", "dashboard"),
 		status:        status,
+		verify:        VerifyIRCCredentials,
 		loginAttempts: make(map[string][]time.Time),
 	}
 }
@@ -132,12 +139,22 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Credential verification is deferred to the IRC connection phase.
-	// When the WebSocket connects, the bridge creates an IRC connection
-	// and sends NickServ IDENTIFY with the stored password. If auth fails,
-	// the IRC server or NickServ will reject the connection and the bridge
-	// reports the error to the client. This avoids blocking the login
-	// endpoint on a full IRC handshake.
+	// Verify IRC credentials before creating a session. This connects to
+	// the IRC server, registers the nick, and sends NickServ IDENTIFY to
+	// confirm the password is valid. This prevents invalid sessions from
+	// being created and avoids the error-loop on the dashboard.
+	if err := h.verify(
+		r.Context(),
+		h.ircCfg.Server, h.ircCfg.Port, h.ircCfg.TLS,
+		h.cfg.ServerPassword, req.Nick, req.Password,
+	); err != nil {
+		h.logger.Info("login failed", "nick", req.Nick, "error", err)
+		h.jsonResponse(w, http.StatusUnauthorized, loginResponse{
+			Error: err.Error(),
+		})
+		return
+	}
+
 	sess, err := h.sessions.Create(req.Nick)
 	if err != nil {
 		h.logger.Error("failed to create session", "error", err)
@@ -245,10 +262,10 @@ func (h *Handler) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Determine channels to join — use the server's main channel.
-	var channels []string
-	if h.ircCfg.Channels.Main != "" {
-		channels = append(channels, h.ircCfg.Channels.Main)
+	// Determine channels to join — use dashboard config, fall back to main channel.
+	channels := h.cfg.Channels
+	if len(channels) == 0 && h.ircCfg.Channels.Main != "" {
+		channels = []string{h.ircCfg.Channels.Main}
 	}
 
 	bridgeCfg := BridgeConfig{

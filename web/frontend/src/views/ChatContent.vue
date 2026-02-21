@@ -25,14 +25,14 @@
 
     <!-- Message list -->
     <div ref="messageListRef" class="flex-1 overflow-y-auto px-4 py-3">
-      <div v-if="chatStore.messages.length === 0" class="flex h-full items-center justify-center">
+      <div v-if="filteredMessages.length === 0" class="flex h-full items-center justify-center">
         <p class="text-sm text-text-muted">
           {{ chatStore.wsState === WS_STATE.CONNECTED ? "No messages yet." : "Waiting for connection..." }}
         </p>
       </div>
       <div v-else class="space-y-0.5">
         <div
-          v-for="msg in chatStore.messages"
+          v-for="msg in filteredMessages"
           :key="msg.id"
           class="group flex gap-2 rounded px-2 py-0.5 hover:bg-bg-secondary/50"
         >
@@ -98,7 +98,7 @@
           v-model="inputText"
           type="text"
           :disabled="chatStore.wsState !== WS_STATE.CONNECTED"
-          :placeholder="chatStore.wsState === WS_STATE.CONNECTED ? `Message ${channel}` : 'Connecting...'"
+          :placeholder="chatStore.wsState === WS_STATE.CONNECTED ? `Message ${chatStore.activeChannel}` : 'Connecting...'"
           class="flex-1 rounded border border-border bg-bg-input px-3 py-2 font-mono text-sm text-text-primary placeholder-text-muted outline-none transition focus:border-border-focus focus:ring-1 focus:ring-accent/50 disabled:opacity-50"
           @keydown.up.prevent="handleArrowUp"
           @keydown.down.prevent="handleArrowDown"
@@ -121,7 +121,7 @@
 import { ref, computed, watch, nextTick, onMounted } from "vue";
 import { useRoute } from "vue-router";
 import { SESSION_NICK_KEY } from "../constants.js";
-import { chatStore, wsSend, clearUnread, WS_STATE } from "../stores/chatStore.js";
+import { chatStore, wsSend, clearUnread, setActiveChannel, wsJoin, wsPart, WS_STATE } from "../stores/chatStore.js";
 import { parseIRCColors } from "../utils/ircColors.js";
 import { renderMarkdown } from "../utils/markdown.js";
 import { matchCommands } from "../utils/commands.js";
@@ -129,13 +129,23 @@ import { detectApprovalRequest, detectToolStatus } from "../utils/toolCalls.js";
 import ToolCallCard from "../components/ToolCallCard.vue";
 
 const nick = sessionStorage.getItem(SESSION_NICK_KEY) || "unknown";
-const channel = chatStore.channel;
 
 /** Monotonic counter for local echo message IDs. */
 let localMsgCounter = 0;
 
 // Track approval statuses (id -> "approved" | "denied" | "timeout").
 const approvalStatuses = ref({});
+
+/**
+ * Messages filtered for the active channel. Shows messages that match the
+ * active channel, plus global system messages (channel === null).
+ */
+const filteredMessages = computed(() => {
+  const active = chatStore.activeChannel;
+  return chatStore.messages.filter(
+    (m) => m.channel === active || m.channel === null || m.channel === undefined,
+  );
+});
 
 /** Get the approval request from a message, if any. */
 function getApproval(msg) {
@@ -145,13 +155,13 @@ function getApproval(msg) {
 
 /** Send !approve command for a tool call. */
 function handleApprove(id) {
-  wsSend(channel, "!approve");
+  wsSend(chatStore.activeChannel, "!approve");
   approvalStatuses.value = { ...approvalStatuses.value, [id]: "approved" };
 }
 
 /** Send !deny command for a tool call. */
 function handleDeny(id) {
-  wsSend(channel, "!deny");
+  wsSend(chatStore.activeChannel, "!deny");
   approvalStatuses.value = { ...approvalStatuses.value, [id]: "denied" };
 }
 
@@ -242,7 +252,9 @@ function handleTab() {
   }
 }
 
-/** Send a message to the channel. */
+/**
+ * Handle IRC-style slash commands (/join, /part) or send a regular message.
+ */
 function handleSend() {
   // If autocomplete is showing, select the highlighted item instead of sending.
   if (autocompleteResults.value.length > 0 && autocompleteIndex.value >= 0) {
@@ -253,6 +265,27 @@ function handleSend() {
   const text = inputText.value.trim();
   if (!text) return;
 
+  // Handle /join command.
+  const joinMatch = text.match(/^\/join\s+(#?\S+)/i);
+  if (joinMatch) {
+    let ch = joinMatch[1];
+    if (!ch.startsWith("#")) ch = "#" + ch;
+    wsJoin(ch);
+    setActiveChannel(ch);
+    inputText.value = "";
+    return;
+  }
+
+  // Handle /part command.
+  const partMatch = text.match(/^\/part(?:\s+(#?\S+))?/i);
+  if (partMatch) {
+    const ch = partMatch[1] || chatStore.activeChannel;
+    wsPart(ch);
+    inputText.value = "";
+    return;
+  }
+
+  const channel = chatStore.activeChannel;
   wsSend(channel, text);
 
   // Add own message to the display immediately (IRC will echo it back
@@ -346,9 +379,9 @@ function nickColor(name) {
   return NICK_COLORS[Math.abs(hash) % NICK_COLORS.length];
 }
 
-// Auto-scroll to bottom when new messages arrive.
+// Auto-scroll to bottom when new messages arrive in the active channel.
 watch(
-  () => chatStore.messages.length,
+  () => filteredMessages.value.length,
   async () => {
     await nextTick();
     const el = messageListRef.value;
@@ -367,6 +400,10 @@ const route = useRoute();
 onMounted(() => {
   // Clear unread count since user is now viewing chat.
   clearUnread();
+  // Clear per-channel unread for the active channel.
+  if (chatStore.activeChannel && chatStore.channelState[chatStore.activeChannel]) {
+    chatStore.channelState[chatStore.activeChannel].unread = 0;
+  }
   // Pre-fill input from query param (e.g., admin quick actions).
   if (route.query.cmd) {
     inputText.value = route.query.cmd;

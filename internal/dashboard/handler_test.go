@@ -2,6 +2,7 @@ package dashboard
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -26,6 +27,11 @@ func (m *mockStatusProvider) GetStatus() StatusInfo {
 	return m.info
 }
 
+// noopVerifier always succeeds — used in tests that don't need real IRC.
+func noopVerifier(_ context.Context, _ string, _ int, _ bool, _, _, _ string) error {
+	return nil
+}
+
 func testHandler(t *testing.T) (*Handler, *SessionStore) {
 	t.Helper()
 
@@ -46,6 +52,7 @@ func testHandler(t *testing.T) (*Handler, *SessionStore) {
 	}
 
 	h := NewHandler(store, cfg, ircCfg, nil, logger)
+	h.verify = noopVerifier
 	return h, store
 }
 
@@ -69,6 +76,7 @@ func testHandlerWithStatus(t *testing.T, sp StatusProvider) (*Handler, *SessionS
 	}
 
 	h := NewHandler(store, cfg, ircCfg, sp, logger)
+	h.verify = noopVerifier
 	return h, store
 }
 
@@ -197,6 +205,33 @@ func TestLoginValidation(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestLoginVerificationFailure(t *testing.T) {
+	t.Parallel()
+
+	h, _ := testHandler(t)
+	// Override verifier to simulate auth failure.
+	h.verify = func(_ context.Context, _ string, _ int, _ bool, _, _, _ string) error {
+		return fmt.Errorf("invalid password for nick")
+	}
+
+	body, _ := json.Marshal(loginRequest{Nick: "baduser", Password: "wrongpass"})
+	req := httptest.NewRequest(http.MethodPost, "/dashboard/login", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	h.handleLogin(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusUnauthorized)
+	}
+
+	var resp loginResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Error != "invalid password for nick" {
+		t.Errorf("error = %q, want %q", resp.Error, "invalid password for nick")
 	}
 }
 
