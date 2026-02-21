@@ -397,7 +397,7 @@ func (h *CommandHandler) cmdTasks(channel string) {
 		return
 	}
 	if len(tasks) == 0 {
-		h.send(channel, "no scheduled tasks")
+		h.send(channel, "no scheduled tasks or reminders")
 		return
 	}
 
@@ -411,8 +411,16 @@ func (h *CommandHandler) cmdTasks(channel string) {
 		if t.NextRun.Valid {
 			nextRun = t.NextRun.Time.UTC().Format("2006-01-02 15:04 UTC")
 		}
-		lines = append(lines, fmt.Sprintf("  #%d %s [%s] %s — next: %s — %s",
-			t.ID, t.Name, t.Schedule, t.Channel, nextRun, status))
+		typeLabel := "cron"
+		schedInfo := t.Schedule
+		if t.Type == TaskTypeOnce {
+			typeLabel = "once"
+			if t.RunAt.Valid {
+				schedInfo = "at " + t.RunAt.Time.UTC().Format("2006-01-02 15:04 UTC")
+			}
+		}
+		lines = append(lines, fmt.Sprintf("  #%d [%s] %s [%s] %s — next: %s — %s",
+			t.ID, typeLabel, t.Name, schedInfo, t.Channel, nextRun, status))
 	}
 	h.send(channel, "scheduled tasks:\n"+strings.Join(lines, "\n"))
 }
@@ -575,7 +583,7 @@ func (h *CommandHandler) cmdHelp(channel string) {
   !approve — approve the most recent pending tool call
   !deny — deny the most recent pending tool call
   !pending — list pending tool call approvals
-  !tasks — list scheduled tasks
+  !tasks — list scheduled tasks and reminders
   !task add/remove/enable/disable — manage scheduled tasks (30s granularity, UTC)
   !help — show this help`
 	h.send(channel, help)

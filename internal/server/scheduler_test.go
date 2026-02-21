@@ -39,6 +39,8 @@ func (m *mockTaskRunner) getCalls() []taskRunCall {
 }
 
 // newTestScheduler creates a Scheduler with an in-memory DB for testing.
+// MaxOpenConns is set to 1 to ensure all operations use the same in-memory
+// database connection (each ":memory:" connection gets its own database).
 func newTestScheduler(t *testing.T, runner TaskRunner) (*Scheduler, *db.DB) {
 	t.Helper()
 
@@ -47,6 +49,7 @@ func newTestScheduler(t *testing.T, runner TaskRunner) (*Scheduler, *db.DB) {
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
+	database.SetMaxOpenConns(1)
 	if err := database.Migrate(); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
@@ -146,8 +149,8 @@ func TestScheduler_TickFiresDueTask(t *testing.T) {
 	// Run a single tick.
 	s.tick(context.Background())
 
-	// Wait briefly for the goroutine to execute.
-	time.Sleep(100 * time.Millisecond)
+	// Wait for all in-flight task goroutines to finish.
+	s.taskWg.Wait()
 
 	calls := runner.getCalls()
 	if len(calls) != 1 {
@@ -195,6 +198,7 @@ func TestScheduler_BackpressureSkips(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
+	database.SetMaxOpenConns(1)
 	if err := database.Migrate(); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
@@ -356,6 +360,7 @@ func TestTaskCommands_List(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
+	database.SetMaxOpenConns(1)
 	if err := database.Migrate(); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
@@ -398,6 +403,7 @@ func TestTaskCommands_AddAndRemove(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
+	database.SetMaxOpenConns(1)
 	if err := database.Migrate(); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
@@ -443,6 +449,365 @@ func TestTaskCommands_AddAndRemove(t *testing.T) {
 	tasks, _ = scheduler.ListTasks()
 	if len(tasks) != 0 {
 		t.Errorf("expected 0 tasks after removal, got %d", len(tasks))
+	}
+}
+
+func TestScheduler_AddOneShotTask(t *testing.T) {
+	t.Parallel()
+
+	runner := &mockTaskRunner{}
+	s, _ := newTestScheduler(t, runner)
+
+	runAt := time.Now().UTC().Add(2 * time.Hour)
+	id, err := s.AddOneShotTask("test-reminder", runAt, "[Reminder] test", "#murmur")
+	if err != nil {
+		t.Fatalf("AddOneShotTask: %v", err)
+	}
+	if id <= 0 {
+		t.Errorf("expected positive task ID, got %d", id)
+	}
+
+	tasks, err := s.ListTasks()
+	if err != nil {
+		t.Fatalf("ListTasks: %v", err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("expected 1 task, got %d", len(tasks))
+	}
+	if tasks[0].Type != TaskTypeOnce {
+		t.Errorf("task type = %q, want %q", tasks[0].Type, TaskTypeOnce)
+	}
+	if !tasks[0].RunAt.Valid {
+		t.Error("one-shot task should have a run_at time")
+	}
+	if !tasks[0].RunAt.Time.Equal(runAt) {
+		t.Errorf("run_at = %v, want %v", tasks[0].RunAt.Time, runAt)
+	}
+	if tasks[0].Schedule != "" {
+		t.Errorf("one-shot task schedule should be empty, got %q", tasks[0].Schedule)
+	}
+}
+
+func TestScheduler_AddOneShotTask_PastTime(t *testing.T) {
+	t.Parallel()
+
+	runner := &mockTaskRunner{}
+	s, _ := newTestScheduler(t, runner)
+
+	past := time.Now().UTC().Add(-1 * time.Hour)
+	_, err := s.AddOneShotTask("past-reminder", past, "[Reminder] past", "#murmur")
+	if err == nil {
+		t.Fatal("expected error for past run_at time")
+	}
+}
+
+func TestScheduler_OneShotTickDisables(t *testing.T) {
+	t.Parallel()
+
+	runner := &mockTaskRunner{}
+	s, database := newTestScheduler(t, runner)
+
+	// Insert a one-shot task with next_run in the past so it's immediately due.
+	past := time.Now().UTC().Add(-1 * time.Minute)
+	_, err := database.Exec(
+		`INSERT INTO scheduled_tasks (name, schedule, action, channel, enabled, next_run, type, run_at)
+		 VALUES (?, '', ?, ?, 1, ?, 'once', ?)`,
+		"due-reminder", "[Reminder] test", "#murmur", past, past,
+	)
+	if err != nil {
+		t.Fatalf("insert task: %v", err)
+	}
+
+	// Run a single tick.
+	s.tick(context.Background())
+
+	// Wait for all in-flight task goroutines to finish before checking DB state.
+	s.taskWg.Wait()
+
+	// Verify the task was executed.
+	calls := runner.getCalls()
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 task execution, got %d", len(calls))
+	}
+	if calls[0].Description != "[Reminder] test" {
+		t.Errorf("description = %q, want %q", calls[0].Description, "[Reminder] test")
+	}
+
+	// Verify the task was disabled after execution.
+	tasks, err := s.ListTasks()
+	if err != nil {
+		t.Fatalf("ListTasks: %v", err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("expected 1 task, got %d", len(tasks))
+	}
+	if tasks[0].Enabled {
+		t.Error("one-shot task should be disabled after execution")
+	}
+}
+
+func TestScheduler_OneShotPanicResetsNextRun(t *testing.T) {
+	t.Parallel()
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	database.SetMaxOpenConns(1)
+	if err := database.Migrate(); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	t.Cleanup(func() { database.Close() })
+
+	// Use a runner that panics.
+	runner := &panickingTaskRunner{}
+	s := NewScheduler(database, runner, 30*time.Second, 3, logger)
+
+	// Insert a one-shot task with next_run in the past so it's immediately due.
+	past := time.Now().UTC().Add(-1 * time.Minute)
+	_, err = database.Exec(
+		`INSERT INTO scheduled_tasks (name, schedule, action, channel, enabled, next_run, type, run_at)
+		 VALUES (?, '', ?, ?, 1, ?, 'once', ?)`,
+		"panic-reminder", "[Reminder] panic test", "#murmur", past, past,
+	)
+	if err != nil {
+		t.Fatalf("insert task: %v", err)
+	}
+
+	// Run a single tick — the task will panic during execution.
+	s.tick(context.Background())
+
+	// Wait for all in-flight task goroutines to finish (panic recovery + next_run reset).
+	s.taskWg.Wait()
+
+	// Verify the task is still enabled (not disabled, since it panicked).
+	tasks, err := s.ListTasks()
+	if err != nil {
+		t.Fatalf("ListTasks: %v", err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("expected 1 task, got %d", len(tasks))
+	}
+	if !tasks[0].Enabled {
+		t.Error("one-shot task should still be enabled after panic (for retry)")
+	}
+	// Verify next_run was reset to run_at (not left 24h in the future).
+	if !tasks[0].NextRun.Valid {
+		t.Fatal("task should have a next_run")
+	}
+	if tasks[0].NextRun.Time.After(time.Now().UTC()) {
+		t.Error("next_run should have been reset to run_at (in the past) for prompt retry, not left in the future")
+	}
+}
+
+// panickingTaskRunner panics when RunScheduledTask is called.
+type panickingTaskRunner struct{}
+
+func (r *panickingTaskRunner) RunScheduledTask(_ context.Context, _, _ string) {
+	panic("simulated task panic")
+}
+
+func TestScheduler_EnableOneShotTask(t *testing.T) {
+	t.Parallel()
+
+	runner := &mockTaskRunner{}
+	s, _ := newTestScheduler(t, runner)
+
+	// Add a one-shot task in the future.
+	runAt := time.Now().UTC().Add(2 * time.Hour)
+	id, err := s.AddOneShotTask("future-reminder", runAt, "[Reminder] future", "#murmur")
+	if err != nil {
+		t.Fatalf("AddOneShotTask: %v", err)
+	}
+
+	// Disable it.
+	if err := s.DisableTask(id); err != nil {
+		t.Fatalf("DisableTask: %v", err)
+	}
+
+	// Re-enable it — should succeed since run_at is in the future.
+	if err := s.EnableTask(id); err != nil {
+		t.Fatalf("EnableTask: %v", err)
+	}
+
+	tasks, _ := s.ListTasks()
+	if !tasks[0].Enabled {
+		t.Error("task should be enabled")
+	}
+}
+
+func TestScheduler_EnableOneShotTask_PastRunAt(t *testing.T) {
+	t.Parallel()
+
+	runner := &mockTaskRunner{}
+	s, database := newTestScheduler(t, runner)
+
+	// Insert a disabled one-shot task with run_at in the past.
+	past := time.Now().UTC().Add(-1 * time.Hour)
+	_, err := database.Exec(
+		`INSERT INTO scheduled_tasks (name, schedule, action, channel, enabled, next_run, type, run_at)
+		 VALUES (?, '', ?, ?, 0, ?, 'once', ?)`,
+		"past-reminder", "[Reminder] past", "#murmur", past, past,
+	)
+	if err != nil {
+		t.Fatalf("insert task: %v", err)
+	}
+
+	// Re-enabling should fail since run_at is in the past.
+	if err := s.EnableTask(1); err == nil {
+		t.Fatal("expected error enabling one-shot task with past run_at")
+	}
+}
+
+func TestScheduler_CleanupOldOneShotTasks(t *testing.T) {
+	t.Parallel()
+
+	runner := &mockTaskRunner{}
+	s, database := newTestScheduler(t, runner)
+
+	// Insert a disabled one-shot task with run_at 31 days ago.
+	oldTime := time.Now().UTC().Add(-31 * 24 * time.Hour)
+	_, err := database.Exec(
+		`INSERT INTO scheduled_tasks (name, schedule, action, channel, enabled, next_run, type, run_at)
+		 VALUES (?, '', ?, ?, 0, ?, 'once', ?)`,
+		"old-reminder", "[Reminder] old", "#murmur", oldTime, oldTime,
+	)
+	if err != nil {
+		t.Fatalf("insert task: %v", err)
+	}
+
+	// Insert a disabled one-shot task with run_at 1 day ago (should NOT be cleaned up).
+	recentTime := time.Now().UTC().Add(-1 * 24 * time.Hour)
+	_, err = database.Exec(
+		`INSERT INTO scheduled_tasks (name, schedule, action, channel, enabled, next_run, type, run_at)
+		 VALUES (?, '', ?, ?, 0, ?, 'once', ?)`,
+		"recent-reminder", "[Reminder] recent", "#murmur", recentTime, recentTime,
+	)
+	if err != nil {
+		t.Fatalf("insert task: %v", err)
+	}
+
+	// Run cleanup.
+	s.cleanupOldOneShotTasks(time.Now().UTC())
+
+	// Verify only the old task was deleted.
+	tasks, err := s.ListTasks()
+	if err != nil {
+		t.Fatalf("ListTasks: %v", err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("expected 1 task after cleanup, got %d", len(tasks))
+	}
+	if tasks[0].Name != "recent-reminder" {
+		t.Errorf("remaining task = %q, want %q", tasks[0].Name, "recent-reminder")
+	}
+}
+
+func TestParseReminderTime(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		input   string
+		wantErr bool
+		check   func(t *testing.T, result time.Time)
+	}{
+		{
+			name:  "relative hours",
+			input: "+2h",
+			check: func(t *testing.T, result time.Time) {
+				t.Helper()
+				expected := time.Now().UTC().Add(2 * time.Hour)
+				if result.Sub(expected).Abs() > 5*time.Second {
+					t.Errorf("result %v not within 5s of expected %v", result, expected)
+				}
+			},
+		},
+		{
+			name:  "relative minutes",
+			input: "+30m",
+			check: func(t *testing.T, result time.Time) {
+				t.Helper()
+				expected := time.Now().UTC().Add(30 * time.Minute)
+				if result.Sub(expected).Abs() > 5*time.Second {
+					t.Errorf("result %v not within 5s of expected %v", result, expected)
+				}
+			},
+		},
+		{
+			name:  "relative days",
+			input: "+1d",
+			check: func(t *testing.T, result time.Time) {
+				t.Helper()
+				expected := time.Now().UTC().AddDate(0, 0, 1)
+				if result.Sub(expected).Abs() > 5*time.Second {
+					t.Errorf("result %v not within 5s of expected %v", result, expected)
+				}
+			},
+		},
+		{
+			name:  "ISO 8601 with timezone",
+			input: "2026-02-22T15:00:00Z",
+			check: func(t *testing.T, result time.Time) {
+				t.Helper()
+				expected := time.Date(2026, 2, 22, 15, 0, 0, 0, time.UTC)
+				if !result.Equal(expected) {
+					t.Errorf("result = %v, want %v", result, expected)
+				}
+			},
+		},
+		{
+			name:  "ISO 8601 without timezone",
+			input: "2026-02-22T15:00:00",
+			check: func(t *testing.T, result time.Time) {
+				t.Helper()
+				expected := time.Date(2026, 2, 22, 15, 0, 0, 0, time.UTC)
+				if !result.Equal(expected) {
+					t.Errorf("result = %v, want %v", result, expected)
+				}
+			},
+		},
+		{
+			name:  "date only",
+			input: "2026-02-22",
+			check: func(t *testing.T, result time.Time) {
+				t.Helper()
+				expected := time.Date(2026, 2, 22, 0, 0, 0, 0, time.UTC)
+				if !result.Equal(expected) {
+					t.Errorf("result = %v, want %v", result, expected)
+				}
+			},
+		},
+		{
+			name:    "invalid format",
+			input:   "next tuesday",
+			wantErr: true,
+		},
+		{
+			name:    "empty string",
+			input:   "",
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			result, err := parseReminderTime(tt.input)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected error for input %q", tt.input)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseReminderTime(%q): %v", tt.input, err)
+			}
+			if tt.check != nil {
+				tt.check(t, result)
+			}
+		})
 	}
 }
 

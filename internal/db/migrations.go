@@ -123,6 +123,12 @@ var migrations = []string{
 	INSERT INTO custom_tools (name, description, parameters, backend, backend_config, enabled, created, updated)
 		SELECT name, description, parameters, backend, backend_config, enabled, created, updated FROM custom_tools_backup;
 	DROP TABLE custom_tools_backup;`,
+
+	// Migration 7: Add type and run_at columns to scheduled_tasks for one-shot reminders.
+	// 'type' is 'cron' (existing recurring tasks) or 'once' (fire once then auto-disable).
+	// 'run_at' is the absolute fire time for one-shot tasks (NULL for cron tasks).
+	`ALTER TABLE scheduled_tasks ADD COLUMN type TEXT NOT NULL DEFAULT 'cron';
+	 ALTER TABLE scheduled_tasks ADD COLUMN run_at DATETIME;`,
 }
 
 // Migrate runs all pending schema migrations. It creates the schema_version

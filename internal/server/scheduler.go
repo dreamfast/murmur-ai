@@ -21,6 +21,17 @@ type TaskRunner interface {
 	RunScheduledTask(ctx context.Context, channel, taskDescription string)
 }
 
+// Task type constants for the scheduled_tasks.type column.
+const (
+	// TaskTypeCron is a recurring task that fires on a cron schedule.
+	TaskTypeCron = "cron"
+	// TaskTypeOnce is a one-shot task that fires once at run_at and auto-disables.
+	TaskTypeOnce = "once"
+)
+
+// oneShotCleanupAge is the age after which disabled one-shot tasks are deleted.
+const oneShotCleanupAge = 30 * 24 * time.Hour // 30 days
+
 // ScheduledTask represents a row in the scheduled_tasks table.
 type ScheduledTask struct {
 	ID       int64
@@ -31,6 +42,8 @@ type ScheduledTask struct {
 	Enabled  bool
 	LastRun  sql.NullTime
 	NextRun  sql.NullTime
+	Type     string       // "cron" or "once"
+	RunAt    sql.NullTime // absolute fire time for one-shot tasks
 }
 
 // Scheduler runs a tick loop that checks for due scheduled tasks and dispatches
@@ -92,6 +105,8 @@ func (s *Scheduler) Run(ctx context.Context) {
 
 // tick checks for due tasks and dispatches them. Before dispatching, each
 // task's next_run is advanced to prevent duplicate dispatch on subsequent ticks.
+// One-shot tasks are disabled after execution instead of advancing next_run.
+// Periodically cleans up old disabled one-shot tasks.
 func (s *Scheduler) tick(ctx context.Context) {
 	now := time.Now().UTC()
 	tasks, err := s.getDueTasks(now)
@@ -101,23 +116,38 @@ func (s *Scheduler) tick(ctx context.Context) {
 	}
 
 	for _, task := range tasks {
-		// Advance next_run BEFORE dispatching to prevent the same task from
-		// being picked up again on the next tick while still running.
-		nextRun, err := s.computeNextRun(task.Schedule, now)
-		if err != nil {
-			s.logger.Error("scheduler: failed to compute next run",
-				"task_id", task.ID,
-				"schedule", task.Schedule,
-				"error", err,
-			)
-			continue
-		}
-		if err := s.updateNextRun(task.ID, nextRun); err != nil {
-			s.logger.Error("scheduler: failed to advance next_run",
-				"task_id", task.ID,
-				"error", err,
-			)
-			continue
+		if task.Type == TaskTypeOnce {
+			// One-shot task: push next_run far into the future to prevent
+			// re-dispatch on the next tick. The task will be disabled after
+			// successful execution in executeTask(). We don't disable here
+			// because if backpressure drops the task, it would be lost forever.
+			farFuture := now.Add(24 * time.Hour)
+			if err := s.updateNextRun(task.ID, farFuture); err != nil {
+				s.logger.Error("scheduler: failed to defer one-shot task",
+					"task_id", task.ID,
+					"error", err,
+				)
+				continue
+			}
+		} else {
+			// Cron task: advance next_run BEFORE dispatching to prevent the
+			// same task from being picked up again on the next tick.
+			nextRun, err := s.computeNextRun(task.Schedule, now)
+			if err != nil {
+				s.logger.Error("scheduler: failed to compute next run",
+					"task_id", task.ID,
+					"schedule", task.Schedule,
+					"error", err,
+				)
+				continue
+			}
+			if err := s.updateNextRun(task.ID, nextRun); err != nil {
+				s.logger.Error("scheduler: failed to advance next_run",
+					"task_id", task.ID,
+					"error", err,
+				)
+				continue
+			}
 		}
 
 		// Try to acquire a semaphore slot (non-blocking).
@@ -127,26 +157,44 @@ func (s *Scheduler) tick(ctx context.Context) {
 			s.logger.Info("scheduler: dispatching task",
 				"task_id", task.ID,
 				"name", task.Name,
+				"type", task.Type,
 				"channel", task.Channel,
 			)
 			s.taskWg.Add(1)
 			go s.executeTask(ctx, task)
 		default:
-			// All slots occupied — skip this task. The next_run has already
-			// been advanced, so the task won't fire again until its next
-			// scheduled time.
+			// All slots occupied — skip this task. For cron tasks, next_run
+			// has been advanced so it won't fire again until its next
+			// scheduled time. For one-shot tasks, next_run was pushed 24h
+			// into the future; it will be retried on the next tick after
+			// that time (or sooner if we reset it here).
+			if task.Type == TaskTypeOnce {
+				// Reset next_run to run_at so the one-shot task is retried
+				// on the next tick when a slot is available.
+				if task.RunAt.Valid {
+					_ = s.updateNextRun(task.ID, task.RunAt.Time)
+				}
+			}
 			s.logger.Warn("scheduler: backpressure, skipping task",
 				"task_id", task.ID,
 				"name", task.Name,
 			)
 		}
 	}
+
+	// Periodic cleanup: delete disabled one-shot tasks older than 30 days.
+	s.cleanupOldOneShotTasks(now)
 }
 
 // executeTask runs a single scheduled task and updates its last_run.
+// For one-shot tasks, the task is disabled after successful execution. If the
+// task panics, the next_run is reset to run_at so it can be retried promptly
+// instead of waiting 24 hours.
 func (s *Scheduler) executeTask(ctx context.Context, task ScheduledTask) {
 	defer s.taskWg.Done()
 	defer func() { <-s.semaphore }()
+
+	panicked := true
 	defer func() {
 		if r := recover(); r != nil {
 			s.logger.Error("scheduler: task panicked",
@@ -155,10 +203,26 @@ func (s *Scheduler) executeTask(ctx context.Context, task ScheduledTask) {
 				"recover", r,
 			)
 		}
+		// If the task panicked (or RunScheduledTask never returned normally),
+		// reset one-shot tasks' next_run to run_at for prompt retry.
+		if panicked && task.Type == TaskTypeOnce && task.RunAt.Valid {
+			if err := s.updateNextRun(task.ID, task.RunAt.Time); err != nil {
+				s.logger.Error("scheduler: failed to reset one-shot task after panic",
+					"task_id", task.ID,
+					"error", err,
+				)
+			} else {
+				s.logger.Info("scheduler: reset one-shot task for retry after panic",
+					"task_id", task.ID,
+					"name", task.Name,
+				)
+			}
+		}
 	}()
 
 	// Run the task via the agent.
 	s.runner.RunScheduledTask(ctx, task.Channel, task.Action)
+	panicked = false
 
 	// Update last_run (next_run was already advanced in tick).
 	now := time.Now().UTC()
@@ -168,12 +232,27 @@ func (s *Scheduler) executeTask(ctx context.Context, task ScheduledTask) {
 			"error", err,
 		)
 	}
+
+	// One-shot tasks auto-disable after successful execution.
+	if task.Type == TaskTypeOnce {
+		if err := s.disableTask(task.ID); err != nil {
+			s.logger.Error("scheduler: failed to disable one-shot task after execution",
+				"task_id", task.ID,
+				"error", err,
+			)
+		} else {
+			s.logger.Info("scheduler: one-shot task completed and disabled",
+				"task_id", task.ID,
+				"name", task.Name,
+			)
+		}
+	}
 }
 
 // getDueTasks returns enabled tasks whose next_run is at or before the given time.
 func (s *Scheduler) getDueTasks(now time.Time) ([]ScheduledTask, error) {
 	rows, err := s.db.Query(
-		`SELECT id, name, schedule, action, channel, enabled, last_run, next_run
+		`SELECT id, name, schedule, action, channel, enabled, last_run, next_run, type, run_at
 		 FROM scheduled_tasks
 		 WHERE enabled = 1 AND next_run <= ?
 		 ORDER BY next_run ASC
@@ -188,7 +267,7 @@ func (s *Scheduler) getDueTasks(now time.Time) ([]ScheduledTask, error) {
 	var tasks []ScheduledTask
 	for rows.Next() {
 		var t ScheduledTask
-		if err := rows.Scan(&t.ID, &t.Name, &t.Schedule, &t.Action, &t.Channel, &t.Enabled, &t.LastRun, &t.NextRun); err != nil {
+		if err := rows.Scan(&t.ID, &t.Name, &t.Schedule, &t.Action, &t.Channel, &t.Enabled, &t.LastRun, &t.NextRun, &t.Type, &t.RunAt); err != nil {
 			return nil, fmt.Errorf("getDueTasks: scan: %w", err)
 		}
 		tasks = append(tasks, t)
@@ -270,12 +349,34 @@ func (s *Scheduler) RemoveTask(id int64) error {
 	return nil
 }
 
-// EnableTask enables a scheduled task and recomputes its next_run.
+// EnableTask enables a scheduled task and recomputes its next_run. For cron
+// tasks, the next run is computed from the cron schedule. For one-shot tasks,
+// the run_at time must still be in the future; otherwise the task cannot be
+// re-enabled (it has already fired).
 func (s *Scheduler) EnableTask(id int64) error {
-	nextRun, err := s.computeNextRunForTask(id)
+	// Read the task type and schedule to determine how to compute next_run.
+	var taskType, schedule string
+	var runAt sql.NullTime
+	err := s.db.QueryRow(
+		`SELECT type, schedule, run_at FROM scheduled_tasks WHERE id = ?`, id,
+	).Scan(&taskType, &schedule, &runAt)
 	if err != nil {
 		return fmt.Errorf("EnableTask: %w", err)
 	}
+
+	var nextRun time.Time
+	if taskType == TaskTypeOnce {
+		if !runAt.Valid || runAt.Time.Before(time.Now().UTC()) {
+			return fmt.Errorf("EnableTask: one-shot task %d has already fired or has no run_at time", id)
+		}
+		nextRun = runAt.Time
+	} else {
+		nextRun, err = s.computeNextRun(schedule, time.Now().UTC())
+		if err != nil {
+			return fmt.Errorf("EnableTask: %w", err)
+		}
+	}
+
 	result, err := s.db.Exec(
 		`UPDATE scheduled_tasks SET enabled = 1, next_run = ? WHERE id = ?`,
 		nextRun, id,
@@ -312,7 +413,7 @@ func (s *Scheduler) DisableTask(id int64) error {
 // ListTasks returns all scheduled tasks.
 func (s *Scheduler) ListTasks() ([]ScheduledTask, error) {
 	rows, err := s.db.Query(
-		`SELECT id, name, schedule, action, channel, enabled, last_run, next_run
+		`SELECT id, name, schedule, action, channel, enabled, last_run, next_run, type, run_at
 		 FROM scheduled_tasks
 		 ORDER BY id ASC
 		 LIMIT 50`,
@@ -325,7 +426,7 @@ func (s *Scheduler) ListTasks() ([]ScheduledTask, error) {
 	var tasks []ScheduledTask
 	for rows.Next() {
 		var t ScheduledTask
-		if err := rows.Scan(&t.ID, &t.Name, &t.Schedule, &t.Action, &t.Channel, &t.Enabled, &t.LastRun, &t.NextRun); err != nil {
+		if err := rows.Scan(&t.ID, &t.Name, &t.Schedule, &t.Action, &t.Channel, &t.Enabled, &t.LastRun, &t.NextRun, &t.Type, &t.RunAt); err != nil {
 			return nil, fmt.Errorf("ListTasks: scan: %w", err)
 		}
 		tasks = append(tasks, t)
@@ -333,12 +434,57 @@ func (s *Scheduler) ListTasks() ([]ScheduledTask, error) {
 	return tasks, rows.Err()
 }
 
-// computeNextRunForTask reads the schedule for a task and computes its next run.
-func (s *Scheduler) computeNextRunForTask(id int64) (time.Time, error) {
-	var schedule string
-	err := s.db.QueryRow(`SELECT schedule FROM scheduled_tasks WHERE id = ?`, id).Scan(&schedule)
-	if err != nil {
-		return time.Time{}, fmt.Errorf("computeNextRunForTask: %w", err)
+// AddOneShotTask adds a one-shot task that fires once at the given time and
+// then auto-disables. The schedule field is left empty since one-shot tasks
+// don't use cron expressions.
+func (s *Scheduler) AddOneShotTask(name string, runAt time.Time, action, channel string) (int64, error) {
+	if runAt.Before(time.Now().UTC()) {
+		return 0, fmt.Errorf("AddOneShotTask: run_at must be in the future")
 	}
-	return s.computeNextRun(schedule, time.Now().UTC())
+
+	result, err := s.db.Exec(
+		`INSERT INTO scheduled_tasks (name, schedule, action, channel, enabled, next_run, type, run_at)
+		 VALUES (?, '', ?, ?, 1, ?, ?, ?)`,
+		name, action, channel, runAt, TaskTypeOnce, runAt,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("AddOneShotTask: %w", err)
+	}
+
+	id, err := result.LastInsertId()
+	if err != nil {
+		return 0, fmt.Errorf("AddOneShotTask: last insert id: %w", err)
+	}
+	return id, nil
+}
+
+// disableTask sets enabled=0 for a task. This is the unexported version used
+// internally by tick() for one-shot tasks, avoiding the rows-affected check
+// that DisableTask performs (the task is guaranteed to exist since we just
+// queried it).
+func (s *Scheduler) disableTask(id int64) error {
+	_, err := s.db.Exec(`UPDATE scheduled_tasks SET enabled = 0 WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("disableTask: %w", err)
+	}
+	return nil
+}
+
+// cleanupOldOneShotTasks deletes disabled one-shot tasks that are older than
+// oneShotCleanupAge. This prevents the scheduled_tasks table from growing
+// unboundedly with expired reminders.
+func (s *Scheduler) cleanupOldOneShotTasks(now time.Time) {
+	cutoff := now.Add(-oneShotCleanupAge)
+	result, err := s.db.Exec(
+		`DELETE FROM scheduled_tasks WHERE type = ? AND enabled = 0 AND run_at < ?`,
+		TaskTypeOnce, cutoff,
+	)
+	if err != nil {
+		s.logger.Error("scheduler: failed to cleanup old one-shot tasks", "error", err)
+		return
+	}
+	n, _ := result.RowsAffected()
+	if n > 0 {
+		s.logger.Info("scheduler: cleaned up old one-shot tasks", "count", n)
+	}
 }
