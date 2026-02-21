@@ -36,8 +36,8 @@
 | 16 | Dashboard Overview Page | `done` | 9469b55 |
 | 17 | Chat Client — Message List and Input | `done` | 46fdc61 |
 | 18 | IRC Color Parsing | `done` | 3f40fec |
-| 19 | Markdown Rendering for Bot Messages | `in_progress` | — |
-| 20 | Command Autocomplete | `pending` | — |
+| 19 | Markdown Rendering for Bot Messages | `done` | 817504f |
+| 20 | Command Autocomplete | `in_progress` | — |
 | 21 | Channel Sidebar and User List | `pending` | — |
 | 22 | Admin Panel | `pending` | — |
 | 23 | Tool Call Rendering | `pending` | — |
