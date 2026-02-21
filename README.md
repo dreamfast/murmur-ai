@@ -1,6 +1,10 @@
-# Murmur
+<p align="center">
+  <img src="https://murmur.dreamfast.solutions/murmurlogo.webp" alt="Murmur" width="300">
+</p>
 
-A distributed personal AI agent that lives on IRC. One server runs the brain (LLM agent loop), multiple clients on different machines provide tools (shell, email, file access, image generation, etc.). Everything coordinates over standard IRC channels.
+<p align="center">
+  A distributed personal AI agent that lives on IRC. One server runs the brain (LLM agent loop), multiple clients on different machines provide tools (shell, email, file access, image generation, etc.). Everything coordinates over standard IRC channels.
+</p>
 
 The name comes from a "murmuration" -- the coordinated movement of a flock of starlings. Each client is a bird in the flock.
 
