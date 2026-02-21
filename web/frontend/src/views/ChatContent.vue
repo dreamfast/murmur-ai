@@ -60,7 +60,26 @@
     </div>
 
     <!-- Input area -->
-    <div class="border-t border-border bg-bg-secondary px-4 py-3">
+    <div class="relative border-t border-border bg-bg-secondary px-4 py-3">
+      <!-- Command autocomplete dropdown -->
+      <div
+        v-if="autocompleteResults.length > 0"
+        class="absolute bottom-full left-4 right-4 mb-1 max-h-48 overflow-y-auto rounded-lg border border-border bg-bg-secondary shadow-lg"
+      >
+        <button
+          v-for="(cmd, idx) in autocompleteResults"
+          :key="cmd.name"
+          type="button"
+          class="flex w-full items-center gap-3 px-3 py-2 text-left text-sm transition"
+          :class="idx === autocompleteIndex ? 'bg-bg-hover text-text-primary' : 'text-text-secondary hover:bg-bg-hover'"
+          @mousedown.prevent="selectAutocomplete(cmd)"
+        >
+          <span class="font-mono font-bold text-accent">{{ cmd.name }}</span>
+          <span v-if="cmd.args" class="font-mono text-xs text-text-muted">{{ cmd.args }}</span>
+          <span class="ml-auto text-xs text-text-muted">{{ cmd.desc }}</span>
+        </button>
+      </div>
+
       <form @submit.prevent="handleSend" class="flex gap-2">
         <input
           ref="inputRef"
@@ -69,8 +88,10 @@
           :disabled="wsState !== WS_STATE.CONNECTED"
           :placeholder="wsState === WS_STATE.CONNECTED ? `Message ${channel}` : 'Connecting...'"
           class="flex-1 rounded border border-border bg-bg-input px-3 py-2 font-mono text-sm text-text-primary placeholder-text-muted outline-none transition focus:border-border-focus focus:ring-1 focus:ring-accent/50 disabled:opacity-50"
-          @keydown.up="handleHistoryUp"
-          @keydown.down="handleHistoryDown"
+          @keydown.up.prevent="handleArrowUp"
+          @keydown.down.prevent="handleArrowDown"
+          @keydown.tab.prevent="handleTab"
+          @keydown.escape="closeAutocomplete"
         />
         <button
           type="submit"
@@ -85,11 +106,12 @@
 </template>
 
 <script setup>
-import { ref, watch, nextTick, onMounted } from "vue";
+import { ref, computed, watch, nextTick, onMounted } from "vue";
 import { SESSION_NICK_KEY } from "../constants.js";
 import { useWebSocket, WS_STATE } from "../composables/useWebSocket.js";
 import { parseIRCColors, stripIRCColors } from "../utils/ircColors.js";
 import { renderMarkdown } from "../utils/markdown.js";
+import { matchCommands } from "../utils/commands.js";
 
 const nick = sessionStorage.getItem(SESSION_NICK_KEY) || "unknown";
 const channel = "#murmur";
@@ -104,8 +126,72 @@ const messageListRef = ref(null);
 const inputHistory = ref([]);
 const historyIndex = ref(-1);
 
+// Command autocomplete state.
+const autocompleteIndex = ref(-1);
+const autocompleteResults = computed(() => {
+  const text = inputText.value;
+  // Only autocomplete if the input starts with ! and has no space yet
+  // (i.e., user is still typing the command name).
+  if (!text.startsWith("!") || text.includes(" ")) return [];
+  return matchCommands(text);
+});
+
+// Reset autocomplete index when results change.
+watch(autocompleteResults, (results) => {
+  autocompleteIndex.value = results.length > 0 ? 0 : -1;
+});
+
+/** Select an autocomplete suggestion. */
+function selectAutocomplete(cmd) {
+  inputText.value = cmd.name + " ";
+  autocompleteIndex.value = -1;
+  if (inputRef.value) inputRef.value.focus();
+}
+
+/** Close the autocomplete dropdown. */
+function closeAutocomplete() {
+  // Clear input if autocomplete is showing, otherwise do nothing.
+  if (autocompleteResults.value.length > 0) {
+    inputText.value = "";
+  }
+}
+
+/** Handle up arrow — autocomplete navigation or input history. */
+function handleArrowUp() {
+  if (autocompleteResults.value.length > 0) {
+    autocompleteIndex.value = Math.max(0, autocompleteIndex.value - 1);
+  } else {
+    handleHistoryUp();
+  }
+}
+
+/** Handle down arrow — autocomplete navigation or input history. */
+function handleArrowDown() {
+  if (autocompleteResults.value.length > 0) {
+    autocompleteIndex.value = Math.min(
+      autocompleteResults.value.length - 1,
+      autocompleteIndex.value + 1,
+    );
+  } else {
+    handleHistoryDown();
+  }
+}
+
+/** Handle Tab — select current autocomplete suggestion. */
+function handleTab() {
+  if (autocompleteResults.value.length > 0 && autocompleteIndex.value >= 0) {
+    selectAutocomplete(autocompleteResults.value[autocompleteIndex.value]);
+  }
+}
+
 /** Send a message to the channel. */
 function handleSend() {
+  // If autocomplete is showing, select the highlighted item instead of sending.
+  if (autocompleteResults.value.length > 0 && autocompleteIndex.value >= 0) {
+    selectAutocomplete(autocompleteResults.value[autocompleteIndex.value]);
+    return;
+  }
+
   const text = inputText.value.trim();
   if (!text) return;
 
