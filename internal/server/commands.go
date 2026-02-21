@@ -172,7 +172,7 @@ func (h *CommandHandler) HandleCommand(channel, nick, message string) bool {
 	case "!tasks":
 		h.cmdTasks(channel)
 	case "!task":
-		h.cmdTask(channel, args)
+		h.cmdTask(channel, nick, args)
 	case "!user":
 		h.cmdUser(channel, nick, args)
 	case "!channel":
@@ -459,13 +459,17 @@ func (h *CommandHandler) cmdTasks(channel string) {
 				schedInfo = "at " + t.RunAt.Time.UTC().Format("2006-01-02 15:04 UTC")
 			}
 		}
-		lines = append(lines, fmt.Sprintf("  #%d [%s] %s [%s] %s — next: %s — %s",
-			t.ID, typeLabel, t.Name, schedInfo, t.Channel, nextRun, status))
+		creator := ""
+		if t.CreatedBy != "" {
+			creator = " by:" + t.CreatedBy
+		}
+		lines = append(lines, fmt.Sprintf("  #%d [%s] %s [%s] %s — next: %s — %s%s",
+			t.ID, typeLabel, t.Name, schedInfo, t.Channel, nextRun, status, creator))
 	}
 	h.send(channel, "scheduled tasks:\n"+strings.Join(lines, "\n"))
 }
 
-func (h *CommandHandler) cmdTask(channel string, args []string) {
+func (h *CommandHandler) cmdTask(channel, nick string, args []string) {
 	if h.scheduler == nil {
 		h.send(channel, "scheduler not enabled")
 		return
@@ -487,7 +491,7 @@ func (h *CommandHandler) cmdTask(channel string, args []string) {
 		}
 		cronExpr := strings.Join(args[1:6], " ")
 		description := strings.Join(args[6:], " ")
-		id, err := h.scheduler.AddTask(description, cronExpr, description, channel)
+		id, err := h.scheduler.AddTask(description, cronExpr, description, channel, nick)
 		if err != nil {
 			h.send(channel, fmt.Sprintf("error adding task: %v", err))
 			return

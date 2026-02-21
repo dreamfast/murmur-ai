@@ -22,12 +22,13 @@ type mockTaskRunner struct {
 type taskRunCall struct {
 	Channel     string
 	Description string
+	CreatedBy   string
 }
 
-func (m *mockTaskRunner) RunScheduledTask(_ context.Context, channel, description, _ string) {
+func (m *mockTaskRunner) RunScheduledTask(_ context.Context, channel, description, createdBy string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.calls = append(m.calls, taskRunCall{Channel: channel, Description: description})
+	m.calls = append(m.calls, taskRunCall{Channel: channel, Description: description, CreatedBy: createdBy})
 }
 
 func (m *mockTaskRunner) getCalls() []taskRunCall {
@@ -65,7 +66,7 @@ func TestScheduler_AddAndListTasks(t *testing.T) {
 	runner := &mockTaskRunner{}
 	s, _ := newTestScheduler(t, runner)
 
-	id, err := s.AddTask("daily-check", "0 9 * * *", "Check system health", "#murmur")
+	id, err := s.AddTask("daily-check", "0 9 * * *", "Check system health", "#murmur", "")
 	if err != nil {
 		t.Fatalf("AddTask: %v", err)
 	}
@@ -106,7 +107,7 @@ func TestScheduler_RemoveTask(t *testing.T) {
 	runner := &mockTaskRunner{}
 	s, _ := newTestScheduler(t, runner)
 
-	id, err := s.AddTask("temp-task", "*/5 * * * *", "Temporary", "#test")
+	id, err := s.AddTask("temp-task", "*/5 * * * *", "Temporary", "#test", "")
 	if err != nil {
 		t.Fatalf("AddTask: %v", err)
 	}
@@ -170,7 +171,7 @@ func TestScheduler_SkipsDisabledTasks(t *testing.T) {
 	runner := &mockTaskRunner{}
 	s, _ := newTestScheduler(t, runner)
 
-	id, err := s.AddTask("disabled-task", "*/5 * * * *", "Should not run", "#test")
+	id, err := s.AddTask("disabled-task", "*/5 * * * *", "Should not run", "#test", "")
 	if err != nil {
 		t.Fatalf("AddTask: %v", err)
 	}
@@ -291,7 +292,7 @@ func TestScheduler_InvalidCronExpression(t *testing.T) {
 	runner := &mockTaskRunner{}
 	s, _ := newTestScheduler(t, runner)
 
-	_, err := s.AddTask("bad-task", "not-a-cron", "action", "#test")
+	_, err := s.AddTask("bad-task", "not-a-cron", "action", "#test", "")
 	if err == nil {
 		t.Fatal("expected error for invalid cron expression")
 	}
@@ -303,7 +304,7 @@ func TestScheduler_EnableDisableTask(t *testing.T) {
 	runner := &mockTaskRunner{}
 	s, _ := newTestScheduler(t, runner)
 
-	id, err := s.AddTask("toggle-task", "0 * * * *", "Hourly check", "#test")
+	id, err := s.AddTask("toggle-task", "0 * * * *", "Hourly check", "#test", "")
 	if err != nil {
 		t.Fatalf("AddTask: %v", err)
 	}
@@ -369,7 +370,7 @@ func TestTaskCommands_List(t *testing.T) {
 	runner := &mockTaskRunner{}
 	scheduler := NewScheduler(database, runner, 30*time.Second, 3, logger)
 
-	_, err = scheduler.AddTask("daily-check", "0 9 * * *", "Check health", "#murmur")
+	_, err = scheduler.AddTask("daily-check", "0 9 * * *", "Check health", "#murmur", "")
 	if err != nil {
 		t.Fatalf("AddTask: %v", err)
 	}
@@ -459,7 +460,7 @@ func TestScheduler_AddOneShotTask(t *testing.T) {
 	s, _ := newTestScheduler(t, runner)
 
 	runAt := time.Now().UTC().Add(2 * time.Hour)
-	id, err := s.AddOneShotTask("test-reminder", runAt, "[Reminder] test", "#murmur")
+	id, err := s.AddOneShotTask("test-reminder", runAt, "[Reminder] test", "#murmur", "")
 	if err != nil {
 		t.Fatalf("AddOneShotTask: %v", err)
 	}
@@ -495,7 +496,7 @@ func TestScheduler_AddOneShotTask_PastTime(t *testing.T) {
 	s, _ := newTestScheduler(t, runner)
 
 	past := time.Now().UTC().Add(-1 * time.Hour)
-	_, err := s.AddOneShotTask("past-reminder", past, "[Reminder] past", "#murmur")
+	_, err := s.AddOneShotTask("past-reminder", past, "[Reminder] past", "#murmur", "")
 	if err == nil {
 		t.Fatal("expected error for past run_at time")
 	}
@@ -616,7 +617,7 @@ func TestScheduler_EnableOneShotTask(t *testing.T) {
 
 	// Add a one-shot task in the future.
 	runAt := time.Now().UTC().Add(2 * time.Hour)
-	id, err := s.AddOneShotTask("future-reminder", runAt, "[Reminder] future", "#murmur")
+	id, err := s.AddOneShotTask("future-reminder", runAt, "[Reminder] future", "#murmur", "")
 	if err != nil {
 		t.Fatalf("AddOneShotTask: %v", err)
 	}
@@ -830,5 +831,206 @@ func TestTaskCommands_NoScheduler(t *testing.T) {
 	}
 	if sent[0] != "scheduler not enabled" {
 		t.Errorf("expected 'scheduler not enabled', got: %s", sent[0])
+	}
+}
+
+func TestAddTask_StoresCreatedBy(t *testing.T) {
+	t.Parallel()
+
+	runner := &mockTaskRunner{}
+	s, _ := newTestScheduler(t, runner)
+
+	// Add a cron task with a creator.
+	id, err := s.AddTask("user-task", "0 9 * * *", "Check health", "#murmur", "alice")
+	if err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+	if id <= 0 {
+		t.Errorf("expected positive task ID, got %d", id)
+	}
+
+	tasks, err := s.ListTasks()
+	if err != nil {
+		t.Fatalf("ListTasks: %v", err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("expected 1 task, got %d", len(tasks))
+	}
+	if tasks[0].CreatedBy != "alice" {
+		t.Errorf("created_by = %q, want %q", tasks[0].CreatedBy, "alice")
+	}
+
+	// Add a one-shot task with a creator.
+	runAt := time.Now().UTC().Add(2 * time.Hour)
+	id2, err := s.AddOneShotTask("user-reminder", runAt, "[Reminder] test", "#murmur", "bob")
+	if err != nil {
+		t.Fatalf("AddOneShotTask: %v", err)
+	}
+	if id2 <= 0 {
+		t.Errorf("expected positive task ID, got %d", id2)
+	}
+
+	tasks, err = s.ListTasks()
+	if err != nil {
+		t.Fatalf("ListTasks: %v", err)
+	}
+	if len(tasks) != 2 {
+		t.Fatalf("expected 2 tasks, got %d", len(tasks))
+	}
+	// Tasks are ordered by ID ASC; the one-shot task is second.
+	if tasks[1].CreatedBy != "bob" {
+		t.Errorf("created_by = %q, want %q", tasks[1].CreatedBy, "bob")
+	}
+}
+
+func TestRunScheduledTask_UsesCreatorPermissions(t *testing.T) {
+	t.Parallel()
+
+	runner := &mockTaskRunner{}
+	s, database := newTestScheduler(t, runner)
+
+	// Insert a task with created_by set, with next_run in the past so it's immediately due.
+	past := time.Now().UTC().Add(-1 * time.Minute)
+	_, err := database.Exec(
+		`INSERT INTO scheduled_tasks (name, schedule, action, channel, enabled, next_run, created_by)
+		 VALUES (?, ?, ?, ?, 1, ?, ?)`,
+		"alice-task", "*/5 * * * *", "Run health check", "#murmur", past, "alice",
+	)
+	if err != nil {
+		t.Fatalf("insert task: %v", err)
+	}
+
+	// Run a single tick.
+	s.tick(context.Background())
+	s.taskWg.Wait()
+
+	calls := runner.getCalls()
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 task execution, got %d", len(calls))
+	}
+	if calls[0].CreatedBy != "alice" {
+		t.Errorf("createdBy = %q, want %q", calls[0].CreatedBy, "alice")
+	}
+	if calls[0].Channel != "#murmur" {
+		t.Errorf("channel = %q, want %q", calls[0].Channel, "#murmur")
+	}
+	if calls[0].Description != "Run health check" {
+		t.Errorf("description = %q, want %q", calls[0].Description, "Run health check")
+	}
+}
+
+func TestRunScheduledTask_LegacyTask(t *testing.T) {
+	t.Parallel()
+
+	runner := &mockTaskRunner{}
+	s, database := newTestScheduler(t, runner)
+
+	// Insert a legacy task without created_by (defaults to empty string).
+	past := time.Now().UTC().Add(-1 * time.Minute)
+	_, err := database.Exec(
+		`INSERT INTO scheduled_tasks (name, schedule, action, channel, enabled, next_run)
+		 VALUES (?, ?, ?, ?, 1, ?)`,
+		"legacy-task", "*/5 * * * *", "Legacy action", "#murmur", past,
+	)
+	if err != nil {
+		t.Fatalf("insert task: %v", err)
+	}
+
+	// Run a single tick.
+	s.tick(context.Background())
+	s.taskWg.Wait()
+
+	calls := runner.getCalls()
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 task execution, got %d", len(calls))
+	}
+	// Legacy tasks should pass empty createdBy, which bypasses permission filtering.
+	if calls[0].CreatedBy != "" {
+		t.Errorf("createdBy = %q, want empty string for legacy task", calls[0].CreatedBy)
+	}
+}
+
+func TestTaskCommands_ListShowsCreatedBy(t *testing.T) {
+	t.Parallel()
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	database.SetMaxOpenConns(1)
+	if err := database.Migrate(); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	t.Cleanup(func() { database.Close() })
+
+	runner := &mockTaskRunner{}
+	scheduler := NewScheduler(database, runner, 30*time.Second, 3, logger)
+
+	// Add a task with a creator.
+	_, err = scheduler.AddTask("user-task", "0 9 * * *", "Check health", "#murmur", "alice")
+	if err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+
+	var sent []string
+	handler := &CommandHandler{
+		scheduler: scheduler,
+		logger:    logger,
+		sendFunc: func(_, message string) {
+			sent = append(sent, message)
+		},
+	}
+
+	handler.HandleCommand("#test", "admin", "!tasks")
+	if len(sent) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(sent))
+	}
+	if !strings.Contains(sent[0], "by:alice") {
+		t.Errorf("expected 'by:alice' in output, got: %s", sent[0])
+	}
+}
+
+func TestTaskCommands_AddStoresCreatedBy(t *testing.T) {
+	t.Parallel()
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	database.SetMaxOpenConns(1)
+	if err := database.Migrate(); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	t.Cleanup(func() { database.Close() })
+
+	runner := &mockTaskRunner{}
+	scheduler := NewScheduler(database, runner, 30*time.Second, 3, logger)
+
+	var sent []string
+	handler := &CommandHandler{
+		scheduler: scheduler,
+		logger:    logger,
+		sendFunc: func(_, message string) {
+			sent = append(sent, message)
+		},
+	}
+
+	// Add a task via !task add — the nick "bob" should be stored as created_by.
+	handler.HandleCommand("#test", "bob", "!task add 0 9 * * * Check system health")
+	if len(sent) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(sent))
+	}
+
+	tasks, err := scheduler.ListTasks()
+	if err != nil {
+		t.Fatalf("ListTasks: %v", err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("expected 1 task, got %d", len(tasks))
+	}
+	if tasks[0].CreatedBy != "bob" {
+		t.Errorf("created_by = %q, want %q", tasks[0].CreatedBy, "bob")
 	}
 }

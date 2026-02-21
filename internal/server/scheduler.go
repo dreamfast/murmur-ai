@@ -35,16 +35,17 @@ const oneShotCleanupAge = 30 * 24 * time.Hour // 30 days
 
 // ScheduledTask represents a row in the scheduled_tasks table.
 type ScheduledTask struct {
-	ID       int64
-	Name     string
-	Schedule string
-	Action   string
-	Channel  string
-	Enabled  bool
-	LastRun  sql.NullTime
-	NextRun  sql.NullTime
-	Type     string       // "cron" or "once"
-	RunAt    sql.NullTime // absolute fire time for one-shot tasks
+	ID        int64
+	Name      string
+	Schedule  string
+	Action    string
+	Channel   string
+	Enabled   bool
+	LastRun   sql.NullTime
+	NextRun   sql.NullTime
+	Type      string       // "cron" or "once"
+	RunAt     sql.NullTime // absolute fire time for one-shot tasks
+	CreatedBy string       // IRC nick of the user who created the task; empty for legacy tasks
 }
 
 // Scheduler runs a tick loop that checks for due scheduled tasks and dispatches
@@ -160,6 +161,7 @@ func (s *Scheduler) tick(ctx context.Context) {
 				"name", task.Name,
 				"type", task.Type,
 				"channel", task.Channel,
+				"created_by", task.CreatedBy,
 			)
 			s.taskWg.Add(1)
 			go s.executeTask(ctx, task)
@@ -221,9 +223,9 @@ func (s *Scheduler) executeTask(ctx context.Context, task ScheduledTask) {
 		}
 	}()
 
-	// Run the task via the agent.
-	// TODO(Task 8): Pass task.CreatedBy once the column exists.
-	s.runner.RunScheduledTask(ctx, task.Channel, task.Action, "")
+	// Run the task via the agent. The creator's current permissions are used
+	// for tool filtering. Empty CreatedBy (legacy tasks) bypasses filtering.
+	s.runner.RunScheduledTask(ctx, task.Channel, task.Action, task.CreatedBy)
 	panicked = false
 
 	// Update last_run (next_run was already advanced in tick).
@@ -254,7 +256,7 @@ func (s *Scheduler) executeTask(ctx context.Context, task ScheduledTask) {
 // getDueTasks returns enabled tasks whose next_run is at or before the given time.
 func (s *Scheduler) getDueTasks(now time.Time) ([]ScheduledTask, error) {
 	rows, err := s.db.Query(
-		`SELECT id, name, schedule, action, channel, enabled, last_run, next_run, type, run_at
+		`SELECT id, name, schedule, action, channel, enabled, last_run, next_run, type, run_at, created_by
 		 FROM scheduled_tasks
 		 WHERE enabled = 1 AND next_run <= ?
 		 ORDER BY next_run ASC
@@ -269,7 +271,7 @@ func (s *Scheduler) getDueTasks(now time.Time) ([]ScheduledTask, error) {
 	var tasks []ScheduledTask
 	for rows.Next() {
 		var t ScheduledTask
-		if err := rows.Scan(&t.ID, &t.Name, &t.Schedule, &t.Action, &t.Channel, &t.Enabled, &t.LastRun, &t.NextRun, &t.Type, &t.RunAt); err != nil {
+		if err := rows.Scan(&t.ID, &t.Name, &t.Schedule, &t.Action, &t.Channel, &t.Enabled, &t.LastRun, &t.NextRun, &t.Type, &t.RunAt, &t.CreatedBy); err != nil {
 			return nil, fmt.Errorf("getDueTasks: scan: %w", err)
 		}
 		tasks = append(tasks, t)
@@ -311,8 +313,10 @@ func (s *Scheduler) computeNextRun(schedule string, after time.Time) (time.Time,
 	return sched.Next(after), nil
 }
 
-// AddTask adds a new scheduled task and computes its initial next_run.
-func (s *Scheduler) AddTask(name, schedule, action, channel string) (int64, error) {
+// AddTask adds a new scheduled task and computes its initial next_run. The
+// createdBy parameter records the IRC nick of the user who created the task;
+// their permissions are used when the scheduler fires the task.
+func (s *Scheduler) AddTask(name, schedule, action, channel, createdBy string) (int64, error) {
 	// Validate the cron expression.
 	nextRun, err := s.computeNextRun(schedule, time.Now().UTC())
 	if err != nil {
@@ -320,9 +324,9 @@ func (s *Scheduler) AddTask(name, schedule, action, channel string) (int64, erro
 	}
 
 	result, err := s.db.Exec(
-		`INSERT INTO scheduled_tasks (name, schedule, action, channel, enabled, next_run)
-		 VALUES (?, ?, ?, ?, 1, ?)`,
-		name, schedule, action, channel, nextRun,
+		`INSERT INTO scheduled_tasks (name, schedule, action, channel, enabled, next_run, created_by)
+		 VALUES (?, ?, ?, ?, 1, ?, ?)`,
+		name, schedule, action, channel, nextRun, createdBy,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("AddTask: %w", err)
@@ -415,7 +419,7 @@ func (s *Scheduler) DisableTask(id int64) error {
 // ListTasks returns all scheduled tasks.
 func (s *Scheduler) ListTasks() ([]ScheduledTask, error) {
 	rows, err := s.db.Query(
-		`SELECT id, name, schedule, action, channel, enabled, last_run, next_run, type, run_at
+		`SELECT id, name, schedule, action, channel, enabled, last_run, next_run, type, run_at, created_by
 		 FROM scheduled_tasks
 		 ORDER BY id ASC
 		 LIMIT 50`,
@@ -428,7 +432,7 @@ func (s *Scheduler) ListTasks() ([]ScheduledTask, error) {
 	var tasks []ScheduledTask
 	for rows.Next() {
 		var t ScheduledTask
-		if err := rows.Scan(&t.ID, &t.Name, &t.Schedule, &t.Action, &t.Channel, &t.Enabled, &t.LastRun, &t.NextRun, &t.Type, &t.RunAt); err != nil {
+		if err := rows.Scan(&t.ID, &t.Name, &t.Schedule, &t.Action, &t.Channel, &t.Enabled, &t.LastRun, &t.NextRun, &t.Type, &t.RunAt, &t.CreatedBy); err != nil {
 			return nil, fmt.Errorf("ListTasks: scan: %w", err)
 		}
 		tasks = append(tasks, t)
@@ -438,16 +442,18 @@ func (s *Scheduler) ListTasks() ([]ScheduledTask, error) {
 
 // AddOneShotTask adds a one-shot task that fires once at the given time and
 // then auto-disables. The schedule field is left empty since one-shot tasks
-// don't use cron expressions.
-func (s *Scheduler) AddOneShotTask(name string, runAt time.Time, action, channel string) (int64, error) {
+// don't use cron expressions. The createdBy parameter records the IRC nick of
+// the user who created the task; their permissions are used when the scheduler
+// fires the task.
+func (s *Scheduler) AddOneShotTask(name string, runAt time.Time, action, channel, createdBy string) (int64, error) {
 	if runAt.Before(time.Now().UTC()) {
 		return 0, fmt.Errorf("AddOneShotTask: run_at must be in the future")
 	}
 
 	result, err := s.db.Exec(
-		`INSERT INTO scheduled_tasks (name, schedule, action, channel, enabled, next_run, type, run_at)
-		 VALUES (?, '', ?, ?, 1, ?, ?, ?)`,
-		name, action, channel, runAt, TaskTypeOnce, runAt,
+		`INSERT INTO scheduled_tasks (name, schedule, action, channel, enabled, next_run, type, run_at, created_by)
+		 VALUES (?, '', ?, ?, 1, ?, ?, ?, ?)`,
+		name, action, channel, runAt, TaskTypeOnce, runAt, createdBy,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("AddOneShotTask: %w", err)
