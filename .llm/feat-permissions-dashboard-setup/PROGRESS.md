@@ -39,8 +39,8 @@
 | 19 | Markdown Rendering for Bot Messages | `done` | 817504f |
 | 20 | Command Autocomplete | `done` | 30248ab |
 | 21 | Channel Sidebar and User List | `done` | bb94c81 |
-| 22 | Admin Panel | `in_progress` | — |
-| 23 | Tool Call Rendering | `pending` | — |
+| 22 | Admin Panel | `done` | 3218dba |
+| 23 | Tool Call Rendering | `in_progress` | — |
 | 24 | Mobile/Tablet Responsive Views | `pending` | — |
 
 ## Phase 4: Polish & README
