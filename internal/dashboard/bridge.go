@@ -88,6 +88,15 @@ func NewBridge(ctx context.Context, ws *websocket.Conn, cfg BridgeConfig, logger
 	if cfg.ServerPassword != "" {
 		ircCfg.ServerPass = cfg.ServerPassword
 	}
+	// Use SASL PLAIN for authentication instead of post-connect NickServ
+	// IDENTIFY. SASL happens during CAP negotiation before CONNECTED fires,
+	// so the user is already identified when channels are joined.
+	if cfg.Password != "" {
+		ircCfg.SASL = &girc.SASLPlain{User: cfg.Nick, Pass: cfg.Password}
+		if !cfg.IRCTLS {
+			logger.Warn("SASL PLAIN enabled without TLS — credentials visible on network")
+		}
+	}
 
 	client := girc.New(ircCfg)
 
@@ -102,11 +111,8 @@ func NewBridge(ctx context.Context, ws *websocket.Conn, cfg BridgeConfig, logger
 
 	// Register IRC event handlers.
 	client.Handlers.AddBg(girc.CONNECTED, func(_ *girc.Client, _ girc.Event) {
-		// Identify with NickServ if password provided.
-		if cfg.Password != "" {
-			client.Cmd.Messagef("NickServ", "IDENTIFY %s", cfg.Password)
-		}
-		// Join configured channels.
+		// Authentication is handled via SASL during CAP negotiation,
+		// so the user is already identified when this fires.
 		for _, ch := range cfg.Channels {
 			client.Cmd.Join(ch)
 		}
