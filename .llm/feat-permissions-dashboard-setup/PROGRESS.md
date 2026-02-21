@@ -1,0 +1,51 @@
+# Progress: Multi-User Permissions, Debug Enhancement, Setup Wizard, Dashboard Foundation & README Update
+
+> Status: IN PROGRESS
+> Branch: feat/permissions-dashboard-setup
+> Updated: 2026-02-21T2
+
+## Phase 1: Foundation
+
+| # | Task | Status | Commit |
+|---|------|--------|--------|
+| 1 | Permission Config Structs and Loading | `done` | fa7e92e |
+| 2 | Permission Manager and Enforcement in Agent Loop | `in_progress` | — |
+| 3 | NickServ Identity Verification | `pending` | — |
+| 4 | Admin Commands (!user and !channel) | `pending` | — |
+| 5 | Permissions Manage LLM Tool | `pending` | — |
+| 6 | Per-User Rate Limiting Integration | `pending` | — |
+| 7 | Per-User API Keys for Webhooks | `pending` | — |
+| 8 | Scheduled Task Permission Tracking | `pending` | — |
+| 9 | Enhanced Debug Channel Logging | `pending` | — |
+| 10 | Config Examples, System Prompt, and Deny List Updates | `pending` | — |
+
+## Phase 2: Setup & Deployment
+
+| # | Task | Status | Commit |
+|---|------|--------|--------|
+| 11 | Interactive Setup Script (Docker Mode) | `pending` | — |
+| 12 | Client Setup Mode | `pending` | — |
+| 13 | Multi-Stage Dockerfile with Vue.js Build | `pending` | — |
+| 14 | Dashboard Backend — WebSocket Handler and IRC Bridge | `pending` | — |
+
+## Phase 3: Dashboard Frontend (Outlined — refine after Phase 2)
+
+| # | Task | Status | Commit |
+|---|------|--------|--------|
+| 15 | Vue.js App Shell — Login, Router, Dark Theme | `pending` | — |
+| 16 | Dashboard Overview Page | `pending` | — |
+| 17 | Chat Client — Message List and Input | `pending` | — |
+| 18 | IRC Color Parsing | `pending` | — |
+| 19 | Markdown Rendering for Bot Messages | `pending` | — |
+| 20 | Command Autocomplete | `pending` | — |
+| 21 | Channel Sidebar and User List | `pending` | — |
+| 22 | Admin Panel | `pending` | — |
+| 23 | Tool Call Rendering | `pending` | — |
+| 24 | Mobile/Tablet Responsive Views | `pending` | — |
+
+## Phase 4: Polish & README
+
+| # | Task | Status | Commit |
+|---|------|--------|--------|
+| 25 | Notification Badges | `pending` | — |
+| 26 | README Update | `pending` | — |
