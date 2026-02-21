@@ -30,6 +30,18 @@
           <span class="text-base">&#x1F4AC;</span>
           <span class="font-mono">#murmur</span>
         </router-link>
+        <router-link
+          :to="{ name: 'admin' }"
+          class="flex items-center gap-2 rounded px-3 py-2 text-sm transition"
+          :class="
+            $route.name === 'admin'
+              ? 'bg-bg-hover text-text-primary'
+              : 'text-text-secondary hover:bg-bg-hover hover:text-text-primary'
+          "
+        >
+          <span class="text-base">&#x2699;</span>
+          <span class="font-mono">Admin</span>
+        </router-link>
       </nav>
       <!-- User list (visible when on chat route) -->
       <div v-if="$route.name === 'chat' && chatStore.users.length > 0" class="flex flex-1 flex-col border-t border-border">
@@ -95,6 +107,8 @@ const pageTitle = computed(() => {
       return "Overview";
     case "chat":
       return "#murmur";
+    case "admin":
+      return "Admin Panel";
     default:
       return "murmur";
   }

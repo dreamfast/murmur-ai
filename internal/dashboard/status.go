@@ -18,6 +18,21 @@ type StatusInfo struct {
 	Uptime time.Duration `json:"uptime_ns"`
 	// UptimeHuman is a human-readable uptime string (e.g. "2h15m30s").
 	UptimeHuman string `json:"uptime"`
+	// ClientDetails is a list of connected clients with their tools.
+	// Included for the admin panel view.
+	ClientDetails []ClientDetail `json:"client_details,omitempty"`
+}
+
+// ClientDetail holds information about a single connected bus client.
+type ClientDetail struct {
+	// ClientID is the unique identifier for this client.
+	ClientID string `json:"client_id"`
+	// Hostname is the client's reported hostname.
+	Hostname string `json:"hostname"`
+	// Autonomy is the client's autonomy level (report/approve/auto).
+	Autonomy string `json:"autonomy"`
+	// Tools is the list of tool names provided by this client.
+	Tools []string `json:"tools"`
 }
 
 // StatusProvider supplies server status information to the dashboard.

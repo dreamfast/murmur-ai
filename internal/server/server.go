@@ -1055,12 +1055,27 @@ func (a *serverStatusAdapter) GetStatus() dashboard.StatusInfo {
 	clients := a.s.registry.GetOnlineClients()
 	toolCount := len(a.s.registry.AllTools()) + len(a.s.serverTools.AllToolDefs())
 
+	details := make([]dashboard.ClientDetail, 0, len(clients))
+	for _, c := range clients {
+		toolNames := make([]string, 0, len(c.Tools))
+		for _, t := range c.Tools {
+			toolNames = append(toolNames, t.Name)
+		}
+		details = append(details, dashboard.ClientDetail{
+			ClientID: c.ClientID,
+			Hostname: c.Hostname,
+			Autonomy: c.Autonomy,
+			Tools:    toolNames,
+		})
+	}
+
 	return dashboard.StatusInfo{
-		ServerName:  a.s.loadCfg().Server.Name,
-		Provider:    a.s.agent.GetProvider(),
-		Clients:     len(clients),
-		Tools:       toolCount,
-		Uptime:      uptime,
-		UptimeHuman: uptime.Truncate(time.Second).String(),
+		ServerName:    a.s.loadCfg().Server.Name,
+		Provider:      a.s.agent.GetProvider(),
+		Clients:       len(clients),
+		Tools:         toolCount,
+		Uptime:        uptime,
+		UptimeHuman:   uptime.Truncate(time.Second).String(),
+		ClientDetails: details,
 	}
 }

@@ -23,6 +23,11 @@ const routes = [
         name: "chat",
         component: () => import("../views/ChatContent.vue"),
       },
+      {
+        path: "admin",
+        name: "admin",
+        component: () => import("../views/Admin.vue"),
+      },
     ],
   },
   {

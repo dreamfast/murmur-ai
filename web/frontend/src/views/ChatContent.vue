@@ -107,6 +107,7 @@
 
 <script setup>
 import { ref, computed, watch, nextTick, onMounted } from "vue";
+import { useRoute } from "vue-router";
 import { SESSION_NICK_KEY } from "../constants.js";
 import { useWebSocket, WS_STATE } from "../composables/useWebSocket.js";
 import { parseIRCColors, stripIRCColors } from "../utils/ircColors.js";
@@ -308,9 +309,14 @@ watch(
   },
 );
 
-// Connect on mount.
+// Connect on mount and handle pre-filled commands from admin panel.
+const route = useRoute();
 onMounted(() => {
   connect(channel);
+  // Pre-fill input from query param (e.g., admin quick actions).
+  if (route.query.cmd) {
+    inputText.value = route.query.cmd;
+  }
   // Focus the input when connected.
   if (inputRef.value) {
     inputRef.value.focus();
