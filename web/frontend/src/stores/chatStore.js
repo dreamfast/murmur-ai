@@ -102,6 +102,7 @@ export function setActiveChannel(channel) {
   // Clear unread for this channel.
   const state = getChannelState(channel);
   state.unread = 0;
+  persistChannels();
 }
 
 /**
@@ -115,6 +116,7 @@ export function wsJoin(channel) {
       chatStore.channels = [...chatStore.channels, channel].sort();
     }
     getChannelState(channel);
+    persistChannels();
   }
 }
 
@@ -131,6 +133,7 @@ export function wsPart(channel) {
     if (chatStore.activeChannel === channel && chatStore.channels.length > 0) {
       setActiveChannel(chatStore.channels[0]);
     }
+    persistChannels();
   }
 }
 
@@ -211,6 +214,42 @@ export function clearUnread() {
 }
 
 // ---------------------------------------------------------------------------
+// Channel persistence (sessionStorage)
+// ---------------------------------------------------------------------------
+
+/** SessionStorage key for persisted channel list. */
+const STORAGE_CHANNELS_KEY = "murmur_channels";
+/** SessionStorage key for persisted active channel. */
+const STORAGE_ACTIVE_KEY = "murmur_active_channel";
+
+/** Persist the current channel list and active channel to sessionStorage. */
+function persistChannels() {
+  try {
+    sessionStorage.setItem(STORAGE_CHANNELS_KEY, JSON.stringify(chatStore.channels));
+    if (chatStore.activeChannel) {
+      sessionStorage.setItem(STORAGE_ACTIVE_KEY, chatStore.activeChannel);
+    }
+  } catch {
+    // sessionStorage may be unavailable (private browsing, quota exceeded).
+  }
+}
+
+/**
+ * Load persisted channels from sessionStorage.
+ * @returns {{ channels: string[], activeChannel: string }}
+ */
+function loadPersistedChannels() {
+  try {
+    const raw = sessionStorage.getItem(STORAGE_CHANNELS_KEY);
+    const channels = raw ? JSON.parse(raw) : [];
+    const activeChannel = sessionStorage.getItem(STORAGE_ACTIVE_KEY) || "";
+    return { channels: Array.isArray(channels) ? channels : [], activeChannel };
+  } catch {
+    return { channels: [], activeChannel: "" };
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Local echo dedup
 // ---------------------------------------------------------------------------
 
@@ -263,22 +302,34 @@ function handleMessage(msg) {
   const now = Date.now();
 
   switch (msg.type) {
-    case "connected":
+    case "connected": {
       chatStore.wsState = WS_STATE.CONNECTED;
       ownNick = msg.nick || "";
       // Populate channel list from the server.
-      if (msg.channels && msg.channels.length > 0) {
-        chatStore.channels = [...msg.channels].sort();
-        for (const ch of msg.channels) {
+      const serverChannels = msg.channels && msg.channels.length > 0 ? [...msg.channels] : [];
+      for (const ch of serverChannels) {
+        getChannelState(ch);
+      }
+      // Merge persisted channels — re-join any that the server didn't auto-join.
+      const saved = loadPersistedChannels();
+      const allChannels = new Set([...serverChannels, ...saved.channels]);
+      for (const ch of saved.channels) {
+        if (!serverChannels.includes(ch) && ws.value && ws.value.readyState === WebSocket.OPEN) {
+          ws.value.send(JSON.stringify({ type: "join", channel: ch }));
           getChannelState(ch);
         }
-        // Set active channel to first if not already set.
-        if (!chatStore.activeChannel || !chatStore.channels.includes(chatStore.activeChannel)) {
-          chatStore.activeChannel = chatStore.channels[0];
-        }
       }
+      chatStore.channels = [...allChannels].sort();
+      // Restore active channel from session, or fall back to first channel.
+      if (saved.activeChannel && allChannels.has(saved.activeChannel)) {
+        chatStore.activeChannel = saved.activeChannel;
+      } else if (!chatStore.activeChannel || !allChannels.has(chatStore.activeChannel)) {
+        chatStore.activeChannel = chatStore.channels[0] || "";
+      }
+      persistChannels();
       addSystemMessage(null, `Connected to IRC as ${msg.nick}`, now);
       break;
+    }
 
     case "message": {
       const msgTime = msg.timestamp || now;
@@ -307,6 +358,7 @@ function handleMessage(msg) {
         if (nickEq(msg.nick, ownNick) && !chatStore.channels.includes(ch)) {
           chatStore.channels = [...chatStore.channels, ch].sort();
           getChannelState(ch);
+          persistChannels();
         }
         addSystemMessage(ch, `${msg.nick} joined ${ch}`, now);
         const state = getChannelState(ch);
@@ -329,6 +381,7 @@ function handleMessage(msg) {
           if (chatStore.activeChannel === ch && chatStore.channels.length > 0) {
             chatStore.activeChannel = chatStore.channels[0];
           }
+          persistChannels();
         } else {
           const state = getChannelState(ch);
           state.users = state.users.filter((u) => !nickEq(u, msg.nick));
@@ -363,6 +416,7 @@ function handleMessage(msg) {
         if (chatStore.activeChannel === ch && chatStore.channels.length > 0) {
           chatStore.activeChannel = chatStore.channels[0];
         }
+        persistChannels();
       } else {
         const state = getChannelState(ch);
         state.users = state.users.filter((u) => !nickEq(u, msg.nick));
