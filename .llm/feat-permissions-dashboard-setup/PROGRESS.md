@@ -47,5 +47,5 @@
 
 | # | Task | Status | Commit |
 |---|------|--------|--------|
-| 25 | Notification Badges | `in_progress` | — |
-| 26 | README Update | `pending` | — |
+| 25 | Notification Badges | `done` | f3752c3 |
+| 26 | README Update | `in_progress` | — |
