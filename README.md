@@ -26,32 +26,36 @@ The name comes from a "murmuration" -- the coordinated movement of a flock of st
 
 ## How It Compares
 
-Murmur takes a fundamentally different architectural approach from other AI assistants. Instead of running as a monolithic process with direct system access, Murmur uses IRC as a message bus to separate the LLM brain from tool execution. The server never touches your filesystem or runs shell commands -- clients on remote machines do that, each with their own autonomy level and tool whitelist.
+There are several personal AI assistant projects that let you run an LLM agent with tool access. They all solve the same core problem -- give an AI the ability to act on your behalf -- but take very different approaches to architecture and security.
 
-This isn't about being "better" -- it's a different set of tradeoffs. The table below compares the approaches factually.
+Murmur's approach is to use IRC as the message bus and physically separate the LLM brain from tool execution. The server never touches your filesystem or runs shell commands -- clients on remote machines do that, each with their own autonomy level and tool whitelist. IRC handles message routing, presence, authentication, and access control, so Murmur doesn't need to reinvent any of that.
 
-| | Murmur | Claude Code | Codex CLI | Cline | Open Interpreter | Aider | Goose | SWE-agent |
-|---|---|---|---|---|---|---|---|---|
-| **Architecture** | Client-server over IRC | Monolithic CLI | Monolithic CLI | VS Code extension | Monolithic CLI | Monolithic CLI | Monolithic CLI/app | Python + Docker |
-| **Execution isolation** | Docker containers + network separation (clients run on separate machines) | OS sandbox (Seatbelt/Landlock) | OS sandbox (Seatbelt/Landlock) | VS Code terminal (no sandbox) | None | N/A (edit-only) | Docker optional | Docker (default) |
-| **Approval flow** | Per-client autonomy levels (`report`/`approve`/`auto`) | Permission prompts | Sandbox modes + approval policies | Per-action GUI approval | Basic y/n prompt | N/A | Unknown | None (automated) |
-| **Command restriction** | Whitelists per client, deny-lists for config | Allowlists/blocklists | Protected paths, trust classification | User approval gate | None | N/A | Unknown | Custom ACI tools |
-| **Network isolation** | Tool execution on air-gapped clients possible; `--network=none` Docker | Sandbox can disable network | Network disabled by default in sandbox | None | None | N/A | Unknown | Container-scoped |
-| **Multi-LLM** | Any OpenAI-compatible endpoint (OpenRouter, Ollama, Kimi, GLM, etc.) | Anthropic only | OpenAI only | Yes (many providers) | Yes (LiteLLM) | Yes (LiteLLM) | Yes (any LLM) | Yes |
-| **Secrets management** | Encrypted vault (AES-256-GCM + Argon2id) | None (env vars) | None (env vars) | None (env vars) | None | None | None | None |
-| **Self-hosted** | Fully (IRC server, LLM, tools -- no external dependencies) | Needs Anthropic API | Needs OpenAI API | BYOK (needs API) | Yes (with Ollama) | Yes (with Ollama) | Yes | Yes |
-| **Communication** | IRC (any client) + REST API | Terminal CLI | Terminal CLI | VS Code IDE | Terminal CLI | Terminal CLI | CLI + Desktop app | CLI + Web GUI |
-| **Custom tools** | LLM creates tools at runtime (shell, HTTP, code, pipeline backends) | MCP servers | MCP servers, Skills | MCP servers | Code generation | Config commands | MCP servers | YAML tool bundles |
-| **Distributed** | Yes (multiple clients across machines) | No | No | No | No | No | No | No |
-| **Hot reload** | SIGHUP / `!reload` / auto-reload on config change | No | No | No | No | No | No | No |
-| **License** | MIT | Proprietary | Apache-2.0 | Apache-2.0 | AGPL-3.0 | Apache-2.0 | Apache-2.0 | MIT |
+| | Murmur | OpenClaw | IronClaw | NanoClaw |
+|---|---|---|---|---|
+| **Language** | Go | TypeScript | Rust | Python |
+| **Architecture** | Client-server over IRC (server = LLM brain, clients = tool providers on separate machines) | Client-server (Gateway + companion app nodes over WebSocket) | Monolithic binary with layered modules | Single process |
+| **Communication bus** | IRC (battle-tested protocol with built-in auth, TLS, channel ACLs, flood protection) | WebSocket control plane (`ws://127.0.0.1:18789`) | Internal module calls | Internal function calls |
+| **Chat channels** | IRC (any client) + REST API + DMs | 14+ (WhatsApp, Telegram, Slack, Discord, Signal, iMessage, Teams, etc.) | Claims 20 (Slack, Discord, Telegram, IRC, Matrix, Teams, etc.) | Telegram + CLI + web dashboard |
+| **Execution isolation** | Docker containers with `--network=none`, `--cap-drop=ALL`, `--read-only` + physical network separation (clients on different machines) | Docker sandbox for non-main sessions; main session has full host access | Docker rootless / Bubblewrap / Native sandbox with seccomp profiles | Python-level filtering (workspace-only file access, blocked shell patterns) |
+| **Approval flow** | Per-client autonomy levels (`report`/`approve`/`auto`) — each machine independently declares its policy | DM pairing for unknown senders | RBAC with deny-precedence | Session budgets and rate limiting |
+| **Command restriction** | Per-client whitelists, config key deny-lists, HMAC-authenticated bus | Per-channel allowlists, SSRF protection | 45+ blocked command patterns, static analysis, typosquatting scanner | Blocked dangerous commands, workspace-only file access |
+| **Network isolation** | Tool clients can run on air-gapped machines; Docker `--network=none` for shell; bus channel invite-only + HMAC | Gateway on localhost; non-main sessions sandboxed | Sandbox profiles (Minimal to Unrestricted) | No open ports (Telegram polling, localhost dashboard) |
+| **Secrets management** | Encrypted vault (AES-256-GCM + Argon2id), `vault:` config references | Unknown | AES-256-GCM encrypted memory | Config file |
+| **Multi-LLM** | Any OpenAI-compatible endpoint (OpenRouter, Ollama, Kimi, GLM, etc.) — switch per-channel at runtime | Anthropic + OpenAI (via OAuth subscriptions) | 25+ providers claimed | OpenRouter, DeepSeek, Anthropic, OpenAI, Ollama |
+| **Custom tools** | LLM creates tools at runtime (shell, HTTP, code, pipeline backends) — persisted in SQLite | Unknown | Skill system with Ed25519 signature verification | Python decorator skills |
+| **Distributed** | Yes — multiple clients across machines, each with independent tools and security policies | Yes — companion app nodes connect to gateway | No | No |
+| **Hot reload** | SIGHUP / `!reload` / auto-reload on config write | Unknown | Unknown | Unknown |
+| **Scheduled tasks** | Server-side cron (LLM-driven) + client-side cron (zero token cost, change detection) | Unknown | DAG-based workflow engine | Cron-like scheduled jobs |
+| **Memory** | SQLite per-channel + auto-summarization + cross-channel context | Unknown | Encrypted memory store | SQLite |
+| **Self-hosted** | Fully (IRC server, LLM, all tools — zero external dependencies with Ollama) | Yes (npm/Docker/Nix) | Yes (single static binary) | Yes (pip/Docker) |
+| **License** | MIT | MIT | Apache-2.0 | MIT |
 
 **Key architectural differences:**
 
-- **IRC as the bus**: The server and clients communicate over IRC, a battle-tested protocol with built-in authentication (NickServ), channel access control (+i, +k), TLS, and flood protection. No custom networking code needed -- IRC handles message routing, presence, and access control.
-- **Physical separation**: Tool-executing clients can run on entirely different machines, networks, or even air-gapped systems. The LLM server never has direct access to the tools it invokes.
-- **Per-client security policies**: Each client independently declares its autonomy level and tool whitelist. A laptop client might require approval for every shell command while a monitoring VPS runs system checks automatically.
-- **No vendor lock-in**: Works with any OpenAI-compatible LLM endpoint. Switch providers per-channel at runtime. Run fully offline with Ollama.
+- **IRC does the heavy lifting**: Murmur doesn't implement its own WebSocket server, authentication system, or message routing. IRC provides all of that out of the box -- NickServ for auth, channel modes (+i, +k) for access control, TLS for encryption, and decades of battle-tested flood protection. The bus protocol is just JSON over PRIVMSGs.
+- **Physical separation by design**: In OpenClaw, the gateway and main session run on the same machine with full host access. In Murmur, the server (LLM brain) and clients (tool providers) are separate processes that can run on entirely different machines, networks, or even air-gapped systems. The server literally cannot access the filesystem -- it has to ask a client to do it over IRC.
+- **Security is structural, not layered**: IronClaw adds 13 security layers on top of a monolithic binary. Murmur's security comes from the architecture itself -- the LLM server has no shell access, no filesystem access, and no network access to the machines running tools. Each client independently declares its autonomy level and tool whitelist. You can't bypass what doesn't exist on the server.
+- **No vendor lock-in**: Works with any OpenAI-compatible LLM endpoint. Switch providers per-channel at runtime. Run fully offline with Ollama. No OAuth subscriptions required.
 
 ---
 
