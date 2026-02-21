@@ -121,7 +121,7 @@
 import { ref, computed, watch, nextTick, onMounted } from "vue";
 import { useRoute } from "vue-router";
 import { SESSION_NICK_KEY } from "../constants.js";
-import { chatStore, wsSend, clearUnread, setActiveChannel, wsJoin, wsPart, WS_STATE } from "../stores/chatStore.js";
+import { chatStore, wsSend, clearUnread, setActiveChannel, wsJoin, wsPart, trackLocalEcho, WS_STATE } from "../stores/chatStore.js";
 import { parseIRCColors } from "../utils/ircColors.js";
 import { renderMarkdown } from "../utils/markdown.js";
 import { matchCommands } from "../utils/commands.js";
@@ -287,6 +287,8 @@ function handleSend() {
 
   const channel = chatStore.activeChannel;
   wsSend(channel, text);
+  // Record local echo so the store can deduplicate the server echo.
+  trackLocalEcho(channel, text);
 
   // Add own message to the display immediately (IRC will echo it back
   // via the bridge, but we show it instantly for responsiveness).
