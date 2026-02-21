@@ -413,10 +413,17 @@ func New(cfg *config.ServerConfig, configPath string, logger *slog.Logger) (*Ser
 	commands.reloader = s
 
 	// Wire permissions into the command handler for admin commands (!user, !channel).
+	// Also register the permissions_manage LLM tool when a PermissionsWriter
+	// can be created (requires both PM and a permissions file path).
 	if pm != nil {
 		commands.permissions.Store(pm)
 		if cfg.Security.PermissionsFile != "" {
-			commands.permWriter.Store(NewPermissionsWriter(cfg.Security.PermissionsFile, logger))
+			pw := NewPermissionsWriter(cfg.Security.PermissionsFile, logger)
+			commands.permWriter.Store(pw)
+			if err := RegisterPermissionsTool(serverTools, pw, pm, s, logger); err != nil {
+				database.Close()
+				return nil, fmt.Errorf("server.New: %w", err)
+			}
 		}
 	}
 
@@ -659,7 +666,14 @@ func (s *Server) Reload() error {
 		// Wire into command handler for admin commands.
 		s.commands.permissions.Store(pm)
 		if cfg.Security.PermissionsFile != "" && s.commands.permWriter.Load() == nil {
-			s.commands.permWriter.Store(NewPermissionsWriter(cfg.Security.PermissionsFile, s.logger))
+			pw := NewPermissionsWriter(cfg.Security.PermissionsFile, s.logger)
+			s.commands.permWriter.Store(pw)
+			// Register the permissions_manage LLM tool if not already present.
+			if !s.serverTools.HasTool("permissions_manage") {
+				if err := RegisterPermissionsTool(s.serverTools, pw, pm, s, s.logger); err != nil {
+					s.logger.Error("Reload: failed to register permissions_manage tool", "error", err)
+				}
+			}
 		}
 		// Derive cleanup context from the server's lifecycle context. If Reload()
 		// is called before Run() (monitorCtx not yet set), fall back to

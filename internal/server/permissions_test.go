@@ -163,6 +163,48 @@ func TestFilterTools_DenyListWins(t *testing.T) {
 	}
 }
 
+func TestFilterTools_AdminOnlyToolsHiddenFromNonAdmin(t *testing.T) {
+	t.Parallel()
+
+	permCfg := &config.PermissionsConfig{
+		Users: map[string]config.UserPermissions{
+			"admin1": {Role: "admin", Tools: []string{"*"}},
+			"user1":  {Role: "user", Tools: []string{"*"}},
+		},
+	}
+	pm := NewPermissionManager(permCfg, testLogger())
+
+	// Include permissions_manage in the tool list.
+	toolsWithAdmin := append(testTools(), bus.ToolDef{
+		Name:        "permissions_manage",
+		Description: "Manage permissions",
+		Parameters:  json.RawMessage(`{}`),
+	})
+
+	// Admin should see permissions_manage.
+	adminResult := pm.FilterTools(toolsWithAdmin, "admin1", "#test", []string{"model1"})
+	adminAllowed := make(map[string]bool)
+	for _, td := range adminResult {
+		adminAllowed[td.Name] = true
+	}
+	if !adminAllowed["permissions_manage"] {
+		t.Error("admin should see permissions_manage")
+	}
+
+	// Non-admin should NOT see permissions_manage even with tools = ["*"].
+	userResult := pm.FilterTools(toolsWithAdmin, "user1", "#test", []string{"model1"})
+	userAllowed := make(map[string]bool)
+	for _, td := range userResult {
+		userAllowed[td.Name] = true
+	}
+	if userAllowed["permissions_manage"] {
+		t.Error("non-admin should NOT see permissions_manage")
+	}
+	if !userAllowed["shell"] {
+		t.Error("non-admin should still see regular tools like shell")
+	}
+}
+
 func TestIsAdmin(t *testing.T) {
 	t.Parallel()
 

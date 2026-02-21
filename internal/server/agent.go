@@ -39,6 +39,12 @@ const crossChannelMaxChannels = 5
 // file cannot be read.
 const defaultSystemPrompt = `You are Murmur, a personal AI assistant communicating over IRC. Be helpful and concise.`
 
+// requestNickKey is the context key used to propagate the requesting user's
+// IRC nick to server-side tool handlers. This enables defense-in-depth checks
+// (e.g., the permissions_manage tool verifying admin status) without changing
+// the tool handler signature.
+type requestNickKey struct{}
+
 // agentConfig holds the mutable configuration fields of the Agent that can be
 // changed at runtime via hot config reload. All fields are protected by Agent.mu
 // and should be read via Agent.loadConfig() to get a consistent snapshot.
@@ -283,6 +289,10 @@ func (a *Agent) HandleEvent(ctx context.Context, channel, source, eventType, sum
 // memory. The nick parameter identifies the user for permission filtering;
 // system-initiated actions use "_system" which bypasses filtering.
 func (a *Agent) runLoop(ctx context.Context, channel, nick string) {
+	// Inject the requesting user's nick into the context so server-side tool
+	// handlers can perform defense-in-depth authorization checks.
+	ctx = context.WithValue(ctx, requestNickKey{}, nick)
+
 	// Track consecutive failures per tool to detect retry loops. When a tool
 	// fails maxConsecutiveToolFailures times in a row, we inject a system
 	// message telling the LLM to stop using it.

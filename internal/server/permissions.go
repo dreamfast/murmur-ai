@@ -13,6 +13,13 @@ import (
 	"murmur/internal/config"
 )
 
+// adminOnlyTools lists tool names that should only be visible to admin users.
+// FilterTools removes these from non-admin users' tool lists regardless of
+// their configured tool permissions.
+var adminOnlyTools = map[string]struct{}{
+	"permissions_manage": {},
+}
+
 // PermissionManager enforces user and channel permissions by filtering tools,
 // checking model access, and applying rate limits. It wraps a PermissionsConfig
 // and provides caching for resolved effective permissions.
@@ -139,6 +146,14 @@ func (pm *PermissionManager) FilterTools(tools []bus.ToolDef, nick, channel stri
 	allowed := make(map[string]struct{}, len(ep.Tools))
 	for _, t := range ep.Tools {
 		allowed[t] = struct{}{}
+	}
+
+	// Remove admin-only tools for non-admin users. These tools should never
+	// be visible to regular users regardless of their tool permissions.
+	if !ep.IsAdmin {
+		for name := range adminOnlyTools {
+			delete(allowed, name)
+		}
 	}
 
 	filtered := make([]bus.ToolDef, 0, len(ep.Tools))
