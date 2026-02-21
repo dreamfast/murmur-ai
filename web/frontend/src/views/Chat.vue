@@ -31,9 +31,22 @@
           <span class="font-mono">#murmur</span>
         </router-link>
       </nav>
-      <!-- Channel list placeholder (Task 21) -->
-      <div class="border-t border-border p-3">
-        <p class="text-xs text-text-muted">More channels in Task 21.</p>
+      <!-- User list (visible when on chat route) -->
+      <div v-if="$route.name === 'chat' && chatStore.users.length > 0" class="flex flex-1 flex-col border-t border-border">
+        <div class="flex items-center justify-between px-3 py-2">
+          <span class="text-xs font-medium uppercase tracking-wider text-text-muted">Users</span>
+          <span class="rounded bg-bg-tertiary px-1.5 py-0.5 text-xs text-text-muted">{{ chatStore.users.length }}</span>
+        </div>
+        <div class="flex-1 overflow-y-auto px-3 pb-3">
+          <div
+            v-for="user in chatStore.users"
+            :key="user"
+            class="flex items-center gap-2 rounded px-2 py-1 text-sm"
+          >
+            <span class="h-1.5 w-1.5 rounded-full bg-success"></span>
+            <span class="truncate font-mono text-xs text-text-secondary">{{ user }}</span>
+          </div>
+        </div>
       </div>
     </aside>
 
@@ -41,8 +54,12 @@
     <div class="flex flex-1 flex-col">
       <!-- Top bar -->
       <header class="flex h-14 items-center justify-between border-b border-border bg-bg-secondary px-4">
-        <div class="flex items-center gap-2">
-          <span class="font-mono text-sm text-text-secondary">{{ pageTitle }}</span>
+        <div class="flex min-w-0 items-center gap-2">
+          <span class="flex-shrink-0 font-mono text-sm text-text-secondary">{{ pageTitle }}</span>
+          <span
+            v-if="$route.name === 'chat' && chatStore.topic"
+            class="truncate text-xs text-text-muted"
+          >— {{ chatStore.topic }}</span>
         </div>
         <div class="flex items-center gap-3">
           <span class="font-mono text-xs text-text-muted">{{ nick }}</span>
@@ -66,6 +83,7 @@ import { ref, computed } from "vue";
 import { useRouter, useRoute } from "vue-router";
 import { SESSION_NICK_KEY, SESSION_SIGNING_KEY, API } from "../constants.js";
 import { signedFetch } from "../api.js";
+import { chatStore } from "../stores/chatStore.js";
 
 const router = useRouter();
 const route = useRoute();

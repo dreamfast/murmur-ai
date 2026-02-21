@@ -112,11 +112,16 @@ import { useWebSocket, WS_STATE } from "../composables/useWebSocket.js";
 import { parseIRCColors, stripIRCColors } from "../utils/ircColors.js";
 import { renderMarkdown } from "../utils/markdown.js";
 import { matchCommands } from "../utils/commands.js";
+import { chatStore } from "../stores/chatStore.js";
 
 const nick = sessionStorage.getItem(SESSION_NICK_KEY) || "unknown";
-const channel = "#murmur";
+const channel = chatStore.channel;
 
 const { state: wsState, messages, users, topic, connect, send } = useWebSocket();
+
+// Sync WebSocket state to the shared store for the sidebar user list.
+watch(users, (val) => { chatStore.users = val; }, { immediate: true });
+watch(topic, (val) => { chatStore.topic = val; }, { immediate: true });
 
 const inputText = ref("");
 const inputRef = ref(null);
