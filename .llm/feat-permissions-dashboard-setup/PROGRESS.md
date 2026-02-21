@@ -2,7 +2,7 @@
 
 > Status: IN PROGRESS
 > Branch: feat/permissions-dashboard-setup
-> Updated: 2026-02-22T01
+> Updated: 2026-02-22T02
 
 ## Phase 1: Foundation
 
@@ -33,8 +33,8 @@
 | # | Task | Status | Commit |
 |---|------|--------|--------|
 | 15 | Vue.js App Shell — Login, Router, Dark Theme | `done` | 129949e |
-| 16 | Dashboard Overview Page | `in_progress` | — |
-| 17 | Chat Client — Message List and Input | `pending` | — |
+| 16 | Dashboard Overview Page | `done` | 9469b55 |
+| 17 | Chat Client — Message List and Input | `in_progress` | — |
 | 18 | IRC Color Parsing | `pending` | — |
 | 19 | Markdown Rendering for Bot Messages | `pending` | — |
 | 20 | Command Autocomplete | `pending` | — |
