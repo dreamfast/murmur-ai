@@ -11,7 +11,8 @@
  * tracking when the user is not on the chat page.
  *
  * Multi-channel support: messages are stored globally with a channel field.
- * Per-channel state (users, topic, unread count) is stored in channelState.
+ * Per-channel state (users, topic, unread count, userModes) is stored in
+ * channelState.
  */
 
 import { reactive, shallowRef } from "vue";
@@ -41,18 +42,36 @@ let msgIdCounter = 0;
 /** The user's own IRC nick (set on "connected" message). */
 let ownNick = "";
 
+/**
+ * Get the user's own IRC nick.
+ * @returns {string}
+ */
+export function getOwnNick() {
+  return ownNick;
+}
+
 /** @type {import('vue').ShallowRef<WebSocket|null>} */
 const ws = shallowRef(null);
 let reconnectAttempts = 0;
 let reconnectTimer = null;
 let intentionalClose = false;
 
+/**
+ * Case-insensitive nick comparison (IRC nicks are case-insensitive).
+ * @param {string} a
+ * @param {string} b
+ * @returns {boolean}
+ */
+function nickEq(a, b) {
+  return a.toLowerCase() === b.toLowerCase();
+}
+
 export const chatStore = reactive({
   /** List of available channel names. */
   channels: [],
   /** Currently active/selected channel. */
   activeChannel: "",
-  /** Per-channel state: { [channel]: { users: [], topic: "", unread: 0 } }. */
+  /** Per-channel state: { [channel]: { users: [], topic: "", unread: 0, userModes: {} } }. */
   channelState: {},
   /** Reactive array of chat messages (all channels). */
   messages: [],
@@ -65,11 +84,11 @@ export const chatStore = reactive({
 /**
  * Get or create per-channel state.
  * @param {string} channel
- * @returns {{ users: string[], topic: string, unread: number }}
+ * @returns {{ users: string[], topic: string, unread: number, userModes: Object<string, string> }}
  */
 function getChannelState(channel) {
   if (!chatStore.channelState[channel]) {
-    chatStore.channelState[channel] = { users: [], topic: "", unread: 0 };
+    chatStore.channelState[channel] = { users: [], topic: "", unread: 0, userModes: {} };
   }
   return chatStore.channelState[channel];
 }
@@ -191,6 +210,54 @@ export function clearUnread() {
   chatStore.unreadCount = 0;
 }
 
+// ---------------------------------------------------------------------------
+// Local echo dedup
+// ---------------------------------------------------------------------------
+
+/** Recent local echoes for dedup. Array of {text, channel, time}. Max 10 entries. */
+const localEchoes = [];
+/** Time window for local echo dedup (milliseconds). */
+const LOCAL_ECHO_WINDOW = 10_000;
+
+/**
+ * Record a local echo for dedup. Called from ChatContent when sending.
+ * @param {string} channel
+ * @param {string} text
+ */
+export function trackLocalEcho(channel, text) {
+  localEchoes.push({ channel, text, time: Date.now() });
+  if (localEchoes.length > 10) localEchoes.shift();
+}
+
+/**
+ * Check if an incoming message matches a local echo (duplicate).
+ * Returns true if it's a duplicate and removes the matched echo.
+ * @param {string} channel
+ * @param {string} nick
+ * @param {string} text
+ * @param {number} timestamp — message timestamp from server
+ * @returns {boolean}
+ */
+function isLocalEchoDuplicate(channel, nick, text, timestamp) {
+  if (!nickEq(nick, ownNick)) return false;
+  // Skip dedup for historical messages (timestamp > 30s in the past).
+  const now = Date.now();
+  if (timestamp && (now - timestamp) > 30_000) return false;
+
+  const idx = localEchoes.findIndex(
+    (e) => e.channel === channel && e.text === text && (now - e.time) < LOCAL_ECHO_WINDOW,
+  );
+  if (idx !== -1) {
+    localEchoes.splice(idx, 1);
+    return true;
+  }
+  return false;
+}
+
+// ---------------------------------------------------------------------------
+// Message handling
+// ---------------------------------------------------------------------------
+
 /** Handle an incoming WebSocket message from the bridge. */
 function handleMessage(msg) {
   const now = Date.now();
@@ -213,14 +280,17 @@ function handleMessage(msg) {
       addSystemMessage(null, `Connected to IRC as ${msg.nick}`, now);
       break;
 
-    case "message":
+    case "message": {
+      const msgTime = msg.timestamp || now;
+      // Skip if this is a server echo of our own local message.
+      if (isLocalEchoDuplicate(msg.channel, msg.nick, msg.text, msgTime)) break;
       appendMessage({
-        id: `${now}-${++msgIdCounter}`,
+        id: `${msgTime}-${++msgIdCounter}`,
         type: "message",
         nick: msg.nick,
         text: msg.text,
         channel: msg.channel,
-        time: now,
+        time: msgTime,
       });
       // Track unread for non-active channels.
       if (msg.channel && msg.channel !== chatStore.activeChannel) {
@@ -228,18 +298,19 @@ function handleMessage(msg) {
         state.unread++;
       }
       break;
+    }
 
     case "join": {
       const ch = msg.channel;
       if (ch) {
         // If we joined a new channel, add it to the channel list.
-        if (msg.nick === ownNick && !chatStore.channels.includes(ch)) {
+        if (nickEq(msg.nick, ownNick) && !chatStore.channels.includes(ch)) {
           chatStore.channels = [...chatStore.channels, ch].sort();
           getChannelState(ch);
         }
         addSystemMessage(ch, `${msg.nick} joined ${ch}`, now);
         const state = getChannelState(ch);
-        if (!state.users.includes(msg.nick)) {
+        if (!state.users.some((u) => nickEq(u, msg.nick))) {
           state.users = [...state.users, msg.nick].sort();
         }
       }
@@ -252,7 +323,7 @@ function handleMessage(msg) {
         const reason = msg.text ? ` (${msg.text})` : "";
         addSystemMessage(ch, `${msg.nick} left ${ch}${reason}`, now);
         // If we left the channel, remove it from the list.
-        if (msg.nick === ownNick) {
+        if (nickEq(msg.nick, ownNick)) {
           chatStore.channels = chatStore.channels.filter((c) => c !== ch);
           delete chatStore.channelState[ch];
           if (chatStore.activeChannel === ch && chatStore.channels.length > 0) {
@@ -260,7 +331,61 @@ function handleMessage(msg) {
           }
         } else {
           const state = getChannelState(ch);
-          state.users = state.users.filter((u) => u !== msg.nick);
+          state.users = state.users.filter((u) => !nickEq(u, msg.nick));
+          if (state.userModes) delete state.userModes[msg.nick];
+        }
+      }
+      break;
+    }
+
+    case "quit": {
+      const reason = msg.text ? ` (${msg.text})` : "";
+      for (const [ch, state] of Object.entries(chatStore.channelState)) {
+        if (state.users.some((u) => nickEq(u, msg.nick))) {
+          state.users = state.users.filter((u) => !nickEq(u, msg.nick));
+          if (state.userModes) delete state.userModes[msg.nick];
+          addSystemMessage(ch, `${msg.nick} has quit${reason}`, now);
+        }
+      }
+      break;
+    }
+
+    case "kick": {
+      const ch = msg.channel;
+      if (!ch) break;
+      const kicker = msg.mode || "";
+      const reason = msg.text ? ` (${msg.text})` : "";
+      addSystemMessage(ch, `${msg.nick} was kicked by ${kicker}${reason}`, now);
+      if (nickEq(msg.nick, ownNick)) {
+        // Self-kicked — remove channel (same as part logic).
+        chatStore.channels = chatStore.channels.filter((c) => c !== ch);
+        delete chatStore.channelState[ch];
+        if (chatStore.activeChannel === ch && chatStore.channels.length > 0) {
+          chatStore.activeChannel = chatStore.channels[0];
+        }
+      } else {
+        const state = getChannelState(ch);
+        state.users = state.users.filter((u) => !nickEq(u, msg.nick));
+        if (state.userModes) delete state.userModes[msg.nick];
+      }
+      break;
+    }
+
+    case "nick": {
+      const oldNick = msg.nick;
+      const newNick = msg.text;
+      if (nickEq(oldNick, ownNick)) ownNick = newNick;
+      for (const [ch, state] of Object.entries(chatStore.channelState)) {
+        const idx = state.users.findIndex((u) => nickEq(u, oldNick));
+        if (idx !== -1) {
+          state.users = [...state.users];
+          state.users[idx] = newNick;
+          state.users.sort();
+          if (state.userModes && state.userModes[oldNick] !== undefined) {
+            state.userModes[newNick] = state.userModes[oldNick];
+            delete state.userModes[oldNick];
+          }
+          addSystemMessage(ch, `${oldNick} is now known as ${newNick}`, now);
         }
       }
       break;
@@ -271,7 +396,11 @@ function handleMessage(msg) {
       if (ch) {
         const state = getChannelState(ch);
         state.topic = msg.topic;
-        addSystemMessage(ch, `${msg.nick} set topic: ${msg.topic}`, now);
+        // Only show system message for user-initiated topic changes (has nick).
+        // RPL_TOPIC (332) on join has no nick — just set the topic silently.
+        if (msg.nick) {
+          addSystemMessage(ch, `${msg.nick} set topic: ${msg.topic}`, now);
+        }
       }
       break;
     }
@@ -281,6 +410,9 @@ function handleMessage(msg) {
       if (ch && msg.users) {
         const state = getChannelState(ch);
         state.users = [...msg.users].sort();
+        if (msg.user_modes) {
+          state.userModes = { ...msg.user_modes };
+        }
       }
       break;
     }
@@ -289,6 +421,15 @@ function handleMessage(msg) {
       const ch = msg.channel;
       if (ch) {
         addSystemMessage(ch, `${msg.nick} set mode ${msg.mode} on ${ch}`, now);
+      }
+      break;
+    }
+
+    case "notice": {
+      // Display notices as system-style messages in the relevant channel.
+      const ch = msg.channel || chatStore.activeChannel;
+      if (ch) {
+        addSystemMessage(ch, `[${msg.nick}] ${msg.text}`, now);
       }
       break;
     }
