@@ -201,6 +201,11 @@ type SecurityConfig struct {
 	RequireNickServ bool `toml:"require_nickserv"`
 	// BusKey is a shared secret for bus message authentication (optional, Phase 2).
 	BusKey string `toml:"bus_key"`
+	// PermissionsFile is the path to the permissions TOML file that defines
+	// user and channel permission rules. Defaults to <data_dir>/permissions.toml.
+	// The file is machine-managed by !user/!channel commands and the
+	// permissions_manage tool. Manual edits are supported and applied on reload.
+	PermissionsFile string `toml:"permissions_file"`
 }
 
 // ParsedSchedulerConfig holds parsed duration values from SchedulerConfig.
@@ -292,6 +297,16 @@ func LoadServerConfig(path string) (*ServerConfig, error) {
 		cfg.Vault.DBPath, err = expandHome(cfg.Vault.DBPath)
 		if err != nil {
 			return nil, fmt.Errorf("LoadServerConfig: expanding vault.db_path: %w", err)
+		}
+	}
+
+	// Default permissions file path to data_dir/permissions.toml.
+	if cfg.Security.PermissionsFile == "" {
+		cfg.Security.PermissionsFile = filepath.Join(cfg.Server.DataDir, "permissions.toml")
+	} else {
+		cfg.Security.PermissionsFile, err = expandHome(cfg.Security.PermissionsFile)
+		if err != nil {
+			return nil, fmt.Errorf("LoadServerConfig: expanding security.permissions_file: %w", err)
 		}
 	}
 
