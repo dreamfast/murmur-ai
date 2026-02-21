@@ -52,8 +52,8 @@
               class="flex-shrink-0 font-mono text-sm font-bold leading-6"
               :style="{ color: nickColor(msg.nick) }"
             >{{ msg.nick }}</span>
-            <!-- eslint-disable-next-line vue/no-v-html -- parseIRCColors escapes HTML before adding style spans -->
-            <span class="min-w-0 break-words font-mono text-sm leading-6 text-text-primary" v-html="parseIRCColors(msg.text)"></span>
+            <!-- eslint-disable-next-line vue/no-v-html -- renderMessage escapes HTML before adding formatting -->
+            <span class="min-w-0 break-words font-mono text-sm leading-6 text-text-primary" v-html="renderMessage(msg)"></span>
           </template>
         </div>
       </div>
@@ -88,7 +88,8 @@
 import { ref, watch, nextTick, onMounted } from "vue";
 import { SESSION_NICK_KEY } from "../constants.js";
 import { useWebSocket, WS_STATE } from "../composables/useWebSocket.js";
-import { parseIRCColors } from "../utils/ircColors.js";
+import { parseIRCColors, stripIRCColors } from "../utils/ircColors.js";
+import { renderMarkdown } from "../utils/markdown.js";
 
 const nick = sessionStorage.getItem(SESSION_NICK_KEY) || "unknown";
 const channel = "#murmur";
@@ -151,6 +152,28 @@ function handleHistoryDown() {
     historyIndex.value = -1;
     inputText.value = "";
   }
+}
+
+/**
+ * Render a message for display. Bot messages get markdown rendering;
+ * other messages get IRC color parsing. The heuristic: if the message
+ * contains markdown patterns (code fences, **bold**, links) and no IRC
+ * control characters, use markdown. Otherwise use IRC color parsing.
+ */
+function renderMessage(msg) {
+  const text = msg.text || "";
+  // Check for IRC control characters (0x02, 0x03, 0x0F, 0x16, 0x1D, 0x1F).
+  const hasIRCCodes = /[\x02\x03\x0f\x16\x1d\x1f]/.test(text);
+  if (hasIRCCodes) {
+    return parseIRCColors(text);
+  }
+  // Check for markdown patterns.
+  const hasMarkdown = /```|`[^`]+`|\*\*|\[.+\]\(.+\)|^#{1,3}\s|^>\s|^[-*]\s|^\d+\.\s/m.test(text);
+  if (hasMarkdown) {
+    return renderMarkdown(text);
+  }
+  // Plain text — still render markdown for auto-linking URLs.
+  return renderMarkdown(text);
 }
 
 /** Format a timestamp for display (HH:MM). */
