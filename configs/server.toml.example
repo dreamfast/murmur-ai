@@ -1,6 +1,7 @@
 [server]
 data_dir = "~/.murmur"
 system_prompt_file = "~/.murmur/system_prompt.md"
+# debug_channel = "#murmur-debug"  # IRC channel for live slog output (empty = disabled)
 
 [irc]
 server = "irc.example.com"

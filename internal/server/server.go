@@ -59,6 +59,10 @@ type Server struct {
 
 	// httpServer is the REST API HTTP server, nil when API is disabled.
 	httpServer *http.Server
+
+	// ircLogHandler is the IRC debug channel log handler, nil when debug
+	// channel is not configured. Exposed so commands can toggle it.
+	ircLogHandler *irc.IRCLogHandler
 }
 
 // New creates a new server from the given configuration. It opens the SQLite
@@ -84,6 +88,18 @@ func New(cfg *config.ServerConfig, logger *slog.Logger) (*Server, error) {
 				logger.Info("vault references resolved")
 			}
 		}
+	}
+
+	// Set up the IRC debug log handler if a debug channel is configured.
+	// This wraps the existing logger with a MultiHandler that fans out to
+	// both stderr and the IRC channel. The IRC handler starts disabled and
+	// is activated after the IRC connection is established in Run().
+	var ircLogHandler *irc.IRCLogHandler
+	if cfg.Server.DebugChannel != "" {
+		ircLogHandler = irc.NewIRCLogHandler(cfg.Server.DebugChannel, slog.LevelDebug)
+		multiHandler := irc.NewMultiHandler(logger.Handler(), ircLogHandler)
+		logger = slog.New(multiHandler)
+		logger.Info("debug channel configured", "channel", cfg.Server.DebugChannel)
 	}
 
 	channels := []string{cfg.IRC.Channels.Main, cfg.IRC.Channels.Bus}
@@ -284,7 +300,11 @@ func New(cfg *config.ServerConfig, logger *slog.Logger) (*Server, error) {
 		modelSwitcher = agent
 	}
 	flood := newFloodGuard(logger)
-	commands := NewCommandHandler(registry, memory, notesStore, scheduler, approvals, conn, modelSwitcher, flood, cfg.Security.AllowedUsers, time.Now(), logger)
+	var debugToggler DebugToggler
+	if ircLogHandler != nil {
+		debugToggler = ircLogHandler
+	}
+	commands := NewCommandHandler(registry, memory, notesStore, scheduler, approvals, conn, modelSwitcher, flood, debugToggler, cfg.Security.AllowedUsers, time.Now(), logger)
 
 	s := &Server{
 		cfg:             cfg,
@@ -304,6 +324,7 @@ func New(cfg *config.ServerConfig, logger *slog.Logger) (*Server, error) {
 		agent:           agent,
 		flood:           flood,
 		startTime:       time.Now(),
+		ircLogHandler:   ircLogHandler,
 	}
 
 	s.registerBusHandlers()
@@ -345,6 +366,17 @@ func New(cfg *config.ServerConfig, logger *slog.Logger) (*Server, error) {
 	conn.OnOper(func() {
 		agent.SyncAllTopics()
 	})
+
+	// Join the debug channel and activate the IRC log handler on connect.
+	if ircLogHandler != nil {
+		conn.OnConnect(func() {
+			if err := conn.Join(cfg.Server.DebugChannel); err != nil {
+				logger.Warn("failed to join debug channel", "channel", cfg.Server.DebugChannel, "error", err)
+			}
+			ircLogHandler.SetConnection(conn)
+			logger.Info("debug channel active", "channel", cfg.Server.DebugChannel)
+		})
+	}
 
 	return s, nil
 }
@@ -422,6 +454,11 @@ func (s *Server) Run(ctx context.Context) error {
 	// database. This prevents goroutines from hitting a closed DB.
 	s.logger.Info("waiting for in-flight agent goroutines to finish")
 	s.agentWg.Wait()
+
+	// Close the IRC log handler before closing the database.
+	if s.ircLogHandler != nil {
+		s.ircLogHandler.Close()
+	}
 
 	// Close the database after all goroutines are done.
 	if err := s.database.Close(); err != nil {

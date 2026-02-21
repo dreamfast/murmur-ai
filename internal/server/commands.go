@@ -40,6 +40,19 @@ type FloodFlusher interface {
 	flush(channel string) int
 }
 
+// DebugToggler is the interface the CommandHandler needs to toggle the debug
+// IRC log handler on/off. Defined here (where consumed) per Go convention.
+type DebugToggler interface {
+	// SetEnabled toggles the debug log handler on or off.
+	SetEnabled(on bool)
+	// IsEnabled returns whether the debug log handler is currently active.
+	IsEnabled() bool
+	// SetLevel changes the minimum log level for the debug handler.
+	SetLevel(level slog.Level)
+	// Level returns the current minimum log level.
+	Level() slog.Level
+}
+
 // CommandHandler dispatches built-in `!` commands. Commands are handled
 // without involving the LLM — they provide quick status and management.
 type CommandHandler struct {
@@ -51,6 +64,7 @@ type CommandHandler struct {
 	conn         *irc.Connection
 	model        ModelSwitcher
 	flood        FloodFlusher
+	debug        DebugToggler
 	allowedUsers []string
 	startTime    time.Time
 	logger       *slog.Logger
@@ -66,6 +80,7 @@ type CommandHandler struct {
 // The scheduler parameter may be nil if the scheduler is not enabled.
 // The approvals parameter may be nil if the approval flow is not configured.
 // The flood parameter may be nil if flood protection is not configured.
+// The debug parameter may be nil if the debug channel is not configured.
 func NewCommandHandler(
 	registry *Registry,
 	memory *Memory,
@@ -75,6 +90,7 @@ func NewCommandHandler(
 	conn *irc.Connection,
 	model ModelSwitcher,
 	flood FloodFlusher,
+	debug DebugToggler,
 	allowedUsers []string,
 	startTime time.Time,
 	logger *slog.Logger,
@@ -88,6 +104,7 @@ func NewCommandHandler(
 		conn:         conn,
 		model:        model,
 		flood:        flood,
+		debug:        debug,
 		allowedUsers: allowedUsers,
 		startTime:    startTime,
 		logger:       logger,
@@ -141,6 +158,8 @@ func (h *CommandHandler) HandleCommand(channel, nick, message string) bool {
 		h.cmdTasks(channel)
 	case "!task":
 		h.cmdTask(channel, args)
+	case "!debug":
+		h.cmdDebug(channel, args)
 	case "!help":
 		h.cmdHelp(channel)
 	default:
@@ -570,6 +589,53 @@ func (h *CommandHandler) cmdPending(channel string) {
 	h.send(channel, fmt.Sprintf("pending approvals (%d):\n%s", len(pending), strings.Join(lines, "\n")))
 }
 
+func (h *CommandHandler) cmdDebug(channel string, args []string) {
+	if h.debug == nil {
+		h.send(channel, "debug channel not configured (set server.debug_channel in config)")
+		return
+	}
+
+	if len(args) == 0 {
+		// Show current state.
+		state := "off"
+		if h.debug.IsEnabled() {
+			state = "on"
+		}
+		h.send(channel, fmt.Sprintf("debug: %s (level: %s)", state, h.debug.Level().String()))
+		return
+	}
+
+	switch args[0] {
+	case "on":
+		h.debug.SetEnabled(true)
+		h.send(channel, "debug logging enabled")
+	case "off":
+		h.debug.SetEnabled(false)
+		h.send(channel, "debug logging disabled")
+	case "level":
+		if len(args) < 2 {
+			h.send(channel, fmt.Sprintf("current level: %s (usage: !debug level debug|info|warn|error)", h.debug.Level().String()))
+			return
+		}
+		switch strings.ToLower(args[1]) {
+		case "debug":
+			h.debug.SetLevel(slog.LevelDebug)
+		case "info":
+			h.debug.SetLevel(slog.LevelInfo)
+		case "warn":
+			h.debug.SetLevel(slog.LevelWarn)
+		case "error":
+			h.debug.SetLevel(slog.LevelError)
+		default:
+			h.send(channel, "unknown level: "+args[1]+" (use debug, info, warn, error)")
+			return
+		}
+		h.send(channel, fmt.Sprintf("debug level set to %s", args[1]))
+	default:
+		h.send(channel, "usage: !debug [on|off|level debug|info|warn|error]")
+	}
+}
+
 func (h *CommandHandler) cmdHelp(channel string) {
 	help := `available commands:
   !status — server uptime, clients, model, message count
@@ -585,6 +651,7 @@ func (h *CommandHandler) cmdHelp(channel string) {
   !pending — list pending tool call approvals
   !tasks — list scheduled tasks and reminders
   !task add/remove/enable/disable — manage scheduled tasks (30s granularity, UTC)
+  !debug [on|off|level <level>] — toggle debug IRC channel logging
   !help — show this help`
 	h.send(channel, help)
 }

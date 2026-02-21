@@ -7,6 +7,7 @@ data_dir = "/data"
 system_prompt_file = "/data/system_prompt.md"
 name = "server"
 verbose = true
+# debug_channel = "#murmur-debug"  # IRC channel for live slog output (empty = disabled)
 
 [irc]
 server = "ircd"

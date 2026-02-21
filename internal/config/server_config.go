@@ -57,6 +57,9 @@ type ServerSection struct {
 	// Verbose sends status messages to IRC (thinking, tool calls, etc.)
 	// so the user can see what the agent is doing in real time.
 	Verbose bool `toml:"verbose"`
+	// DebugChannel is an IRC channel that receives live slog output for
+	// real-time debugging (e.g., "#murmur-debug"). Empty means disabled.
+	DebugChannel string `toml:"debug_channel"`
 }
 
 // LLMConfig holds multi-provider LLM configuration.
