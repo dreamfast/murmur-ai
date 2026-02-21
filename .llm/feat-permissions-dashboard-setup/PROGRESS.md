@@ -34,8 +34,8 @@
 |---|------|--------|--------|
 | 15 | Vue.js App Shell — Login, Router, Dark Theme | `done` | 129949e |
 | 16 | Dashboard Overview Page | `done` | 9469b55 |
-| 17 | Chat Client — Message List and Input | `in_progress` | — |
-| 18 | IRC Color Parsing | `pending` | — |
+| 17 | Chat Client — Message List and Input | `done` | 46fdc61 |
+| 18 | IRC Color Parsing | `in_progress` | — |
 | 19 | Markdown Rendering for Bot Messages | `pending` | — |
 | 20 | Command Autocomplete | `pending` | — |
 | 21 | Channel Sidebar and User List | `pending` | — |
