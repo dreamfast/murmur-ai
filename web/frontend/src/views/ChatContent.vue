@@ -379,25 +379,53 @@ function nickColor(name) {
   return NICK_COLORS[Math.abs(hash) % NICK_COLORS.length];
 }
 
+/** Scroll the message list to the bottom. */
+function scrollToBottom() {
+  const el = messageListRef.value;
+  if (el) el.scrollTop = el.scrollHeight;
+}
+
+/**
+ * Track previous filtered message count to detect history loads.
+ * When a channel goes from 0 messages to >0 (history replay arriving),
+ * we force-scroll regardless of scroll position.
+ */
+let prevFilteredCount = 0;
+
 // Auto-scroll to bottom when new messages arrive in the active channel.
 watch(
   () => filteredMessages.value.length,
-  async () => {
+  async (newLen) => {
+    const wasEmpty = prevFilteredCount === 0;
+    prevFilteredCount = newLen;
     await nextTick();
     const el = messageListRef.value;
-    if (el) {
-      // Only auto-scroll if user is near the bottom (within 150px).
+    if (!el) return;
+    // Force scroll when channel was empty (history load arriving) or user is near bottom.
+    if (wasEmpty && newLen > 0) {
+      scrollToBottom();
+    } else {
       const isNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 150;
       if (isNearBottom) {
-        el.scrollTop = el.scrollHeight;
+        scrollToBottom();
       }
     }
   },
 );
 
+// Scroll to bottom on channel switch.
+watch(
+  () => chatStore.activeChannel,
+  async () => {
+    prevFilteredCount = 0;
+    await nextTick();
+    scrollToBottom();
+  },
+);
+
 // Handle pre-filled commands from admin panel on mount.
 const route = useRoute();
-onMounted(() => {
+onMounted(async () => {
   // Clear unread count since user is now viewing chat.
   clearUnread();
   // Clear per-channel unread for the active channel.
@@ -412,5 +440,8 @@ onMounted(() => {
   if (inputRef.value) {
     inputRef.value.focus();
   }
+  // Scroll to bottom after DOM renders (handles page refresh with existing messages).
+  await nextTick();
+  scrollToBottom();
 });
 </script>
