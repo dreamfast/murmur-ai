@@ -10,18 +10,20 @@ import (
 	_ "modernc.org/sqlite" // Pure Go SQLite driver
 )
 
-// mailDB wraps a read-only connection to Thunderbird's global-messages-db.sqlite.
-// All queries use immutable mode to avoid locking a running Thunderbird instance.
+// mailDB provides read-only access to Thunderbird's global-messages-db.sqlite.
+// Each query opens a fresh immutable connection so that it always sees the
+// latest data that Thunderbird has flushed to the main database file, without
+// holding a lock that would conflict with a running Thunderbird/Betterbird.
 type mailDB struct {
-	db *sql.DB
+	dsn string
 }
 
 // globalMessagesDB is the filename of Thunderbird's global search index.
 const globalMessagesDB = "global-messages-db.sqlite"
 
-// openMailDB opens the Thunderbird global messages database in read-only
-// immutable mode. Returns an error if the database cannot be opened or
-// does not contain the expected tables.
+// openMailDB verifies that the Thunderbird global messages database exists and
+// contains the expected tables. It does not keep a persistent connection;
+// individual queries open short-lived immutable connections for freshness.
 func openMailDB(profilePath string) (*mailDB, error) {
 	dbPath := filepath.Join(profilePath, globalMessagesDB)
 	dsn := fmt.Sprintf("file:%s?mode=ro&immutable=1", dbPath)
@@ -30,21 +32,36 @@ func openMailDB(profilePath string) (*mailDB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("openMailDB: %w", err)
 	}
+	defer db.Close()
 
 	// Verify the database has the expected tables.
 	var name string
 	err = db.QueryRow("SELECT name FROM sqlite_master WHERE type='table' AND name='messages'").Scan(&name)
 	if err != nil {
-		db.Close()
 		return nil, fmt.Errorf("openMailDB: missing messages table: %w", err)
 	}
 
-	return &mailDB{db: db}, nil
+	return &mailDB{dsn: dsn}, nil
 }
 
-// Close closes the database connection.
+// open returns a short-lived database connection. Each call opens a fresh
+// immutable snapshot of the database file, ensuring recent data is visible.
+// Callers must close the returned *sql.DB when done.
+func (m *mailDB) open() (*sql.DB, error) {
+	db, err := sql.Open("sqlite", m.dsn)
+	if err != nil {
+		return nil, fmt.Errorf("mailDB.open: %w", err)
+	}
+	// Immutable mode means one connection is sufficient and we don't want
+	// the pool keeping stale connections around.
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(0)
+	return db, nil
+}
+
+// Close is a no-op since connections are opened per-query.
 func (m *mailDB) Close() error {
-	return m.db.Close()
+	return nil
 }
 
 // folderInfo represents a mail folder with its message count.
@@ -56,6 +73,12 @@ type folderInfo struct {
 
 // folders returns all folders with their non-deleted message counts.
 func (m *mailDB) folders(accountPattern string) ([]folderInfo, error) {
+	db, err := m.open()
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+
 	query := `
 		SELECT fl.name, fl.folderURI, COUNT(msg.id) as cnt
 		FROM folderLocations fl
@@ -70,7 +93,7 @@ func (m *mailDB) folders(accountPattern string) ([]folderInfo, error) {
 
 	query += " GROUP BY fl.id ORDER BY cnt DESC"
 
-	rows, err := m.db.Query(query, args...)
+	rows, err := db.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("mailDB.folders: %w", err)
 	}
@@ -97,7 +120,9 @@ func (m *mailDB) unread(accountPattern string, folderName string, limit int) ([]
 		JOIN messagesText_content mt ON mt.docid = m.id
 		JOIN folderLocations fl ON m.folderID = fl.id
 		WHERE m.deleted = 0
-		  AND json_extract(m.jsonAttributes, '$.59') = 0`
+		  AND (m.jsonAttributes IS NULL
+		    OR json_extract(m.jsonAttributes, '$.61') IS NULL
+		    OR json_extract(m.jsonAttributes, '$.61') = 0)`
 
 	var args []any
 	if accountPattern != "" {
@@ -150,6 +175,12 @@ func (m *mailDB) search(searchQuery string, accountPattern string, folderName st
 // readByID returns the full message (including body) for the given
 // headerMessageID. Returns nil if not found.
 func (m *mailDB) readByID(headerMessageID string) (*mailMessage, error) {
+	db, err := m.open()
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+
 	query := `
 		SELECT m.headerMessageID, mt.c3author, mt.c1subject,
 		       m.date, fl.name, mt.c0body
@@ -165,7 +196,7 @@ func (m *mailDB) readByID(headerMessageID string) (*mailMessage, error) {
 	var folder string
 	var body sql.NullString
 
-	err := m.db.QueryRow(query, headerMessageID).Scan(
+	err = db.QueryRow(query, headerMessageID).Scan(
 		&msg.MessageID, &msg.From, &msg.Subject,
 		&dateUsec, &folder, &body,
 	)
@@ -188,7 +219,13 @@ func (m *mailDB) readByID(headerMessageID string) (*mailMessage, error) {
 // (headerMessageID, c3author, c1subject, date, folder name) and converts
 // them into mailMessage structs.
 func (m *mailDB) queryMessages(query string, args []any) ([]mailMessage, error) {
-	rows, err := m.db.Query(query, args...)
+	db, err := m.open()
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+
+	rows, err := db.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("mailDB.queryMessages: %w", err)
 	}
