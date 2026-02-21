@@ -1,9 +1,26 @@
 <template>
   <div class="flex h-screen bg-bg-primary">
+    <!-- Mobile sidebar overlay -->
+    <div
+      v-if="sidebarOpen"
+      class="fixed inset-0 z-30 bg-black/50 md:hidden"
+      @click="sidebarOpen = false"
+    ></div>
+
     <!-- Sidebar -->
-    <aside class="hidden w-sidebar flex-shrink-0 border-r border-border bg-bg-secondary md:block">
-      <div class="flex h-14 items-center border-b border-border px-4">
+    <aside
+      class="fixed inset-y-0 left-0 z-40 w-sidebar flex-shrink-0 border-r border-border bg-bg-secondary transition-transform duration-200 md:static md:translate-x-0"
+      :class="sidebarOpen ? 'translate-x-0' : '-translate-x-full'"
+    >
+      <div class="flex h-14 items-center justify-between border-b border-border px-4">
         <h2 class="font-mono text-sm font-bold text-accent">murmur</h2>
+        <!-- Close button (mobile only) -->
+        <button
+          class="rounded p-1 text-text-muted transition hover:bg-bg-hover hover:text-text-primary md:hidden"
+          @click="sidebarOpen = false"
+        >
+          &#x2715;
+        </button>
       </div>
       <nav class="flex flex-col gap-1 p-3">
         <router-link
@@ -14,6 +31,7 @@
               ? 'bg-bg-hover text-text-primary'
               : 'text-text-secondary hover:bg-bg-hover hover:text-text-primary'
           "
+          @click="sidebarOpen = false"
         >
           <span class="text-base">&#x1F4CA;</span>
           <span class="font-mono">Overview</span>
@@ -26,6 +44,7 @@
               ? 'bg-bg-hover text-text-primary'
               : 'text-text-secondary hover:bg-bg-hover hover:text-text-primary'
           "
+          @click="sidebarOpen = false"
         >
           <span class="text-base">&#x1F4AC;</span>
           <span class="font-mono">#murmur</span>
@@ -38,6 +57,7 @@
               ? 'bg-bg-hover text-text-primary'
               : 'text-text-secondary hover:bg-bg-hover hover:text-text-primary'
           "
+          @click="sidebarOpen = false"
         >
           <span class="text-base">&#x2699;</span>
           <span class="font-mono">Admin</span>
@@ -49,7 +69,7 @@
           <span class="text-xs font-medium uppercase tracking-wider text-text-muted">Users</span>
           <span class="rounded bg-bg-tertiary px-1.5 py-0.5 text-xs text-text-muted">{{ chatStore.users.length }}</span>
         </div>
-        <div class="flex-1 overflow-y-auto px-3 pb-3">
+        <div class="max-h-48 overflow-y-auto px-3 pb-3 md:max-h-none md:flex-1">
           <div
             v-for="user in chatStore.users"
             :key="user"
@@ -63,18 +83,27 @@
     </aside>
 
     <!-- Main content area -->
-    <div class="flex flex-1 flex-col">
+    <div class="flex flex-1 flex-col overflow-hidden">
       <!-- Top bar -->
       <header class="flex h-14 items-center justify-between border-b border-border bg-bg-secondary px-4">
         <div class="flex min-w-0 items-center gap-2">
+          <!-- Hamburger menu (mobile only) -->
+          <button
+            class="mr-1 rounded p-1.5 text-text-muted transition hover:bg-bg-hover hover:text-text-primary md:hidden"
+            @click="sidebarOpen = !sidebarOpen"
+          >
+            <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M4 6h16M4 12h16M4 18h16" />
+            </svg>
+          </button>
           <span class="flex-shrink-0 font-mono text-sm text-text-secondary">{{ pageTitle }}</span>
           <span
             v-if="$route.name === 'chat' && chatStore.topic"
-            class="truncate text-xs text-text-muted"
+            class="hidden truncate text-xs text-text-muted sm:inline"
           >— {{ chatStore.topic }}</span>
         </div>
         <div class="flex items-center gap-3">
-          <span class="font-mono text-xs text-text-muted">{{ nick }}</span>
+          <span class="hidden font-mono text-xs text-text-muted sm:inline">{{ nick }}</span>
           <button
             @click="handleLogout"
             class="rounded px-2 py-1 text-xs text-text-secondary transition hover:bg-bg-hover hover:text-text-primary"
@@ -91,7 +120,7 @@
 </template>
 
 <script setup>
-import { ref, computed } from "vue";
+import { ref, computed, watch } from "vue";
 import { useRouter, useRoute } from "vue-router";
 import { SESSION_NICK_KEY, SESSION_SIGNING_KEY, API } from "../constants.js";
 import { signedFetch } from "../api.js";
@@ -100,6 +129,12 @@ import { chatStore } from "../stores/chatStore.js";
 const router = useRouter();
 const route = useRoute();
 const nick = ref(sessionStorage.getItem(SESSION_NICK_KEY) || "unknown");
+const sidebarOpen = ref(false);
+
+// Close sidebar on route change (mobile).
+watch(() => route.name, () => {
+  sidebarOpen.value = false;
+});
 
 const pageTitle = computed(() => {
   switch (route.name) {
