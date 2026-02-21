@@ -161,11 +161,14 @@ export function renderMarkdown(text) {
   // Strikethrough: ~~text~~
   processed = processed.replace(/~~(.+?)~~/g, '<del class="line-through text-text-muted">$1</del>');
 
-  // Markdown links: [text](url)
-  processed = processed.replace(
-    /\[([^\]]+)\]\(([^)]+)\)/g,
-    '<a href="$2" target="_blank" rel="noopener noreferrer" class="text-info underline hover:text-accent">$1</a>',
-  );
+  // Markdown links: [text](url) — only allow http/https to prevent XSS via javascript: or data: URIs.
+  processed = processed.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, text, url) => {
+    if (/^https?:\/\//i.test(url)) {
+      return `<a href="${url}" target="_blank" rel="noopener noreferrer" class="text-info underline hover:text-accent">${text}</a>`;
+    }
+    // Unsafe scheme — render as plain text.
+    return `${text} (${url})`;
+  });
 
   // Auto-link URLs (but not already inside href="...")
   processed = processed.replace(

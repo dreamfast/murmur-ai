@@ -131,6 +131,9 @@ import ToolCallCard from "../components/ToolCallCard.vue";
 const nick = sessionStorage.getItem(SESSION_NICK_KEY) || "unknown";
 const channel = chatStore.channel;
 
+/** Monotonic counter for local echo message IDs. */
+let localMsgCounter = 0;
+
 // Track approval statuses (id -> "approved" | "denied" | "timeout").
 const approvalStatuses = ref({});
 
@@ -254,15 +257,16 @@ function handleSend() {
 
   // Add own message to the display immediately (IRC will echo it back
   // via the bridge, but we show it instantly for responsiveness).
+  const now = Date.now();
   chatStore.messages = [
     ...chatStore.messages,
     {
-      id: Date.now() + Math.random(),
+      id: `local-${now}-${localMsgCounter++}`,
       type: "message",
       nick,
       text,
       channel,
-      time: Date.now(),
+      time: now,
     },
   ];
 

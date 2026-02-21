@@ -29,6 +29,11 @@ const MAX_RECONNECT_DELAY = 30_000;
 const BASE_RECONNECT_DELAY = 1_000;
 /** Maximum number of reconnect attempts before giving up. */
 const MAX_RECONNECT_ATTEMPTS = 10;
+/** Maximum number of messages to keep in the store to prevent memory leaks. */
+const MAX_MESSAGES = 1000;
+
+/** Monotonic counter for generating unique message IDs. */
+let msgIdCounter = 0;
 
 /** @type {import('vue').ShallowRef<WebSocket|null>} */
 const ws = shallowRef(null);
@@ -139,17 +144,14 @@ function handleMessage(msg) {
       break;
 
     case "message":
-      chatStore.messages = [
-        ...chatStore.messages,
-        {
-          id: now + Math.random(),
-          type: "message",
-          nick: msg.nick,
-          text: msg.text,
-          channel: msg.channel,
-          time: now,
-        },
-      ];
+      appendMessage({
+        id: `${now}-${++msgIdCounter}`,
+        type: "message",
+        nick: msg.nick,
+        text: msg.text,
+        channel: msg.channel,
+        time: now,
+      });
       break;
 
     case "join":
@@ -198,17 +200,20 @@ function handleMessage(msg) {
   }
 }
 
+/** Append a message to the store, capping at MAX_MESSAGES to prevent memory leaks. */
+function appendMessage(msg) {
+  const updated = [...chatStore.messages, msg];
+  chatStore.messages = updated.length > MAX_MESSAGES ? updated.slice(-MAX_MESSAGES) : updated;
+}
+
 /** Add a system/event message to the message list. */
 function addSystemMessage(text, time) {
-  chatStore.messages = [
-    ...chatStore.messages,
-    {
-      id: time + Math.random(),
-      type: "system",
-      text,
-      time,
-    },
-  ];
+  appendMessage({
+    id: `${time}-${++msgIdCounter}`,
+    type: "system",
+    text,
+    time,
+  });
 }
 
 /** Schedule a reconnect with exponential backoff. */

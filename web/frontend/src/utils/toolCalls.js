@@ -56,10 +56,9 @@ export function detectToolStatus(text) {
  * (typically a longer structured response from the bot after executing a tool).
  *
  * @param {string} text
- * @param {string} botNick — the bot's nick to identify bot messages
  * @returns {boolean}
  */
-export function isToolResult(text, botNick) {
+export function isToolResult(text) {
   // Tool results are typically multi-line or contain code blocks.
   if (!text) return false;
   return text.includes("```") || text.split("\n").length > 3;

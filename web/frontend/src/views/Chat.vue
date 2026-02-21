@@ -16,6 +16,7 @@
         <h2 class="font-mono text-sm font-bold text-accent">murmur</h2>
         <!-- Close button (mobile only) -->
         <button
+          aria-label="Close sidebar"
           class="rounded p-1 text-text-muted transition hover:bg-bg-hover hover:text-text-primary md:hidden"
           @click="sidebarOpen = false"
         >
@@ -94,6 +95,7 @@
         <div class="flex min-w-0 items-center gap-2">
           <!-- Hamburger menu (mobile only) -->
           <button
+            aria-label="Toggle sidebar"
             class="mr-1 rounded p-1.5 text-text-muted transition hover:bg-bg-hover hover:text-text-primary md:hidden"
             @click="sidebarOpen = !sidebarOpen"
           >
