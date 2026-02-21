@@ -16,9 +16,10 @@ import (
 // TaskRunner is the interface the Scheduler uses to execute scheduled tasks.
 // It is satisfied by Agent.RunScheduledTask. Implementations must be safe for
 // concurrent use — the scheduler may call RunScheduledTask from multiple
-// goroutines simultaneously.
+// goroutines simultaneously. The createdBy parameter identifies the user who
+// created the task for permission filtering; empty means no filtering.
 type TaskRunner interface {
-	RunScheduledTask(ctx context.Context, channel, taskDescription string)
+	RunScheduledTask(ctx context.Context, channel, taskDescription, createdBy string)
 }
 
 // Task type constants for the scheduled_tasks.type column.
@@ -221,7 +222,8 @@ func (s *Scheduler) executeTask(ctx context.Context, task ScheduledTask) {
 	}()
 
 	// Run the task via the agent.
-	s.runner.RunScheduledTask(ctx, task.Channel, task.Action)
+	// TODO(Task 8): Pass task.CreatedBy once the column exists.
+	s.runner.RunScheduledTask(ctx, task.Channel, task.Action, "")
 	panicked = false
 
 	// Update last_run (next_run was already advanced in tick).

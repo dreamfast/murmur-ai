@@ -616,7 +616,7 @@ func TestAgent_ResolveProvider(t *testing.T) {
 	)
 
 	// No override — should resolve to global default.
-	p, err := agent.resolveProvider("#chan1")
+	p, err := agent.resolveProvider("#chan1", "user1", nil)
 	if err != nil {
 		t.Fatalf("resolveProvider: %v", err)
 	}
@@ -628,7 +628,7 @@ func TestAgent_ResolveProvider(t *testing.T) {
 	if err := agent.SetProvider("#chan1", "other-provider"); err != nil {
 		t.Fatalf("SetProvider: %v", err)
 	}
-	p, err = agent.resolveProvider("#chan1")
+	p, err = agent.resolveProvider("#chan1", "user1", nil)
 	if err != nil {
 		t.Fatalf("resolveProvider: %v", err)
 	}
@@ -637,7 +637,7 @@ func TestAgent_ResolveProvider(t *testing.T) {
 	}
 
 	// Other channel still resolves to default.
-	p, err = agent.resolveProvider("#chan2")
+	p, err = agent.resolveProvider("#chan2", "user1", nil)
 	if err != nil {
 		t.Fatalf("resolveProvider: %v", err)
 	}
@@ -651,7 +651,7 @@ func TestAgent_ResolveProvider_NilChannelSettings(t *testing.T) {
 	env := newTestAgentEnv(t)
 
 	// channelSettings is nil in default test env — should fall back to global.
-	p, err := env.agent.resolveProvider("#test")
+	p, err := env.agent.resolveProvider("#test", "user1", nil)
 	if err != nil {
 		t.Fatalf("resolveProvider: %v", err)
 	}
@@ -712,7 +712,7 @@ func TestAgent_ResolveProvider_StaleOverride(t *testing.T) {
 	)
 
 	// resolveProvider should fall back to global default when override is stale.
-	p, err := agent.resolveProvider("#chan1")
+	p, err := agent.resolveProvider("#chan1", "user1", nil)
 	if err != nil {
 		t.Fatalf("resolveProvider: %v", err)
 	}

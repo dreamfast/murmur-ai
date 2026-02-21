@@ -24,7 +24,7 @@ type taskRunCall struct {
 	Description string
 }
 
-func (m *mockTaskRunner) RunScheduledTask(_ context.Context, channel, description string) {
+func (m *mockTaskRunner) RunScheduledTask(_ context.Context, channel, description, _ string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.calls = append(m.calls, taskRunCall{Channel: channel, Description: description})
@@ -262,7 +262,7 @@ type blockingTaskRunner struct {
 	unblock chan struct{}
 }
 
-func (r *blockingTaskRunner) RunScheduledTask(_ context.Context, _, _ string) {
+func (r *blockingTaskRunner) RunScheduledTask(_ context.Context, _, _, _ string) {
 	r.started.Add(1)
 	<-r.unblock
 }
@@ -604,7 +604,7 @@ func TestScheduler_OneShotPanicResetsNextRun(t *testing.T) {
 // panickingTaskRunner panics when RunScheduledTask is called.
 type panickingTaskRunner struct{}
 
-func (r *panickingTaskRunner) RunScheduledTask(_ context.Context, _, _ string) {
+func (r *panickingTaskRunner) RunScheduledTask(_ context.Context, _, _, _ string) {
 	panic("simulated task panic")
 }
 

@@ -48,6 +48,9 @@ type Server struct {
 	scheduler       *Scheduler
 	commands        *CommandHandler
 	agent           *Agent
+	permissions     *PermissionManager
+	permCleanupStop context.CancelFunc // stops the PM cleanup goroutine; nil if PM not active
+	monitorCtx      context.Context    // lifecycle context for background goroutines; set in Run()
 
 	// allowedUsers is an atomic copy of the allowed users list, used by
 	// isAllowed() for lock-free reads. Updated during Reload().
@@ -262,6 +265,21 @@ func New(cfg *config.ServerConfig, configPath string, logger *slog.Logger) (*Ser
 	// Create the approval manager for the tool call approval flow.
 	approvals := NewApprovalManager(logger)
 
+	// Load permissions config and create the permission manager.
+	permCfg, err := config.LoadPermissionsConfig(cfg.Security.PermissionsFile)
+	if err != nil {
+		database.Close()
+		return nil, fmt.Errorf("server.New: load permissions config: %w", err)
+	}
+	var pm *PermissionManager
+	if len(permCfg.Users) > 0 || len(permCfg.Channels) > 0 {
+		pm = NewPermissionManager(permCfg, logger)
+		logger.Info("permissions loaded",
+			"users", len(permCfg.Users),
+			"channels", len(permCfg.Channels),
+		)
+	}
+
 	// Create the agent (may have zero providers — commands still work).
 	agent := NewAgent(
 		providers,
@@ -283,6 +301,9 @@ func New(cfg *config.ServerConfig, configPath string, logger *slog.Logger) (*Ser
 		cfg.Server.Verbose,
 		logger,
 	)
+
+	// Wire the permission manager into the agent.
+	agent.SetPermissions(pm)
 
 	// Create the task scheduler (may be nil if not enabled).
 	var scheduler *Scheduler
@@ -346,6 +367,7 @@ func New(cfg *config.ServerConfig, configPath string, logger *slog.Logger) (*Ser
 		scheduler:       scheduler,
 		commands:        commands,
 		agent:           agent,
+		permissions:     pm,
 		flood:           flood,
 		startTime:       time.Now(),
 		ircLogHandler:   ircLogHandler,
@@ -435,6 +457,7 @@ func (s *Server) Run(ctx context.Context) error {
 	// when Connect returns (either from context cancellation or fatal error).
 	monitorCtx, monitorCancel := context.WithCancel(ctx)
 	defer monitorCancel()
+	s.monitorCtx = monitorCtx
 
 	// Start the registry heartbeat monitor.
 	var monitorWg sync.WaitGroup
@@ -443,6 +466,13 @@ func (s *Server) Run(ctx context.Context) error {
 		defer monitorWg.Done()
 		s.registry.StartMonitor(monitorCtx)
 	}()
+
+	// Start the permission manager cleanup goroutine.
+	if s.permissions != nil {
+		cleanupCtx, cleanupCancel := context.WithCancel(monitorCtx)
+		s.permCleanupStop = cleanupCancel
+		s.permissions.StartCleanup(cleanupCtx)
+	}
 
 	// Start the task scheduler if enabled.
 	if s.scheduler != nil {
@@ -566,6 +596,40 @@ func (s *Server) Reload() error {
 	approvalTimeout, err := cfg.ParseApprovalTimeout()
 	if err != nil {
 		return fmt.Errorf("Reload: %w", err)
+	}
+
+	// Reload permissions config.
+	permCfg, err := config.LoadPermissionsConfig(cfg.Security.PermissionsFile)
+	if err != nil {
+		return fmt.Errorf("Reload: load permissions config: %w", err)
+	}
+	if s.permissions != nil {
+		s.permissions.Update(permCfg)
+		s.logger.Info("permissions reloaded",
+			"users", len(permCfg.Users),
+			"channels", len(permCfg.Channels),
+		)
+	} else if len(permCfg.Users) > 0 || len(permCfg.Channels) > 0 {
+		// Permissions were added after initial startup — create a new manager
+		// and start its cleanup goroutine.
+		pm := NewPermissionManager(permCfg, s.logger)
+		s.agent.SetPermissions(pm)
+		s.permissions = pm
+		// Derive cleanup context from the server's lifecycle context. If Reload()
+		// is called before Run() (monitorCtx not yet set), fall back to
+		// context.Background() — the goroutine will be cleaned up when Run()
+		// eventually sets up proper lifecycle management.
+		parentCtx := s.monitorCtx
+		if parentCtx == nil {
+			parentCtx = context.Background()
+		}
+		cleanupCtx, cleanupCancel := context.WithCancel(parentCtx)
+		s.permCleanupStop = cleanupCancel
+		pm.StartCleanup(cleanupCtx)
+		s.logger.Info("permissions enabled via reload",
+			"users", len(permCfg.Users),
+			"channels", len(permCfg.Channels),
+		)
 	}
 
 	// Apply changes atomically to each component.
