@@ -2,7 +2,7 @@
 
 > Status: IN PROGRESS
 > Branch: feat/permissions-dashboard-setup
-> Updated: 2026-02-21T15
+> Updated: 2026-02-21T16
 
 ## Phase 1: Foundation
 
@@ -24,8 +24,8 @@
 | # | Task | Status | Commit |
 |---|------|--------|--------|
 | 11 | Interactive Setup Script (Docker Mode) | `done` | 2a6deae |
-| 12 | Client Setup Mode | `in_progress` | — |
-| 13 | Multi-Stage Dockerfile with Vue.js Build | `pending` | — |
+| 12 | Client Setup Mode | `done` | 1d5cc0b |
+| 13 | Multi-Stage Dockerfile with Vue.js Build | `in_progress` | — |
 | 14 | Dashboard Backend — WebSocket Handler and IRC Bridge | `pending` | — |
 
 ## Phase 3: Dashboard Frontend (Outlined — refine after Phase 2)
