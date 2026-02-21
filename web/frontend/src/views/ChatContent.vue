@@ -2,37 +2,37 @@
   <div class="flex flex-1 flex-col overflow-hidden">
     <!-- Connection status bar -->
     <div
-      v-if="wsState !== WS_STATE.CONNECTED"
+      v-if="chatStore.wsState !== WS_STATE.CONNECTED"
       class="flex items-center gap-2 border-b border-border px-4 py-2 text-xs"
       :class="{
-        'bg-warning/10 text-warning': wsState === WS_STATE.CONNECTING,
-        'bg-error/10 text-error': wsState === WS_STATE.ERROR,
-        'bg-bg-tertiary text-text-muted': wsState === WS_STATE.DISCONNECTED,
+        'bg-warning/10 text-warning': chatStore.wsState === WS_STATE.CONNECTING,
+        'bg-error/10 text-error': chatStore.wsState === WS_STATE.ERROR,
+        'bg-bg-tertiary text-text-muted': chatStore.wsState === WS_STATE.DISCONNECTED,
       }"
     >
       <span
         class="h-2 w-2 rounded-full"
         :class="{
-          'bg-warning animate-pulse': wsState === WS_STATE.CONNECTING,
-          'bg-error': wsState === WS_STATE.ERROR,
-          'bg-text-muted': wsState === WS_STATE.DISCONNECTED,
+          'bg-warning animate-pulse': chatStore.wsState === WS_STATE.CONNECTING,
+          'bg-error': chatStore.wsState === WS_STATE.ERROR,
+          'bg-text-muted': chatStore.wsState === WS_STATE.DISCONNECTED,
         }"
       ></span>
-      <span v-if="wsState === WS_STATE.CONNECTING">Connecting to IRC...</span>
-      <span v-else-if="wsState === WS_STATE.ERROR">Connection error. Retrying...</span>
+      <span v-if="chatStore.wsState === WS_STATE.CONNECTING">Connecting to IRC...</span>
+      <span v-else-if="chatStore.wsState === WS_STATE.ERROR">Connection error. Retrying...</span>
       <span v-else>Disconnected</span>
     </div>
 
     <!-- Message list -->
     <div ref="messageListRef" class="flex-1 overflow-y-auto px-4 py-3">
-      <div v-if="messages.length === 0" class="flex h-full items-center justify-center">
+      <div v-if="chatStore.messages.length === 0" class="flex h-full items-center justify-center">
         <p class="text-sm text-text-muted">
-          {{ wsState === WS_STATE.CONNECTED ? "No messages yet." : "Waiting for connection..." }}
+          {{ chatStore.wsState === WS_STATE.CONNECTED ? "No messages yet." : "Waiting for connection..." }}
         </p>
       </div>
       <div v-else class="space-y-0.5">
         <div
-          v-for="msg in messages"
+          v-for="msg in chatStore.messages"
           :key="msg.id"
           class="group flex gap-2 rounded px-2 py-0.5 hover:bg-bg-secondary/50"
         >
@@ -97,8 +97,8 @@
           ref="inputRef"
           v-model="inputText"
           type="text"
-          :disabled="wsState !== WS_STATE.CONNECTED"
-          :placeholder="wsState === WS_STATE.CONNECTED ? `Message ${channel}` : 'Connecting...'"
+          :disabled="chatStore.wsState !== WS_STATE.CONNECTED"
+          :placeholder="chatStore.wsState === WS_STATE.CONNECTED ? `Message ${channel}` : 'Connecting...'"
           class="flex-1 rounded border border-border bg-bg-input px-3 py-2 font-mono text-sm text-text-primary placeholder-text-muted outline-none transition focus:border-border-focus focus:ring-1 focus:ring-accent/50 disabled:opacity-50"
           @keydown.up.prevent="handleArrowUp"
           @keydown.down.prevent="handleArrowDown"
@@ -107,7 +107,7 @@
         />
         <button
           type="submit"
-          :disabled="wsState !== WS_STATE.CONNECTED || !inputText.trim()"
+          :disabled="chatStore.wsState !== WS_STATE.CONNECTED || !inputText.trim()"
           class="rounded bg-accent px-4 py-2 text-sm font-medium text-white transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
         >
           Send
@@ -121,18 +121,15 @@
 import { ref, computed, watch, nextTick, onMounted } from "vue";
 import { useRoute } from "vue-router";
 import { SESSION_NICK_KEY } from "../constants.js";
-import { useWebSocket, WS_STATE } from "../composables/useWebSocket.js";
-import { parseIRCColors, stripIRCColors } from "../utils/ircColors.js";
+import { chatStore, wsSend, clearUnread, WS_STATE } from "../stores/chatStore.js";
+import { parseIRCColors } from "../utils/ircColors.js";
 import { renderMarkdown } from "../utils/markdown.js";
 import { matchCommands } from "../utils/commands.js";
 import { detectApprovalRequest, detectToolStatus } from "../utils/toolCalls.js";
-import { chatStore } from "../stores/chatStore.js";
 import ToolCallCard from "../components/ToolCallCard.vue";
 
 const nick = sessionStorage.getItem(SESSION_NICK_KEY) || "unknown";
 const channel = chatStore.channel;
-
-const { state: wsState, messages, users, topic, connect, send } = useWebSocket();
 
 // Track approval statuses (id -> "approved" | "denied" | "timeout").
 const approvalStatuses = ref({});
@@ -145,38 +142,36 @@ function getApproval(msg) {
 
 /** Send !approve command for a tool call. */
 function handleApprove(id) {
-  send(channel, "!approve");
+  wsSend(channel, "!approve");
   approvalStatuses.value = { ...approvalStatuses.value, [id]: "approved" };
 }
 
 /** Send !deny command for a tool call. */
 function handleDeny(id) {
-  send(channel, "!deny");
+  wsSend(channel, "!deny");
   approvalStatuses.value = { ...approvalStatuses.value, [id]: "denied" };
 }
 
 // Watch for tool status messages to update approval cards.
-watch(messages, (msgs) => {
-  // Check the latest message for tool status updates.
-  if (msgs.length === 0) return;
-  const latest = msgs[msgs.length - 1];
-  if (latest.type !== "message") return;
-  const status = detectToolStatus(latest.text);
-  if (status) {
-    // Find the matching pending approval and update its status.
-    for (const msg of msgs) {
-      const approval = detectApprovalRequest(msg.text);
-      if (approval && approval.name === status.tool && !approvalStatuses.value[approval.id]) {
-        approvalStatuses.value = { ...approvalStatuses.value, [approval.id]: status.type };
-        break;
+watch(
+  () => chatStore.messages.length,
+  () => {
+    const msgs = chatStore.messages;
+    if (msgs.length === 0) return;
+    const latest = msgs[msgs.length - 1];
+    if (latest.type !== "message") return;
+    const status = detectToolStatus(latest.text);
+    if (status) {
+      for (const msg of msgs) {
+        const approval = detectApprovalRequest(msg.text);
+        if (approval && approval.name === status.tool && !approvalStatuses.value[approval.id]) {
+          approvalStatuses.value = { ...approvalStatuses.value, [approval.id]: status.type };
+          break;
+        }
       }
     }
-  }
-}, { deep: false });
-
-// Sync WebSocket state to the shared store for the sidebar user list.
-watch(users, (val) => { chatStore.users = val; }, { immediate: true });
-watch(topic, (val) => { chatStore.topic = val; }, { immediate: true });
+  },
+);
 
 const inputText = ref("");
 const inputRef = ref(null);
@@ -255,12 +250,12 @@ function handleSend() {
   const text = inputText.value.trim();
   if (!text) return;
 
-  send(channel, text);
+  wsSend(channel, text);
 
   // Add own message to the display immediately (IRC will echo it back
   // via the bridge, but we show it instantly for responsiveness).
-  messages.value = [
-    ...messages.value,
+  chatStore.messages = [
+    ...chatStore.messages,
     {
       id: Date.now() + Math.random(),
       type: "message",
@@ -349,7 +344,7 @@ function nickColor(name) {
 
 // Auto-scroll to bottom when new messages arrive.
 watch(
-  () => messages.value.length,
+  () => chatStore.messages.length,
   async () => {
     await nextTick();
     const el = messageListRef.value;
@@ -363,20 +358,18 @@ watch(
   },
 );
 
-// Connect on mount and handle pre-filled commands from admin panel.
+// Handle pre-filled commands from admin panel on mount.
 const route = useRoute();
 onMounted(() => {
-  connect(channel);
+  // Clear unread count since user is now viewing chat.
+  clearUnread();
   // Pre-fill input from query param (e.g., admin quick actions).
   if (route.query.cmd) {
     inputText.value = route.query.cmd;
   }
-  // Focus the input when connected.
+  // Focus the input.
   if (inputRef.value) {
     inputRef.value.focus();
   }
 });
-
-// Expose for parent layout (Chat.vue) if needed.
-defineExpose({ users, topic });
 </script>

@@ -48,6 +48,11 @@
         >
           <span class="text-base">&#x1F4AC;</span>
           <span class="font-mono">#murmur</span>
+          <!-- Unread message badge -->
+          <span
+            v-if="chatStore.unreadCount > 0 && $route.name !== 'chat'"
+            class="ml-auto flex h-5 min-w-5 items-center justify-center rounded-full bg-accent px-1.5 text-xs font-bold text-white"
+          >{{ chatStore.unreadCount > 99 ? '99+' : chatStore.unreadCount }}</span>
         </router-link>
         <router-link
           :to="{ name: 'admin' }"
@@ -120,21 +125,59 @@
 </template>
 
 <script setup>
-import { ref, computed, watch } from "vue";
+import { ref, computed, watch, onMounted, onUnmounted } from "vue";
 import { useRouter, useRoute } from "vue-router";
 import { SESSION_NICK_KEY, SESSION_SIGNING_KEY, API } from "../constants.js";
 import { signedFetch } from "../api.js";
-import { chatStore } from "../stores/chatStore.js";
+import { chatStore, wsConnect, wsDisconnect, clearUnread } from "../stores/chatStore.js";
 
 const router = useRouter();
 const route = useRoute();
 const nick = ref(sessionStorage.getItem(SESSION_NICK_KEY) || "unknown");
 const sidebarOpen = ref(false);
 
-// Close sidebar on route change (mobile).
-watch(() => route.name, () => {
-  sidebarOpen.value = false;
+// Track the previous message count to detect new messages for unread tracking.
+let lastSeenMessageCount = 0;
+
+// Connect WebSocket when the layout mounts (persists across child routes).
+onMounted(() => {
+  wsConnect();
+  lastSeenMessageCount = chatStore.messages.length;
 });
+
+// Disconnect WebSocket when the layout unmounts (logout / session end).
+onUnmounted(() => {
+  wsDisconnect();
+});
+
+// Close sidebar on route change (mobile).
+watch(() => route.name, (newName) => {
+  sidebarOpen.value = false;
+  // Clear unread count when navigating to chat.
+  if (newName === "chat") {
+    clearUnread();
+    lastSeenMessageCount = chatStore.messages.length;
+  }
+});
+
+// Track unread messages: increment when new messages arrive and user is NOT on chat.
+watch(
+  () => chatStore.messages.length,
+  (newLen) => {
+    if (route.name === "chat") {
+      // User is viewing chat — no unread tracking, just update the marker.
+      lastSeenMessageCount = newLen;
+      return;
+    }
+    // Count only actual chat messages (not system messages) as unread.
+    const newMessages = chatStore.messages.slice(lastSeenMessageCount);
+    const chatMessages = newMessages.filter((m) => m.type === "message");
+    if (chatMessages.length > 0) {
+      chatStore.unreadCount += chatMessages.length;
+    }
+    lastSeenMessageCount = newLen;
+  },
+);
 
 const pageTitle = computed(() => {
   switch (route.name) {
