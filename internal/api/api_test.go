@@ -280,6 +280,110 @@ func TestRecoverMiddleware_NoPanic(t *testing.T) {
 	}
 }
 
+func TestAPIKeyMiddlewareWithUserKeys_PerUserKey(t *testing.T) {
+	t.Parallel()
+
+	resolver := func(key string) string {
+		if key == "user-key-alice" {
+			return "alice"
+		}
+		return ""
+	}
+
+	var capturedNick string
+	handler := APIKeyMiddlewareWithUserKeys("global-key", resolver)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedNick = AuthNick(r.Context())
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer user-key-alice")
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+	if capturedNick != "alice" {
+		t.Errorf("expected nick 'alice', got %q", capturedNick)
+	}
+}
+
+func TestAPIKeyMiddlewareWithUserKeys_GlobalKeyFallback(t *testing.T) {
+	t.Parallel()
+
+	resolver := func(key string) string { return "" } // no per-user match
+
+	var capturedNick string
+	handler := APIKeyMiddlewareWithUserKeys("global-key", resolver)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedNick = AuthNick(r.Context())
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer global-key")
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+	if capturedNick != "" {
+		t.Errorf("expected empty nick for global key, got %q", capturedNick)
+	}
+}
+
+func TestAPIKeyMiddlewareWithUserKeys_InvalidKey(t *testing.T) {
+	t.Parallel()
+
+	resolver := func(key string) string { return "" }
+
+	handler := APIKeyMiddlewareWithUserKeys("global-key", resolver)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer wrong-key")
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401, got %d", w.Code)
+	}
+}
+
+func TestAPIKeyMiddlewareWithUserKeys_NilResolver(t *testing.T) {
+	t.Parallel()
+
+	// With nil resolver, should behave like the original middleware.
+	handler := APIKeyMiddlewareWithUserKeys("global-key", nil)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer global-key")
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+}
+
+func TestAuthNick_EmptyContext(t *testing.T) {
+	t.Parallel()
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	nick := AuthNick(req.Context())
+	if nick != "" {
+		t.Errorf("expected empty nick, got %q", nick)
+	}
+}
+
 func TestNewHTTPServer(t *testing.T) {
 	t.Parallel()
 

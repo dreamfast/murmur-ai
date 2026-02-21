@@ -1941,7 +1941,7 @@ func TestAgent_HandleEvent(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	err := env.agent.HandleEvent(ctx, "#test", "backup-script", "backup.completed", "Backup finished", `{"size":"1.2GB"}`)
+	err := env.agent.HandleEvent(ctx, "#test", "_system", "backup-script", "backup.completed", "Backup finished", `{"size":"1.2GB"}`)
 	if err != nil {
 		t.Fatalf("HandleEvent error: %v", err)
 	}
@@ -1993,7 +1993,7 @@ func TestAgent_HandleEvent_NoData(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	err := env.agent.HandleEvent(ctx, "#test", "cron", "job.done", "Cron job finished", "")
+	err := env.agent.HandleEvent(ctx, "#test", "_system", "cron", "job.done", "Cron job finished", "")
 	if err != nil {
 		t.Fatalf("HandleEvent error: %v", err)
 	}

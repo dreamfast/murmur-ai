@@ -13,8 +13,8 @@
 | 3 | NickServ Identity Verification | `done` | 819aa54 |
 | 4 | Admin Commands (!user and !channel) | `done` | 4afb110 |
 | 5 | Permissions Manage LLM Tool | `done` | 95b9df7 |
-| 6 | Per-User Rate Limiting Integration | `in_progress` | — |
-| 7 | Per-User API Keys for Webhooks | `pending` | — |
+| 6 | Per-User Rate Limiting Integration | `done` | 6dc2e60 |
+| 7 | Per-User API Keys for Webhooks | `in_progress` | — |
 | 8 | Scheduled Task Permission Tracking | `pending` | — |
 | 9 | Enhanced Debug Channel Logging | `pending` | — |
 | 10 | Config Examples, System Prompt, and Deny List Updates | `pending` | — |

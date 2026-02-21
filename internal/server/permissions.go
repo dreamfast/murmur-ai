@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crypto/subtle"
 	"hash/fnv"
 	"log/slog"
 	"sort"
@@ -255,7 +256,8 @@ func (pm *PermissionManager) IsModelAllowed(nick, channel, modelName string, all
 }
 
 // GetUserByAPIKey returns the nick associated with the given API key, or
-// empty string if not found. Returns empty string if pm is nil.
+// empty string if not found. Returns empty string if pm is nil. Uses
+// constant-time comparison to prevent timing attacks on API key values.
 func (pm *PermissionManager) GetUserByAPIKey(apiKey string) string {
 	if pm == nil || apiKey == "" {
 		return ""
@@ -265,7 +267,7 @@ func (pm *PermissionManager) GetUserByAPIKey(apiKey string) string {
 	defer pm.mu.RUnlock()
 
 	for nick, user := range pm.cfg.Users {
-		if user.APIKey != "" && user.APIKey == apiKey {
+		if user.APIKey != "" && subtle.ConstantTimeCompare([]byte(user.APIKey), []byte(apiKey)) == 1 {
 			return nick
 		}
 	}

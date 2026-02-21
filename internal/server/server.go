@@ -827,7 +827,7 @@ func (s *Server) registerBusHandlers() {
 					s.logger.Error("bus: agent event goroutine panicked", "recover", rec)
 				}
 			}()
-			if err := s.agent.HandleEvent(context.Background(), channel, m.Source, m.EventType, m.Summary, m.Data); err != nil {
+			if err := s.agent.HandleEvent(context.Background(), channel, "_system", m.Source, m.EventType, m.Summary, m.Data); err != nil {
 				s.logger.Error("bus: agent HandleEvent failed", "error", err, "event_id", m.EventID)
 				return
 			}

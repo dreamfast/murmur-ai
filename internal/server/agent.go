@@ -261,11 +261,12 @@ func (a *Agent) RunScheduledTask(ctx context.Context, channel, taskDescription, 
 }
 
 // HandleEvent processes an external event through the LLM agent loop. It
-// acquires a per-channel lock, formats the event as a system message, stores
-// it in memory, and runs the agent loop so the LLM can observe and act on it.
-// The data parameter is optional and may be empty.
-// System-initiated events use "_system" as the nick, bypassing permission filtering.
-func (a *Agent) HandleEvent(ctx context.Context, channel, source, eventType, summary, data string) error {
+// acquires the per-channel lock, stores the event as a system message, and
+// runs the agent loop. The event is formatted as a system message so the LLM
+// can decide how to respond. The nick parameter identifies the user whose
+// permissions should apply; use "_system" for system-level events that should
+// bypass permission filtering.
+func (a *Agent) HandleEvent(ctx context.Context, channel, nick, source, eventType, summary, data string) error {
 	chLock := a.getChannelLock(channel)
 	chLock.Lock()
 	defer chLock.Unlock()
@@ -279,7 +280,7 @@ func (a *Agent) HandleEvent(ctx context.Context, channel, source, eventType, sum
 		return fmt.Errorf("HandleEvent: store message: %w", err)
 	}
 
-	a.runLoop(ctx, channel, "_system")
+	a.runLoop(ctx, channel, nick)
 	return nil
 }
 

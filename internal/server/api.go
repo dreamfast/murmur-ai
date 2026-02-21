@@ -13,7 +13,9 @@ import (
 
 // newServerAPIMux creates the HTTP handler for the server REST API.
 // It registers all endpoints and wraps them with the API key middleware
-// and panic recovery.
+// and panic recovery. When a PermissionManager is available, per-user API
+// keys are supported — requests authenticated with a per-user key have the
+// resolved nick stored in the request context.
 func newServerAPIMux(s *Server) http.Handler {
 	mux := http.NewServeMux()
 
@@ -23,9 +25,15 @@ func newServerAPIMux(s *Server) http.Handler {
 	mux.HandleFunc("GET /api/v1/clients", s.handleGetClients)
 	mux.HandleFunc("GET /api/v1/health", s.handleGetHealth)
 
+	// Build the per-user key resolver if a PermissionManager is available.
+	var resolver api.UserKeyResolver
+	if pm := s.permissions; pm != nil {
+		resolver = pm.GetUserByAPIKey
+	}
+
 	// Apply middleware: recovery first (outermost), then auth.
 	var handler http.Handler = mux
-	handler = api.APIKeyMiddleware(s.cfg.API.APIKey)(handler)
+	handler = api.APIKeyMiddlewareWithUserKeys(s.cfg.API.APIKey, resolver)(handler)
 	handler = api.RecoverMiddleware(handler)
 
 	return handler
@@ -86,6 +94,14 @@ func (s *Server) handlePostEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Resolve the nick for permission filtering. Per-user API keys resolve
+	// to the associated nick; the global API key uses "_system" (admin-equivalent,
+	// bypasses permission filtering).
+	nick := api.AuthNick(r.Context())
+	if nick == "" {
+		nick = "_system"
+	}
+
 	// Trigger agent processing in a goroutine (non-blocking for the API caller).
 	// Use context.Background() because the agent goroutine must outlive the
 	// HTTP request — r.Context() is cancelled when the response is sent.
@@ -99,7 +115,7 @@ func (s *Server) handlePostEvent(w http.ResponseWriter, r *http.Request) {
 				s.logger.Error("api: agent event goroutine panicked", "recover", rec)
 			}
 		}()
-		if err := s.agent.HandleEvent(context.Background(), channel, req.Source, req.EventType, req.Summary, req.Data); err != nil {
+		if err := s.agent.HandleEvent(context.Background(), channel, nick, req.Source, req.EventType, req.Summary, req.Data); err != nil {
 			s.logger.Error("api: agent HandleEvent failed", "error", err)
 			return
 		}
