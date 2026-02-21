@@ -36,6 +36,10 @@ type WSMessage struct {
 	// IRCv3 server-time tags (e.g. history replay), this reflects the
 	// original send time rather than the time the bridge received it.
 	Timestamp int64 `json:"timestamp,omitempty"`
+	// UserModes maps nicks to their channel mode prefix symbol.
+	// Sent alongside Users in "names" messages. Prefix values:
+	// "~" owner, "&" admin, "@" op, "%" halfop, "+" voice.
+	UserModes map[string]string `json:"user_modes,omitempty"`
 }
 
 // Bridge connects a single WebSocket client to an IRC connection.
@@ -178,25 +182,37 @@ func NewBridge(ctx context.Context, ws *websocket.Conn, cfg BridgeConfig, logger
 		if len(e.Params) < 2 {
 			return
 		}
+		channel := e.Params[0]
 		b.sendWS(WSMessage{
 			Type:      "mode",
-			Channel:   e.Params[0],
+			Channel:   channel,
 			Nick:      e.Source.Name,
 			Mode:      e.Params[1],
 			Timestamp: eventTimestamp(e),
 		})
+		// After a mode change, re-send the user list with updated
+		// mode prefixes so the frontend stays in sync.
+		if users, modes := buildUserModes(client, channel); users != nil {
+			b.sendWS(WSMessage{
+				Type:      "names",
+				Channel:   channel,
+				Users:     users,
+				UserModes: modes,
+			})
+		}
 	})
 
 	client.Handlers.AddBg(girc.RPL_NAMREPLY, func(_ *girc.Client, e girc.Event) {
 		// RPL_NAMREPLY: <nick> = <channel> :<names>
 		if len(e.Params) >= 3 {
 			channel := e.Params[2]
-			lookup := client.LookupChannel(channel)
-			if lookup != nil {
+			users, modes := buildUserModes(client, channel)
+			if users != nil {
 				b.sendWS(WSMessage{
-					Type:    "names",
-					Channel: channel,
-					Users:   lookup.UserList,
+					Type:      "names",
+					Channel:   channel,
+					Users:     users,
+					UserModes: modes,
 				})
 			}
 		}
@@ -282,6 +298,40 @@ func eventTimestamp(e girc.Event) int64 {
 		ts = time.Now().UnixMilli()
 	}
 	return ts
+}
+
+// buildUserModes looks up the channel's user list and each user's mode
+// permissions via girc's internal state. It returns the nick list and a
+// map of nick → prefix symbol ("~" owner, "&" admin, "@" op, "%" halfop,
+// "+" voice). Users with no special mode are omitted from the map.
+func buildUserModes(client *girc.Client, channel string) ([]string, map[string]string) {
+	lookup := client.LookupChannel(channel)
+	if lookup == nil {
+		return nil, nil
+	}
+
+	users := lookup.Users(client)
+	modes := make(map[string]string, len(users))
+	for _, u := range users {
+		perms, ok := u.Perms.Lookup(channel)
+		if !ok {
+			continue
+		}
+		switch {
+		case perms.Owner:
+			modes[u.Nick] = "~"
+		case perms.Admin:
+			modes[u.Nick] = "&"
+		case perms.Op:
+			modes[u.Nick] = "@"
+		case perms.HalfOp:
+			modes[u.Nick] = "%"
+		case perms.Voice:
+			modes[u.Nick] = "+"
+		}
+	}
+
+	return lookup.UserList, modes
 }
 
 // Run starts the IRC connection and WebSocket read loop. It blocks until

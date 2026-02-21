@@ -138,6 +138,77 @@ func TestWSMessageTimestampJSON(t *testing.T) {
 	}
 }
 
+func TestWSMessageUserModesJSON(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		msg       WSMessage
+		wantModes bool
+	}{
+		{
+			name: "names with user modes",
+			msg: WSMessage{
+				Type:    "names",
+				Channel: "#test",
+				Users:   []string{"admin", "op_user", "regular", "voiced"},
+				UserModes: map[string]string{
+					"admin":   "~",
+					"op_user": "@",
+					"voiced":  "+",
+				},
+			},
+			wantModes: true,
+		},
+		{
+			name: "names without user modes",
+			msg: WSMessage{
+				Type:    "names",
+				Channel: "#test",
+				Users:   []string{"user1", "user2"},
+			},
+			wantModes: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			data, err := json.Marshal(tt.msg)
+			if err != nil {
+				t.Fatalf("Marshal error: %v", err)
+			}
+
+			var raw map[string]interface{}
+			if err := json.Unmarshal(data, &raw); err != nil {
+				t.Fatalf("Unmarshal error: %v", err)
+			}
+
+			_, hasModes := raw["user_modes"]
+			if hasModes != tt.wantModes {
+				t.Errorf("user_modes in JSON = %v, want %v (json: %s)", hasModes, tt.wantModes, data)
+			}
+
+			if tt.wantModes {
+				// Verify round-trip.
+				var decoded WSMessage
+				if err := json.Unmarshal(data, &decoded); err != nil {
+					t.Fatalf("round-trip Unmarshal error: %v", err)
+				}
+				for nick, prefix := range tt.msg.UserModes {
+					got, ok := decoded.UserModes[nick]
+					if !ok {
+						t.Errorf("missing UserModes[%q]", nick)
+					} else if got != prefix {
+						t.Errorf("UserModes[%q] = %q, want %q", nick, got, prefix)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestWSMessageNewTypes(t *testing.T) {
 	t.Parallel()
 
