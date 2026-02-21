@@ -1,0 +1,45 @@
+# Murmur Permissions Configuration
+#
+# This file defines per-user and per-channel permissions. It is managed by
+# the !user/!channel commands and the permissions_manage LLM tool. Manual
+# edits are supported and applied on reload (!reload or SIGHUP).
+#
+# File location: configured via security.permissions_file in server.toml
+# Default: <data_dir>/permissions.toml
+#
+# Users not listed here inherit from [users.default].
+# Channels not listed here have no restrictions.
+
+# Default permissions applied to all users not explicitly listed.
+[users.default]
+role = "user"                    # "user" or "admin"
+tools = ["*"]                    # allowed tools (* = all, prefix_* = glob)
+deny_tools = []                  # tools to deny (overrides tools)
+autonomy = "approve"             # "report" (blocked), "approve" (ask first), "auto" (immediate)
+# allowed_models = ["*"]         # allowed LLM models (* = all)
+# deny_models = []               # models to deny
+# max_messages_per_hour = 60     # rate limit (-1 = unlimited, 0 = use default)
+
+# Example admin user — full access, no rate limit.
+# [users.yournick]
+# role = "admin"
+# tools = ["*"]
+# autonomy = "auto"
+# max_messages_per_hour = -1
+# api_key = "your-webhook-api-key"  # optional: per-user API key for webhook events
+
+# Example restricted user — limited tools, report-only autonomy.
+# [users.guest]
+# role = "user"
+# tools = ["note_*", "rss_read"]
+# deny_tools = ["shell", "code_exec"]
+# autonomy = "report"
+# max_messages_per_hour = 10
+
+# Per-channel restrictions. Effective permissions are the intersection of
+# user permissions and channel permissions (most restrictive wins).
+# [channels."#public"]
+# tools = ["note_*", "rss_read", "web_search"]
+# deny_tools = ["shell"]
+# autonomy = "approve"
+# allowed_models = ["openrouter-claude"]

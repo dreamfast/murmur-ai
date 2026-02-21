@@ -2,7 +2,7 @@
 
 > Status: IN PROGRESS
 > Branch: feat/permissions-dashboard-setup
-> Updated: 2026-02-21T7
+> Updated: 2026-02-21T8
 
 ## Phase 1: Foundation
 
@@ -16,8 +16,8 @@
 | 6 | Per-User Rate Limiting Integration | `done` | 6dc2e60 |
 | 7 | Per-User API Keys for Webhooks | `done` | fce0563 |
 | 8 | Scheduled Task Permission Tracking | `done` | 4214aa8 |
-| 9 | Enhanced Debug Channel Logging | `in_progress` | — |
-| 10 | Config Examples, System Prompt, and Deny List Updates | `pending` | — |
+| 9 | Enhanced Debug Channel Logging | `done` | fa7f8f8 |
+| 10 | Config Examples, System Prompt, and Deny List Updates | `in_progress` | — |
 
 ## Phase 2: Setup & Deployment
 

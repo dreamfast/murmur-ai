@@ -1,7 +1,7 @@
 [server]
 data_dir = "~/.murmur"
 system_prompt_file = "~/.murmur/system_prompt.md"
-# debug_channel = "#murmur-debug"  # IRC channel for live slog output (empty = disabled)
+# debug_channel = "#murmur-debug"  # DEPRECATED: use [debug] section below
 
 [irc]
 server = "irc.example.com"
@@ -71,6 +71,7 @@ max_concurrent = 3        # max simultaneous scheduled tasks
 allowed_users = ["yournick"]
 require_nickserv = true
 bus_key = ""
+# permissions_file = "~/.murmur/permissions.toml"  # user/channel permissions (default: <data_dir>/permissions.toml)
 
 [vault]
 enabled = false
@@ -137,3 +138,14 @@ passphrase_env = "MURMUR_VAULT_PASS"
 # enabled = true
 # api_key = "vault:brave-search-key"
 # max_results = 5
+
+# --- Debug channel ---
+# Live structured log output to an IRC channel for real-time debugging.
+# [debug]
+# enabled = true
+# channel = "#murmur-debug"
+# log_level = "debug"          # minimum level: debug, info, warn, error
+# log_tool_calls = true        # log tool call routing and results
+# log_llm_requests = true      # log LLM API calls with provider, tokens, latency
+# log_bus_protocol = false     # log bus protocol messages (reserved for future use)
+# log_permissions = true       # log permission checks and denials
