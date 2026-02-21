@@ -40,8 +40,8 @@
 | 20 | Command Autocomplete | `done` | 30248ab |
 | 21 | Channel Sidebar and User List | `done` | bb94c81 |
 | 22 | Admin Panel | `done` | 3218dba |
-| 23 | Tool Call Rendering | `in_progress` | — |
-| 24 | Mobile/Tablet Responsive Views | `pending` | — |
+| 23 | Tool Call Rendering | `done` | 0d785f8 |
+| 24 | Mobile/Tablet Responsive Views | `in_progress` | — |
 
 ## Phase 4: Polish & README
 
