@@ -539,6 +539,13 @@ func (c *Connection) SetMode(channel, mode string, params ...string) error {
 	return nil
 }
 
+// IsChannel returns true if the given target looks like an IRC channel name
+// (starts with '#'). This is used to distinguish channel messages from private
+// messages (DMs), where the target is a user nick.
+func (c *Connection) IsChannel(target string) bool {
+	return len(target) > 0 && target[0] == '#'
+}
+
 // Channels returns a sorted list of channels the bot is currently joined to.
 func (c *Connection) Channels() []string {
 	c.joinedMu.RLock()

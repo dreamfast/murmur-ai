@@ -473,6 +473,10 @@ func (a *Agent) syncChannelTopic(channel string) {
 	if !a.conn.IsOper() {
 		return
 	}
+	// Skip DMs (non-channel targets) — topics only apply to channels.
+	if !a.conn.IsChannel(channel) {
+		return
+	}
 	if strings.EqualFold(channel, a.busChannel) {
 		return
 	}
@@ -647,7 +651,15 @@ func (a *Agent) buildSystemPrompt(channel string) string {
 
 	sb.WriteString("\n## IRC Context\n")
 	fmt.Fprintf(&sb, "- Your nick: %s\n", sanitizePromptValue(a.conn.Nick()))
-	fmt.Fprintf(&sb, "- Current channel: %s\n", sanitizePromptValue(channel))
+
+	// Detect DM context: if the channel doesn't start with '#', it's a
+	// private conversation keyed by the user's nick.
+	isDM := !a.conn.IsChannel(channel)
+	if isDM {
+		fmt.Fprintf(&sb, "- You are in a private conversation (DM) with %s\n", sanitizePromptValue(channel))
+	} else {
+		fmt.Fprintf(&sb, "- Current channel: %s\n", sanitizePromptValue(channel))
+	}
 
 	channels := a.conn.Channels()
 	if len(channels) > 0 {
@@ -684,8 +696,9 @@ func (a *Agent) buildSystemPrompt(channel string) string {
 
 	// Cross-channel context: include recent messages from other joined
 	// channels so the LLM has awareness of activity elsewhere (e.g., news
-	// posted to #news can be referenced from #murmur).
-	if a.crossChCtx > 0 && a.memory != nil {
+	// posted to #news can be referenced from #murmur). Skipped for DMs
+	// to keep private conversations focused and avoid leaking channel context.
+	if a.crossChCtx > 0 && a.memory != nil && !isDM {
 		a.appendCrossChannelContext(&sb, channel, channels)
 	}
 

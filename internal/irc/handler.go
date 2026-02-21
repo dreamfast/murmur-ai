@@ -49,6 +49,9 @@ func (h *MessageHandler) RegisterUserHandler(handler func(channel, nick, message
 }
 
 // route dispatches an incoming message to the appropriate handler.
+// For private messages (DMs), the IRC protocol sets channel to the bot's own
+// nick. We detect this and swap channel to the sender's nick so that
+// downstream handlers key conversations by the user, not by the bot.
 func (h *MessageHandler) route(channel, nick, message string) {
 	// Ignore messages from ourselves (case-insensitive per IRC convention).
 	if strings.EqualFold(nick, h.conn.Nick()) {
@@ -60,11 +63,18 @@ func (h *MessageHandler) route(channel, nick, message string) {
 	userHandler := h.userHandler
 	h.mu.RUnlock()
 
-	if channel == h.busChannel {
+	if strings.EqualFold(channel, h.busChannel) {
 		if busHandler != nil {
 			busHandler(nick, message)
 		}
 		return
+	}
+
+	// DM detection: when a user sends a private message, the IRC protocol
+	// delivers it with channel set to the bot's own nick. Swap channel to
+	// the sender's nick so that conversations are keyed per-user.
+	if strings.EqualFold(channel, h.conn.Nick()) {
+		channel = nick
 	}
 
 	if userHandler != nil {

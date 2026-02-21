@@ -16,7 +16,9 @@ import (
 	"time"
 
 	"murmur/internal/bus"
+	"murmur/internal/config"
 	"murmur/internal/db"
+	"murmur/internal/irc"
 	"murmur/internal/llm"
 	"murmur/internal/tools"
 )
@@ -2237,5 +2239,115 @@ func TestAgent_ToolFailureCircuitBreaker_ResetOnSuccess(t *testing.T) {
 	// in the 2nd call (failure count reset after success).
 	if len(env.mock.Calls) != 3 {
 		t.Fatalf("expected 3 LLM calls, got %d", len(env.mock.Calls))
+	}
+}
+
+func TestAgent_BuildSystemPrompt_DM(t *testing.T) {
+	t.Parallel()
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := database.Migrate(); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	t.Cleanup(func() { database.Close() })
+
+	memory := NewMemory(database, 100, 80, nil, logger)
+	registry := NewRegistry(2*time.Minute, logger)
+	sender := bus.NewSender(nil, "#murmur-bus", "", 0, logger)
+	router := NewRouter(registry, sender, logger)
+
+	mock := &llm.MockProvider{NameVal: "test-provider"}
+	providers := map[string]llm.Provider{"test-provider": mock}
+
+	// Create a real IRC connection config to test IsChannel.
+	conn, err := irc.NewConnection(config.IRCConfig{
+		Server: "localhost",
+		Port:   6667,
+		Nick:   "murmur",
+	}, []string{"#murmur"}, logger)
+	if err != nil {
+		t.Fatalf("NewConnection: %v", err)
+	}
+
+	agent := NewAgent(
+		providers,
+		"test-provider",
+		nil,
+		registry,
+		memory,
+		router,
+		nil,
+		conn,
+		"You are a test assistant.",
+		"test-server",
+		"#test-bus",
+		100,
+		3, // cross-channel context enabled
+		nil,
+		2*time.Second,
+		2*time.Second,
+		false,
+		logger,
+	)
+
+	// Test DM prompt: channel is a nick (no '#' prefix).
+	prompt := agent.buildSystemPrompt("alice")
+	if !strings.Contains(prompt, "private conversation (DM) with alice") {
+		t.Errorf("DM prompt should mention private conversation, got:\n%s", prompt)
+	}
+	if strings.Contains(prompt, "Current channel:") {
+		t.Error("DM prompt should NOT contain 'Current channel:'")
+	}
+	if strings.Contains(prompt, "Other Channel Activity") {
+		t.Error("DM prompt should NOT contain cross-channel context")
+	}
+
+	// Test channel prompt: channel starts with '#'.
+	prompt = agent.buildSystemPrompt("#general")
+	if !strings.Contains(prompt, "Current channel: #general") {
+		t.Errorf("channel prompt should contain 'Current channel:', got:\n%s", prompt)
+	}
+	if strings.Contains(prompt, "private conversation") {
+		t.Error("channel prompt should NOT mention private conversation")
+	}
+}
+
+func TestAgent_HandleMessage_DM(t *testing.T) {
+	t.Parallel()
+	env := newTestAgentEnv(t)
+
+	env.mock.Responses = []*llm.ChatResponse{
+		{Content: "Hello from DM!"},
+	}
+
+	ctx := context.Background()
+	// Simulate a DM: channel is the user's nick (already swapped by handler).
+	env.agent.HandleMessage(ctx, "alice", "alice", "hello in DM")
+
+	sent := env.getSent()
+	if len(sent) != 1 {
+		t.Fatalf("expected 1 sent message, got %d: %v", len(sent), sent)
+	}
+	if sent[0] != "Hello from DM!" {
+		t.Errorf("sent = %q, want %q", sent[0], "Hello from DM!")
+	}
+
+	// Verify messages are stored under the user's nick as channel key.
+	msgs, err := env.memory.GetHistory("alice", 10)
+	if err != nil {
+		t.Fatalf("GetHistory: %v", err)
+	}
+	if len(msgs) != 2 {
+		t.Fatalf("expected 2 messages in memory for DM, got %d", len(msgs))
+	}
+	if msgs[0].Role != "user" {
+		t.Errorf("msg[0].Role = %q, want user", msgs[0].Role)
+	}
+	if msgs[1].Role != "assistant" {
+		t.Errorf("msg[1].Role = %q, want assistant", msgs[1].Role)
 	}
 }
