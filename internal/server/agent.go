@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"murmur/internal/bus"
@@ -38,13 +39,25 @@ const crossChannelMaxChannels = 5
 // file cannot be read.
 const defaultSystemPrompt = `You are Murmur, a personal AI assistant communicating over IRC. Be helpful and concise.`
 
+// agentConfig holds the mutable configuration fields of the Agent that can be
+// changed at runtime via hot config reload. All fields are protected by Agent.mu
+// and should be read via Agent.loadConfig() to get a consistent snapshot.
+type agentConfig struct {
+	activeProvider  string
+	systemPrompt    string
+	maxHistory      int
+	crossChCtx      int // messages per other channel to include in system prompt (0 = disabled)
+	approvalTimeout time.Duration
+	verbose         bool
+}
+
 // Agent runs the LLM agent loop. It ties together LLM providers, tool routing,
 // and conversation memory. Each user message triggers a loop that may involve
 // multiple LLM calls and tool invocations before producing a final text response.
 type Agent struct {
-	providers      map[string]llm.Provider
-	activeProvider string
-	mu             sync.RWMutex // protects activeProvider
+	providers atomic.Pointer[map[string]llm.Provider]
+	mu        sync.RWMutex // protects cfg (agentConfig fields)
+	cfg       agentConfig
 
 	serverTools     *ToolRegistry
 	registry        *Registry
@@ -52,15 +65,10 @@ type Agent struct {
 	router          *Router
 	approvals       *ApprovalManager
 	conn            *irc.Connection
-	systemPrompt    string
 	serverName      string                // server's target name for shell routing
 	busChannel      string                // bus channel name, excluded from cross-channel context
 	channelSettings *ChannelSettingsStore // per-channel provider/settings; may be nil
-	maxHistory      int
-	crossChCtx      int // messages per other channel to include in system prompt (0 = disabled)
 	toolTimeout     time.Duration
-	approvalTimeout time.Duration
-	verbose         bool
 	logger          *slog.Logger
 
 	// sendFunc overrides the default send behavior for testing.
@@ -125,28 +133,74 @@ func NewAgent(
 	if serverName == "" {
 		serverName = "server"
 	}
-	return &Agent{
-		providers:       providers,
-		activeProvider:  defaultProvider,
+	a := &Agent{
+		cfg: agentConfig{
+			activeProvider:  defaultProvider,
+			systemPrompt:    systemPrompt,
+			maxHistory:      maxHistory,
+			crossChCtx:      crossChannelContext,
+			approvalTimeout: approvalTimeout,
+			verbose:         verbose,
+		},
 		serverTools:     serverTools,
 		registry:        registry,
 		memory:          memory,
 		router:          router,
 		approvals:       approvals,
 		conn:            conn,
-		systemPrompt:    systemPrompt,
 		serverName:      serverName,
 		busChannel:      busChannel,
 		channelSettings: channelSettings,
-		maxHistory:      maxHistory,
-		crossChCtx:      crossChannelContext,
 		toolTimeout:     toolTimeout,
-		approvalTimeout: approvalTimeout,
-		verbose:         verbose,
 		logger:          logger,
 		lastTopics:      make(map[string]string),
 		chanLocks:       make(map[string]*sync.Mutex),
 	}
+	a.providers.Store(&providers)
+	return a
+}
+
+// loadProviders returns the current providers map from the atomic pointer.
+func (a *Agent) loadProviders() map[string]llm.Provider {
+	return *a.providers.Load()
+}
+
+// UpdateProviders atomically replaces the providers map and updates the
+// default provider name. This is called during hot config reload to swap
+// in a new set of LLM providers without restarting. The activeProvider is
+// updated under mu (write lock) BEFORE the providers map is stored via
+// atomic pointer. This ordering ensures that getActiveProvider() never
+// sees a new providers map with a stale activeProvider name — the worst
+// case is briefly seeing the new activeProvider with the old map, which
+// safely falls back to "provider not found" (a transient, retryable error).
+func (a *Agent) UpdateProviders(providers map[string]llm.Provider, defaultName string) {
+	a.mu.Lock()
+	a.cfg.activeProvider = defaultName
+	a.mu.Unlock()
+	a.providers.Store(&providers)
+}
+
+// UpdateConfig updates the agent's simple configuration fields under the
+// mu write lock. This is called during hot config reload for fields that
+// don't require structural changes (no new goroutines, no connection changes).
+func (a *Agent) UpdateConfig(verbose bool, maxHistory, crossChCtx int, approvalTimeout time.Duration, systemPrompt string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.cfg.verbose = verbose
+	a.cfg.maxHistory = maxHistory
+	a.cfg.crossChCtx = crossChCtx
+	a.cfg.approvalTimeout = approvalTimeout
+	a.cfg.systemPrompt = systemPrompt
+}
+
+// loadConfig returns a snapshot of the agent's mutable configuration fields.
+// The snapshot is taken under RLock so all fields are consistent. Callers
+// should snapshot once at the start of a logical operation (e.g., runLoop
+// iteration) and use the snapshot throughout, avoiding repeated locking.
+func (a *Agent) loadConfig() agentConfig {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.cfg
 }
 
 // HandleMessage processes a user message through the LLM agent loop. It
@@ -227,8 +281,12 @@ func (a *Agent) runLoop(ctx context.Context, channel string) {
 			return
 		}
 
+		// Snapshot mutable config fields once per iteration so all reads
+		// within this iteration see a consistent set of values.
+		cfg := a.loadConfig()
+
 		// Build the messages array: system prompt + conversation history.
-		history, err := a.memory.GetHistory(channel, a.maxHistory)
+		history, err := a.memory.GetHistory(channel, cfg.maxHistory)
 		if err != nil {
 			a.logger.Error("failed to get history", "error", err, "channel", channel)
 			a.send(channel, "error: failed to retrieve conversation history")
@@ -238,7 +296,7 @@ func (a *Agent) runLoop(ctx context.Context, channel string) {
 		messages := make([]llm.Message, 0, 1+len(history))
 		messages = append(messages, llm.Message{
 			Role:    llm.RoleSystem,
-			Content: a.buildSystemPrompt(channel),
+			Content: a.buildSystemPrompt(channel, cfg),
 		})
 		// Reconstruct structured tool_calls on assistant messages so that
 		// OpenAI-compatible APIs receive the correct message format.
@@ -309,9 +367,9 @@ func (a *Agent) runLoop(ctx context.Context, channel string) {
 		}
 
 		if i == 0 {
-			a.status(channel, fmt.Sprintf("thinking... [%s, %d tools]", provider.Name(), len(tools)))
+			a.status(channel, cfg.verbose, fmt.Sprintf("thinking... [%s, %d tools]", provider.Name(), len(tools)))
 		} else {
-			a.status(channel, fmt.Sprintf("thinking... [%s, iteration %d]", provider.Name(), i+1))
+			a.status(channel, cfg.verbose, fmt.Sprintf("thinking... [%s, iteration %d]", provider.Name(), i+1))
 		}
 
 		// Call the LLM.
@@ -366,7 +424,7 @@ func (a *Agent) runLoop(ctx context.Context, channel string) {
 					"call_id", tc.ID,
 					"channel", channel,
 				)
-				a.status(channel, fmt.Sprintf("calling %s...", tc.Function.Name))
+				a.status(channel, cfg.verbose, fmt.Sprintf("calling %s...", tc.Function.Name))
 
 				result, routeErr := a.routeToolCall(ctx, channel, tc.Function.Name, json.RawMessage(tc.Function.Arguments))
 				if routeErr != nil {
@@ -374,7 +432,7 @@ func (a *Agent) runLoop(ctx context.Context, channel string) {
 						"tool", tc.Function.Name,
 						"error", routeErr,
 					)
-					a.status(channel, fmt.Sprintf("%s failed: %s", tc.Function.Name, truncate(routeErr.Error(), 80)))
+					a.status(channel, cfg.verbose, fmt.Sprintf("%s failed: %s", tc.Function.Name, truncate(routeErr.Error(), 80)))
 					// Feed the error back to the LLM as a tool result.
 					result = fmt.Sprintf("error: %v", routeErr)
 
@@ -394,7 +452,7 @@ func (a *Agent) runLoop(ctx context.Context, channel string) {
 						)
 					}
 				} else {
-					a.status(channel, fmt.Sprintf("%s done (%d bytes)", tc.Function.Name, len(result)))
+					a.status(channel, cfg.verbose, fmt.Sprintf("%s done (%d bytes)", tc.Function.Name, len(result)))
 					// Reset failure count on success.
 					delete(toolFailCounts, tc.Function.Name)
 				}
@@ -445,7 +503,7 @@ func (a *Agent) SetProvider(channel, name string) error {
 		return nil
 	}
 
-	if _, ok := a.providers[name]; !ok {
+	if _, ok := a.loadProviders()[name]; !ok {
 		return fmt.Errorf("provider %q not found", name)
 	}
 
@@ -549,7 +607,7 @@ func (a *Agent) SyncAllTopics() {
 func (a *Agent) GetProvider() string {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	return a.activeProvider
+	return a.cfg.activeProvider
 }
 
 // GetProviderForChannel returns the effective provider name for a channel.
@@ -567,7 +625,7 @@ func (a *Agent) GetProviderForChannel(channel string) string {
 			)
 		} else if name != "" {
 			// Validate the override still exists in the providers map.
-			if _, ok := a.providers[name]; ok {
+			if _, ok := a.loadProviders()[name]; ok {
 				return name
 			}
 			a.logger.Warn("per-channel provider not found, reporting global default",
@@ -578,7 +636,7 @@ func (a *Agent) GetProviderForChannel(channel string) string {
 	}
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	return a.activeProvider
+	return a.cfg.activeProvider
 }
 
 // resolveProvider returns the LLM provider to use for the given channel. It
@@ -589,7 +647,8 @@ func (a *Agent) GetProviderForChannel(channel string) string {
 //
 // ChannelSettingsStore is backed by SQLite and is safe for concurrent use.
 func (a *Agent) resolveProvider(channel string) (llm.Provider, error) {
-	if len(a.providers) == 0 {
+	providers := a.loadProviders()
+	if len(providers) == 0 {
 		return nil, fmt.Errorf("no providers configured")
 	}
 
@@ -602,7 +661,7 @@ func (a *Agent) resolveProvider(channel string) (llm.Provider, error) {
 				"error", err,
 			)
 		} else if name != "" {
-			if p, ok := a.providers[name]; ok {
+			if p, ok := providers[name]; ok {
 				return p, nil
 			}
 			// Channel has an override but the provider doesn't exist — log
@@ -620,8 +679,9 @@ func (a *Agent) resolveProvider(channel string) (llm.Provider, error) {
 
 // GetProviderNames returns all available provider names, sorted alphabetically.
 func (a *Agent) GetProviderNames() []string {
-	names := make([]string, 0, len(a.providers))
-	for name := range a.providers {
+	providers := a.loadProviders()
+	names := make([]string, 0, len(providers))
+	for name := range providers {
 		names = append(names, name)
 	}
 	sort.Strings(names)
@@ -630,10 +690,11 @@ func (a *Agent) GetProviderNames() []string {
 
 // buildSystemPrompt constructs the full system prompt by appending dynamic
 // context (active model, IRC state, cross-channel activity) to the static
-// base prompt loaded from the config file.
-func (a *Agent) buildSystemPrompt(channel string) string {
+// base prompt loaded from the config file. The cfg parameter is a snapshot
+// of the agent's mutable config taken under RLock by the caller.
+func (a *Agent) buildSystemPrompt(channel string, cfg agentConfig) string {
 	var sb strings.Builder
-	sb.WriteString(a.systemPrompt)
+	sb.WriteString(cfg.systemPrompt)
 
 	// Active model context — always included, even without an IRC connection.
 	modelName := a.GetProviderForChannel(channel)
@@ -698,8 +759,8 @@ func (a *Agent) buildSystemPrompt(channel string) string {
 	// channels so the LLM has awareness of activity elsewhere (e.g., news
 	// posted to #news can be referenced from #murmur). Skipped for DMs
 	// to keep private conversations focused and avoid leaking channel context.
-	if a.crossChCtx > 0 && a.memory != nil && !isDM {
-		a.appendCrossChannelContext(&sb, channel, channels)
+	if cfg.crossChCtx > 0 && a.memory != nil && !isDM {
+		a.appendCrossChannelContext(&sb, channel, channels, cfg.crossChCtx)
 	}
 
 	return sb.String()
@@ -711,7 +772,8 @@ func (a *Agent) buildSystemPrompt(channel string) string {
 // for a personal agent setup. At most crossChannelMaxChannels channels are
 // queried to bound the number of database calls per prompt build. Errors are
 // logged but non-fatal — the prompt is still usable without cross-channel context.
-func (a *Agent) appendCrossChannelContext(sb *strings.Builder, currentChannel string, allChannels []string) {
+// The crossChCtx parameter specifies how many messages to fetch per channel.
+func (a *Agent) appendCrossChannelContext(sb *strings.Builder, currentChannel string, allChannels []string, crossChCtx int) {
 	var sections []string
 	queried := 0
 
@@ -727,7 +789,7 @@ func (a *Agent) appendCrossChannelContext(sb *strings.Builder, currentChannel st
 		}
 		queried++
 
-		msgs, err := a.memory.GetRecentMessages(ch, a.crossChCtx)
+		msgs, err := a.memory.GetRecentMessages(ch, crossChCtx)
 		if err != nil {
 			a.logger.Warn("failed to get cross-channel context",
 				"channel", ch,
@@ -869,13 +931,14 @@ func (a *Agent) getActiveProvider() (llm.Provider, error) {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 
-	if len(a.providers) == 0 {
+	providers := a.loadProviders()
+	if len(providers) == 0 {
 		return nil, fmt.Errorf("no providers configured")
 	}
 
-	provider, ok := a.providers[a.activeProvider]
+	provider, ok := providers[a.cfg.activeProvider]
 	if !ok {
-		return nil, fmt.Errorf("active provider %q not found", a.activeProvider)
+		return nil, fmt.Errorf("active provider %q not found", a.cfg.activeProvider)
 	}
 	return provider, nil
 }
@@ -1069,7 +1132,7 @@ func (a *Agent) requestAndWaitApproval(ctx context.Context, channel, toolName st
 	a.send(channel, fmt.Sprintf("\u26a0 Tool call requires approval: %s(%s). Reply !approve or !deny [id: %s]", toolName, argsSummary, id[:8]))
 
 	// Wait for approval with timeout.
-	timeout := a.approvalTimeout
+	timeout := a.loadConfig().approvalTimeout
 	if timeout == 0 {
 		timeout = 2 * time.Minute
 	}
@@ -1110,9 +1173,10 @@ func (a *Agent) send(channel, message string) {
 // status sends a grey, italic status message to IRC when verbose mode is on.
 // These are ephemeral progress indicators (e.g., "thinking...", "calling shell")
 // that help the user understand what the agent is doing. They are not stored
-// in conversation memory.
-func (a *Agent) status(channel, message string) {
-	if !a.verbose {
+// in conversation memory. The verbose parameter should come from a config
+// snapshot to avoid data races.
+func (a *Agent) status(channel string, verbose bool, message string) {
+	if !verbose {
 		return
 	}
 	// Grey italic: \x1D\x0314message\x0F

@@ -50,6 +50,19 @@ func (env *testAgentEnv) getSent() []string {
 	return result
 }
 
+// addTestProvider adds a provider to the agent's atomic provider map. This is
+// a test helper that performs the copy-on-write pattern required by the atomic
+// pointer.
+func addTestProvider(a *Agent, name string, p llm.Provider) {
+	providers := a.loadProviders()
+	newMap := make(map[string]llm.Provider, len(providers)+1)
+	for k, v := range providers {
+		newMap[k] = v
+	}
+	newMap[name] = p
+	a.providers.Store(&newMap)
+}
+
 // newTestAgentEnv creates a test environment with a mock LLM provider and
 // a router that can have responses injected directly.
 func newTestAgentEnv(t *testing.T) *testAgentEnv {
@@ -452,7 +465,7 @@ func TestAgent_SetProvider(t *testing.T) {
 	env := newTestAgentEnv(t)
 
 	// Add a second provider.
-	env.agent.providers["other-provider"] = &llm.MockProvider{NameVal: "other-provider"}
+	addTestProvider(env.agent, "other-provider", &llm.MockProvider{NameVal: "other-provider"})
 
 	// Switch to the other provider for a channel.
 	if err := env.agent.SetProvider("#test", "other-provider"); err != nil {
@@ -718,8 +731,8 @@ func TestAgent_GetProviderNames(t *testing.T) {
 	env := newTestAgentEnv(t)
 
 	// Add more providers.
-	env.agent.providers["beta"] = &llm.MockProvider{NameVal: "beta"}
-	env.agent.providers["alpha"] = &llm.MockProvider{NameVal: "alpha"}
+	addTestProvider(env.agent, "beta", &llm.MockProvider{NameVal: "beta"})
+	addTestProvider(env.agent, "alpha", &llm.MockProvider{NameVal: "alpha"})
 
 	names := env.agent.GetProviderNames()
 	if len(names) != 3 {
@@ -1749,7 +1762,7 @@ func TestAgent_BuildSystemPrompt_ActiveModel(t *testing.T) {
 	env := newTestAgentEnv(t)
 
 	// Default: global default provider, no per-channel override.
-	prompt := env.agent.buildSystemPrompt("#test")
+	prompt := env.agent.buildSystemPrompt("#test", env.agent.loadConfig())
 	if !strings.Contains(prompt, "Active model: test-provider (global default)") {
 		t.Errorf("prompt should show global default model, got %q", prompt)
 	}
@@ -1808,13 +1821,13 @@ func TestAgent_BuildSystemPrompt_ChannelSpecificModel(t *testing.T) {
 	}
 
 	// Channel with override should show "channel-specific".
-	prompt := agent.buildSystemPrompt("#chan1")
+	prompt := agent.buildSystemPrompt("#chan1", agent.loadConfig())
 	if !strings.Contains(prompt, "Active model: kimi (channel-specific)") {
 		t.Errorf("prompt should show channel-specific model, got %q", prompt)
 	}
 
 	// Channel without override should show "global default".
-	prompt = agent.buildSystemPrompt("#chan2")
+	prompt = agent.buildSystemPrompt("#chan2", agent.loadConfig())
 	if !strings.Contains(prompt, "Active model: default-provider (global default)") {
 		t.Errorf("prompt should show global default model for #chan2, got %q", prompt)
 	}
@@ -1850,7 +1863,7 @@ func TestAgent_SetProvider_SyncsTopicOnNilConn(t *testing.T) {
 	env := newTestAgentEnv(t)
 
 	// Add a second provider.
-	env.agent.providers["kimi"] = &llm.MockProvider{NameVal: "kimi"}
+	addTestProvider(env.agent, "kimi", &llm.MockProvider{NameVal: "kimi"})
 
 	// SetProvider should succeed and call syncChannelTopic (which is a no-op
 	// because conn is nil). No panic should occur.
@@ -2295,7 +2308,7 @@ func TestAgent_BuildSystemPrompt_DM(t *testing.T) {
 	)
 
 	// Test DM prompt: channel is a nick (no '#' prefix).
-	prompt := agent.buildSystemPrompt("alice")
+	prompt := agent.buildSystemPrompt("alice", agent.loadConfig())
 	if !strings.Contains(prompt, "private conversation (DM) with alice") {
 		t.Errorf("DM prompt should mention private conversation, got:\n%s", prompt)
 	}
@@ -2307,7 +2320,7 @@ func TestAgent_BuildSystemPrompt_DM(t *testing.T) {
 	}
 
 	// Test channel prompt: channel starts with '#'.
-	prompt = agent.buildSystemPrompt("#general")
+	prompt = agent.buildSystemPrompt("#general", agent.loadConfig())
 	if !strings.Contains(prompt, "Current channel: #general") {
 		t.Errorf("channel prompt should contain 'Current channel:', got:\n%s", prompt)
 	}
@@ -2349,5 +2362,115 @@ func TestAgent_HandleMessage_DM(t *testing.T) {
 	}
 	if msgs[1].Role != "assistant" {
 		t.Errorf("msg[1].Role = %q, want assistant", msgs[1].Role)
+	}
+}
+
+func TestAgent_UpdateProviders(t *testing.T) {
+	t.Parallel()
+	env := newTestAgentEnv(t)
+
+	// Initial state: one provider "test-provider".
+	names := env.agent.GetProviderNames()
+	if len(names) != 1 || names[0] != "test-provider" {
+		t.Fatalf("initial providers = %v, want [test-provider]", names)
+	}
+	if got := env.agent.GetProvider(); got != "test-provider" {
+		t.Fatalf("initial default = %q, want test-provider", got)
+	}
+
+	// Swap to a completely new set of providers.
+	newMock := &llm.MockProvider{NameVal: "new-provider"}
+	newProviders := map[string]llm.Provider{
+		"new-provider": newMock,
+		"extra":        &llm.MockProvider{NameVal: "extra"},
+	}
+	env.agent.UpdateProviders(newProviders, "new-provider")
+
+	// Verify the swap took effect.
+	names = env.agent.GetProviderNames()
+	if len(names) != 2 {
+		t.Fatalf("after swap providers = %v, want 2 entries", names)
+	}
+	if got := env.agent.GetProvider(); got != "new-provider" {
+		t.Errorf("after swap default = %q, want new-provider", got)
+	}
+
+	// Verify the old provider is gone.
+	if err := env.agent.SetProvider("#test", "test-provider"); err == nil {
+		t.Error("expected error for removed provider test-provider")
+	}
+
+	// Verify the new provider works.
+	if err := env.agent.SetProvider("#test", "extra"); err != nil {
+		t.Errorf("SetProvider extra: %v", err)
+	}
+}
+
+func TestAgent_UpdateConfig(t *testing.T) {
+	t.Parallel()
+	env := newTestAgentEnv(t)
+
+	// Verify initial values.
+	cfg := env.agent.loadConfig()
+	if cfg.verbose {
+		t.Error("expected verbose=false initially")
+	}
+	if cfg.maxHistory != 100 {
+		t.Errorf("expected maxHistory=100, got %d", cfg.maxHistory)
+	}
+
+	// Update config.
+	env.agent.UpdateConfig(true, 50, 5, 30*time.Second, "New system prompt")
+
+	// Verify updated values.
+	cfg = env.agent.loadConfig()
+	if !cfg.verbose {
+		t.Error("expected verbose=true after update")
+	}
+	if cfg.maxHistory != 50 {
+		t.Errorf("expected maxHistory=50, got %d", cfg.maxHistory)
+	}
+	if cfg.crossChCtx != 5 {
+		t.Errorf("expected crossChCtx=5, got %d", cfg.crossChCtx)
+	}
+	if cfg.approvalTimeout != 30*time.Second {
+		t.Errorf("expected approvalTimeout=30s, got %v", cfg.approvalTimeout)
+	}
+	if cfg.systemPrompt != "New system prompt" {
+		t.Errorf("expected systemPrompt='New system prompt', got %q", cfg.systemPrompt)
+	}
+}
+
+func TestMemory_UpdateConfig(t *testing.T) {
+	t.Parallel()
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := database.Migrate(); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	t.Cleanup(func() { database.Close() })
+
+	memory := NewMemory(database, 100, 80, nil, logger)
+
+	// Verify initial values.
+	if got := memory.loadMaxHistory(); got != 100 {
+		t.Errorf("initial maxHistory = %d, want 100", got)
+	}
+	if got := memory.loadSummaryThreshold(); got != 80 {
+		t.Errorf("initial summaryThreshold = %d, want 80", got)
+	}
+
+	// Update.
+	memory.UpdateConfig(200, 160)
+
+	if got := memory.loadMaxHistory(); got != 200 {
+		t.Errorf("updated maxHistory = %d, want 200", got)
+	}
+	if got := memory.loadSummaryThreshold(); got != 160 {
+		t.Errorf("updated summaryThreshold = %d, want 160", got)
 	}
 }

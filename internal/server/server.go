@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"murmur/internal/api"
@@ -28,13 +29,15 @@ const defaultHTTPToolTimeout = 30 * time.Second
 // Server is the Murmur server that connects to IRC, manages clients via the
 // bus protocol, and runs the agent loop for LLM-powered conversations.
 type Server struct {
-	cfg      *config.ServerConfig
-	conn     *irc.Connection
-	handler  *irc.MessageHandler
-	sender   *bus.Sender
-	receiver *bus.Receiver
-	registry *Registry
-	logger   *slog.Logger
+	cfgMu      sync.RWMutex // protects cfg from concurrent read/write during reload
+	cfg        *config.ServerConfig
+	configPath string // path to the TOML config file, used for hot reload
+	conn       *irc.Connection
+	handler    *irc.MessageHandler
+	sender     *bus.Sender
+	receiver   *bus.Receiver
+	registry   *Registry
+	logger     *slog.Logger
 
 	// Phase 2 components.
 	database        *db.DB
@@ -45,6 +48,14 @@ type Server struct {
 	scheduler       *Scheduler
 	commands        *CommandHandler
 	agent           *Agent
+
+	// allowedUsers is an atomic copy of the allowed users list, used by
+	// isAllowed() for lock-free reads. Updated during Reload().
+	allowedUsers atomic.Pointer[[]string]
+
+	// reloadMu serializes concurrent reload attempts from SIGHUP, !reload,
+	// and config_manage. Only one reload can run at a time.
+	reloadMu sync.Mutex
 
 	// agentWg tracks in-flight agent goroutines so that Run() can wait for
 	// them to finish before closing the database.
@@ -67,8 +78,9 @@ type Server struct {
 
 // New creates a new server from the given configuration. It opens the SQLite
 // database, creates the LLM providers, and wires all components together.
-// It does not connect to IRC — call Run to start the server.
-func New(cfg *config.ServerConfig, logger *slog.Logger) (*Server, error) {
+// It does not connect to IRC — call Run to start the server. The configPath
+// is stored for hot config reload via SIGHUP or !reload.
+func New(cfg *config.ServerConfig, configPath string, logger *slog.Logger) (*Server, error) {
 	// Resolve vault: references in the config before using any values.
 	if cfg.Vault.Enabled && cfg.Vault.DBPath != "" {
 		passphrase := os.Getenv(cfg.Vault.PassphraseEnv)
@@ -174,6 +186,11 @@ func New(cfg *config.ServerConfig, logger *slog.Logger) (*Server, error) {
 		return nil, fmt.Errorf("server.New: register note tools: %w", err)
 	}
 
+	// reloadPtr is a late-binding pointer used by the config_manage tool's
+	// reload callback. It is set to the server after construction, breaking
+	// the circular dependency (tools need server, server needs tools).
+	var reloadPtr *Server
+
 	// Build and register server-side tools from the unified config. Vault
 	// references are already resolved upfront, so we pass nil for the
 	// resolver. The IRC connection satisfies tools.IRCManager, and the
@@ -185,6 +202,12 @@ func New(cfg *config.ServerConfig, logger *slog.Logger) (*Server, error) {
 		Memory:           NewMemoryAdapter(memory),
 		BusChannel:       cfg.IRC.Channels.Bus,
 		ChannelPersister: channelSettings,
+		ReloadFunc: func() error {
+			if reloadPtr == nil {
+				return fmt.Errorf("server not initialized yet")
+			}
+			return reloadPtr.Reload()
+		},
 	})
 	if err != nil {
 		database.Close()
@@ -304,10 +327,11 @@ func New(cfg *config.ServerConfig, logger *slog.Logger) (*Server, error) {
 	if ircLogHandler != nil {
 		debugToggler = ircLogHandler
 	}
-	commands := NewCommandHandler(registry, memory, notesStore, scheduler, approvals, conn, modelSwitcher, flood, debugToggler, cfg.Security.AllowedUsers, time.Now(), logger)
+	commands := NewCommandHandler(registry, memory, notesStore, scheduler, approvals, conn, modelSwitcher, flood, debugToggler, nil, cfg.Security.AllowedUsers, time.Now(), logger)
 
 	s := &Server{
 		cfg:             cfg,
+		configPath:      configPath,
 		conn:            conn,
 		handler:         handler,
 		sender:          sender,
@@ -326,6 +350,15 @@ func New(cfg *config.ServerConfig, logger *slog.Logger) (*Server, error) {
 		startTime:       time.Now(),
 		ircLogHandler:   ircLogHandler,
 	}
+	s.allowedUsers.Store(&cfg.Security.AllowedUsers)
+
+	// Wire the reloader to the command handler now that the server exists.
+	// This breaks the circular dependency: commands needs a Reloader, but
+	// the server needs commands to be created first.
+	commands.reloader = s
+
+	// Wire the late-binding reload pointer for the config_manage tool.
+	reloadPtr = s
 
 	s.registerBusHandlers()
 
@@ -421,14 +454,16 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 
 	// Start the REST API server if enabled.
-	if s.cfg.API.Enabled {
+	// Snapshot config for API startup — API config is not reloadable.
+	startCfg := s.loadCfg()
+	if startCfg.API.Enabled {
 		mux := newServerAPIMux(s)
-		s.httpServer = api.NewHTTPServer(s.cfg.API.Listen, mux, s.logger)
+		s.httpServer = api.NewHTTPServer(startCfg.API.Listen, mux, s.logger)
 
 		monitorWg.Add(1)
 		go func() {
 			defer monitorWg.Done()
-			s.logger.Info("starting REST API server", "listen", s.cfg.API.Listen)
+			s.logger.Info("starting REST API server", "listen", startCfg.API.Listen)
 			if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 				s.logger.Error("REST API server error", "error", err)
 			}
@@ -467,6 +502,104 @@ func (s *Server) Run(ctx context.Context) error {
 
 	s.logger.Info("murmur server stopped")
 	return err
+}
+
+// Reload re-reads the TOML config file and applies safe changes without
+// restarting. It resolves vault references, rebuilds LLM providers, and
+// updates the agent, command handler, and memory with new values.
+//
+// Safe to reload: LLM providers, allowed_users, verbose, system_prompt,
+// max_history, cross_channel_context, approval_timeout, summary_threshold,
+// debug channel toggle.
+//
+// NOT reloadable (requires restart): IRC connection, DB path, vault config,
+// API listen address, bus key, tool configs (shell, code_exec, etc.).
+func (s *Server) Reload() error {
+	// Serialize concurrent reload attempts.
+	s.reloadMu.Lock()
+	defer s.reloadMu.Unlock()
+
+	s.logger.Info("reloading configuration", "path", s.configPath)
+
+	cfg, err := config.LoadServerConfig(s.configPath)
+	if err != nil {
+		return fmt.Errorf("Reload: load config: %w", err)
+	}
+
+	// Resolve vault references in the new config.
+	if cfg.Vault.Enabled && cfg.Vault.DBPath != "" {
+		passphrase := os.Getenv(cfg.Vault.PassphraseEnv)
+		if passphrase != "" {
+			v, err := vault.Open(cfg.Vault.DBPath, passphrase)
+			if err != nil {
+				s.logger.Warn("Reload: could not open vault, vault: references will not be resolved", "error", err)
+			} else {
+				if err := vault.ResolveVaultRefs(v, cfg); err != nil {
+					v.Close()
+					return fmt.Errorf("Reload: resolve vault refs: %w", err)
+				}
+				v.Close()
+			}
+		}
+	}
+
+	// Rebuild LLM providers from the new config.
+	providers := make(map[string]llm.Provider)
+	for name, provCfg := range cfg.LLM.Providers {
+		providers[name] = llm.NewOpenAICompatProvider(name, provCfg, s.logger)
+	}
+
+	// Validate that the default provider exists.
+	if len(providers) > 0 && cfg.LLM.Default != "" {
+		if _, ok := providers[cfg.LLM.Default]; !ok {
+			return fmt.Errorf("Reload: default LLM provider %q not found in configured providers", cfg.LLM.Default)
+		}
+	}
+
+	// Load the system prompt.
+	systemPrompt, err := LoadSystemPrompt(cfg.Server.SystemPromptFile)
+	if err != nil {
+		return fmt.Errorf("Reload: %w", err)
+	}
+
+	// Parse the approval timeout.
+	approvalTimeout, err := cfg.ParseApprovalTimeout()
+	if err != nil {
+		return fmt.Errorf("Reload: %w", err)
+	}
+
+	// Apply changes atomically to each component.
+	s.agent.UpdateProviders(providers, cfg.LLM.Default)
+	s.agent.UpdateConfig(cfg.Server.Verbose, cfg.Memory.MaxHistory, cfg.Memory.CrossChannelContext, approvalTimeout, systemPrompt)
+	s.commands.UpdateAllowedUsers(cfg.Security.AllowedUsers)
+	s.allowedUsers.Store(&cfg.Security.AllowedUsers)
+	s.memory.UpdateConfig(cfg.Memory.MaxHistory, cfg.Memory.SummaryThreshold)
+
+	// Toggle debug channel handler.
+	if s.ircLogHandler != nil {
+		oldDebugCh := s.loadCfg().Server.DebugChannel
+		if cfg.Server.DebugChannel == "" {
+			s.ircLogHandler.SetEnabled(false)
+			s.logger.Info("debug channel disabled by reload")
+		} else {
+			s.ircLogHandler.SetEnabled(true)
+			if oldDebugCh != cfg.Server.DebugChannel {
+				s.logger.Warn("debug_channel name changed; new channel requires restart to take effect",
+					"old", oldDebugCh,
+					"new", cfg.Server.DebugChannel,
+				)
+			}
+			s.logger.Info("debug channel enabled by reload", "channel", cfg.Server.DebugChannel)
+		}
+	}
+
+	// Update the stored config reference under write lock.
+	s.cfgMu.Lock()
+	s.cfg = cfg
+	s.cfgMu.Unlock()
+
+	s.logger.Info("configuration reloaded successfully")
+	return nil
 }
 
 // registerBusHandlers sets up handlers for bus protocol messages.
@@ -509,7 +642,7 @@ func (s *Server) registerBusHandlers() {
 			return
 		}
 
-		channel := s.cfg.IRC.Channels.Main
+		channel := s.loadCfg().IRC.Channels.Main
 
 		// Store the event in the database.
 		event := &db.Event{
@@ -563,7 +696,7 @@ func (s *Server) registerBusHandlers() {
 			if len(output) > maxCronOutputDisplay {
 				output = output[:maxCronOutputDisplay] + "..."
 			}
-			s.conn.Send(s.cfg.IRC.Channels.Main, fmt.Sprintf("[cron:%s@%s] %s: %s", m.JobName, m.ClientID, m.Status, output))
+			s.conn.Send(s.loadCfg().IRC.Channels.Main, fmt.Sprintf("[cron:%s@%s] %s: %s", m.JobName, m.ClientID, m.Status, output))
 		}
 	})
 }
@@ -589,7 +722,7 @@ func (s *Server) handleUserMessage(ctx context.Context, channel, nick, message s
 	// TODO: Deduplicate allowlist check with commands.go — both use
 	// case-insensitive EqualFold loops. Consider extracting to a shared
 	// helper. (Low priority)
-	if len(s.cfg.Security.AllowedUsers) > 0 && !s.isAllowed(nick) {
+	if users := s.loadAllowedUsers(); len(users) > 0 && !s.isAllowed(nick) {
 		// Still let commands handle authorization (they send rejection messages).
 		if strings.HasPrefix(message, "!") {
 			s.commands.HandleCommand(channel, nick, message)
@@ -604,7 +737,7 @@ func (s *Server) handleUserMessage(ctx context.Context, channel, nick, message s
 	}
 
 	// No LLM providers configured — can't run the agent loop.
-	if len(s.cfg.LLM.Providers) == 0 {
+	if len(s.loadCfg().LLM.Providers) == 0 {
 		s.conn.Send(channel, "no LLM configured")
 		return
 	}
@@ -640,14 +773,32 @@ func (s *Server) handleUserMessage(ctx context.Context, channel, nick, message s
 	})
 }
 
+// loadAllowedUsers returns the current allowed users list from the atomic pointer.
+// Returns nil if no users have been stored (zero-value atomic pointer).
+func (s *Server) loadAllowedUsers() []string {
+	p := s.allowedUsers.Load()
+	if p == nil {
+		return nil
+	}
+	return *p
+}
+
 // isAllowed checks if a nick is in the allowed users list (case-insensitive).
 func (s *Server) isAllowed(nick string) bool {
-	for _, u := range s.cfg.Security.AllowedUsers {
+	for _, u := range s.loadAllowedUsers() {
 		if strings.EqualFold(u, nick) {
 			return true
 		}
 	}
 	return false
+}
+
+// loadCfg returns the current server config under read lock. This is used by
+// runtime paths that read s.cfg concurrently with Reload() writes.
+func (s *Server) loadCfg() *config.ServerConfig {
+	s.cfgMu.RLock()
+	defer s.cfgMu.RUnlock()
+	return s.cfg
 }
 
 // Registry returns the server's client registry for external access.

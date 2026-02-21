@@ -102,7 +102,7 @@ func TestConfigManage_ReadSection(t *testing.T) {
 	result, err := handleConfigManage(context.Background(), map[string]any{
 		"action":  "read_section",
 		"section": "irc",
-	}, path)
+	}, path, nil)
 	if err != nil {
 		t.Fatalf("Handler: %v", err)
 	}
@@ -123,7 +123,7 @@ func TestConfigManage_ReadSectionNested(t *testing.T) {
 	result, err := handleConfigManage(context.Background(), map[string]any{
 		"action":  "read_section",
 		"section": "irc.channels",
-	}, path)
+	}, path, nil)
 	if err != nil {
 		t.Fatalf("Handler: %v", err)
 	}
@@ -141,7 +141,7 @@ func TestConfigManage_ReadSectionNotFound(t *testing.T) {
 	_, err := handleConfigManage(context.Background(), map[string]any{
 		"action":  "read_section",
 		"section": "nonexistent",
-	}, path)
+	}, path, nil)
 	if err == nil {
 		t.Fatal("expected error for nonexistent section")
 	}
@@ -160,7 +160,7 @@ func TestConfigManage_Set(t *testing.T) {
 		"action": "set",
 		"key":    "irc.nick",
 		"value":  "newbot",
-	}, path)
+	}, path, nil)
 	if err != nil {
 		t.Fatalf("Handler: %v", err)
 	}
@@ -191,7 +191,7 @@ func TestConfigManage_SetBoolean(t *testing.T) {
 		"action": "set",
 		"key":    "irc.tls",
 		"value":  "false",
-	}, path)
+	}, path, nil)
 	if err != nil {
 		t.Fatalf("Handler: %v", err)
 	}
@@ -214,7 +214,7 @@ func TestConfigManage_SetInteger(t *testing.T) {
 		"action": "set",
 		"key":    "irc.port",
 		"value":  "6667",
-	}, path)
+	}, path, nil)
 	if err != nil {
 		t.Fatalf("Handler: %v", err)
 	}
@@ -253,7 +253,7 @@ func TestConfigManage_SetDenied_Security(t *testing.T) {
 				"action": "set",
 				"key":    tt.key,
 				"value":  "hacked",
-			}, path)
+			}, path, nil)
 			if err == nil {
 				t.Fatalf("expected error for denied key %q", tt.key)
 			}
@@ -273,7 +273,7 @@ func TestConfigManage_SetDenied_VaultPrefix(t *testing.T) {
 		"action": "set",
 		"key":    "irc.nick",
 		"value":  "vault:stolen-secret",
-	}, path)
+	}, path, nil)
 	if err == nil {
 		t.Fatal("expected error for vault: prefixed value")
 	}
@@ -291,7 +291,7 @@ func TestConfigManage_SetKeyNotFound(t *testing.T) {
 		"action": "set",
 		"key":    "irc.nonexistent_key",
 		"value":  "test",
-	}, path)
+	}, path, nil)
 	if err == nil {
 		t.Fatal("expected error for nonexistent key")
 	}
@@ -330,7 +330,7 @@ func TestConfigManage_ListSections(t *testing.T) {
 
 	result, err := handleConfigManage(context.Background(), map[string]any{
 		"action": "list_sections",
-	}, path)
+	}, path, nil)
 	if err != nil {
 		t.Fatalf("Handler: %v", err)
 	}
@@ -358,7 +358,7 @@ func TestConfigManage_AtomicWrite(t *testing.T) {
 		"action": "set",
 		"key":    "memory.max_history",
 		"value":  "200",
-	}, path)
+	}, path, nil)
 	if err != nil {
 		t.Fatalf("Handler: %v", err)
 	}
@@ -403,7 +403,7 @@ func TestConfigManage_UnknownAction(t *testing.T) {
 
 	_, err := handleConfigManage(context.Background(), map[string]any{
 		"action": "invalid",
-	}, path)
+	}, path, nil)
 	if err == nil {
 		t.Fatal("expected error for unknown action")
 	}
@@ -470,7 +470,7 @@ func TestConfigManage_SetInNestedSection(t *testing.T) {
 		"action": "set",
 		"key":    "tools.shell.enabled",
 		"value":  "false",
-	}, path)
+	}, path, nil)
 	if err != nil {
 		t.Fatalf("Handler: %v", err)
 	}
@@ -502,7 +502,7 @@ nick = "murmur"
 		"action": "set",
 		"key":    "irc.nick",
 		"value":  "newbot",
-	}, path)
+	}, path, nil)
 	if err != nil {
 		t.Fatalf("Handler: %v", err)
 	}
@@ -529,7 +529,7 @@ func TestConfigManage_ReadSectionFullyQualifiedHeaders(t *testing.T) {
 	result, err := handleConfigManage(context.Background(), map[string]any{
 		"action":  "read_section",
 		"section": "irc",
-	}, path)
+	}, path, nil)
 	if err != nil {
 		t.Fatalf("Handler: %v", err)
 	}
@@ -554,7 +554,7 @@ system_prompt_file = "~/.murmur/system_prompt.md"
 		"action": "set",
 		"key":    "server.data_dir",
 		"value":  "/new/path",
-	}, path)
+	}, path, nil)
 	if err != nil {
 		t.Fatalf("Handler: %v", err)
 	}

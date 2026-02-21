@@ -30,11 +30,15 @@ const summaryTimeout = 30 * time.Second
 // messages are inserted into the conversations table.
 // All methods are safe for concurrent use (serialized by SQLite).
 type Memory struct {
-	db               *db.DB
+	db              *db.DB
+	summaryProvider llm.Provider // nil means summarization disabled
+	logger          *slog.Logger
+
+	// configMu protects maxHistory and summaryThreshold, which can be
+	// updated at runtime via UpdateConfig during hot config reload.
+	configMu         sync.RWMutex
 	maxHistory       int
 	summaryThreshold int
-	summaryProvider  llm.Provider // nil means summarization disabled
-	logger           *slog.Logger
 
 	// summarizeMu prevents concurrent summarization for the same channel.
 	// The map key is the channel name. Access to the map itself is guarded
@@ -87,12 +91,13 @@ func (m *Memory) AddMessage(channel, role, content, toolName, toolCallID string)
 	}
 
 	// FIFO eviction: delete oldest messages if count exceeds maxHistory.
-	if m.maxHistory > 0 {
+	maxHist := m.loadMaxHistory()
+	if maxHist > 0 {
 		_, err = tx.Exec(
 			`DELETE FROM conversations WHERE channel = ? AND id NOT IN (
 				SELECT id FROM conversations WHERE channel = ? ORDER BY id DESC LIMIT ?
 			)`,
-			channel, channel, m.maxHistory,
+			channel, channel, maxHist,
 		)
 		if err != nil {
 			return fmt.Errorf("AddMessage: evict: %w", err)
@@ -115,7 +120,7 @@ func (m *Memory) AddMessage(channel, role, content, toolName, toolCallID string)
 			)
 			return nil
 		}
-		if count > m.summaryThreshold {
+		if count > m.loadSummaryThreshold() {
 			ctx, cancel := context.WithTimeout(context.Background(), summaryTimeout)
 			defer cancel()
 			if err := m.MaybeSummarize(ctx, channel); err != nil {
@@ -181,7 +186,7 @@ func (m *Memory) MaybeSummarize(ctx context.Context, channel string) error {
 		return fmt.Errorf("MaybeSummarize: rows iteration: %w", err)
 	}
 
-	if len(allMsgs) <= m.summaryThreshold {
+	if len(allMsgs) <= m.loadSummaryThreshold() {
 		return nil // below threshold, nothing to do
 	}
 
@@ -410,6 +415,31 @@ func (m *Memory) ClearHistory(channel string) error {
 		return fmt.Errorf("ClearHistory: commit: %w", err)
 	}
 	return nil
+}
+
+// UpdateConfig updates the memory's configuration fields. This is called
+// during hot config reload for fields that can be safely changed at runtime.
+// The maxHistory and summaryThreshold values take effect on the next AddMessage
+// call — existing messages are not retroactively evicted.
+func (m *Memory) UpdateConfig(maxHistory, summaryThreshold int) {
+	m.configMu.Lock()
+	defer m.configMu.Unlock()
+	m.maxHistory = maxHistory
+	m.summaryThreshold = summaryThreshold
+}
+
+// loadMaxHistory returns the current maxHistory value under read lock.
+func (m *Memory) loadMaxHistory() int {
+	m.configMu.RLock()
+	defer m.configMu.RUnlock()
+	return m.maxHistory
+}
+
+// loadSummaryThreshold returns the current summaryThreshold value under read lock.
+func (m *Memory) loadSummaryThreshold() int {
+	m.configMu.RLock()
+	defer m.configMu.RUnlock()
+	return m.summaryThreshold
 }
 
 // GetHistoryCount returns the number of conversation messages for a channel.

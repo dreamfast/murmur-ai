@@ -44,6 +44,10 @@ func init() {
 type ConfigManageToolConfig struct {
 	// ConfigPath is the path to the TOML configuration file to manage.
 	ConfigPath string
+	// ReloadFunc is an optional callback invoked after a successful config set.
+	// When non-nil, the config is reloaded automatically after writing. When
+	// nil, the response tells the user a restart is required.
+	ReloadFunc func() error
 }
 
 // NewConfigManageTool creates the config_manage tool for reading and writing
@@ -78,13 +82,13 @@ func NewConfigManageTool(cfg ConfigManageToolConfig) Tool {
 			"required": ["action"]
 		}`),
 		Handler: func(ctx context.Context, args map[string]any) (string, error) {
-			return handleConfigManage(ctx, args, cfg.ConfigPath)
+			return handleConfigManage(ctx, args, cfg.ConfigPath, cfg.ReloadFunc)
 		},
 	}
 }
 
 // handleConfigManage dispatches to the appropriate config management action.
-func handleConfigManage(_ context.Context, args map[string]any, configPath string) (string, error) {
+func handleConfigManage(_ context.Context, args map[string]any, configPath string, reloadFunc func() error) (string, error) {
 	action, err := RequireStringArg(args, "action")
 	if err != nil {
 		return "", err
@@ -108,7 +112,7 @@ func handleConfigManage(_ context.Context, args map[string]any, configPath strin
 		if err != nil {
 			return "", fmt.Errorf("handleConfigManage: %w", err)
 		}
-		return configSet(configPath, key, value)
+		return configSet(configPath, key, value, reloadFunc)
 	case "list_sections":
 		return configListSections(configPath)
 	default:
@@ -161,8 +165,9 @@ func configReadSection(configPath, section string) (string, error) {
 }
 
 // configSet sets a value in the TOML config file using targeted string replacement.
-// Uses atomic write (temp file + os.Rename) for safety.
-func configSet(configPath, key, value string) (string, error) {
+// Uses atomic write (temp file + os.Rename) for safety. If reloadFunc is non-nil,
+// the config is reloaded automatically after a successful write.
+func configSet(configPath, key, value string, reloadFunc func() error) (string, error) {
 	// Check deny-list.
 	if isConfigKeyDenied(key) {
 		return "", fmt.Errorf("configSet: key %q is protected and cannot be modified", key)
@@ -220,6 +225,14 @@ func configSet(configPath, key, value string) (string, error) {
 	if err := os.Rename(tmpPath, configPath); err != nil {
 		os.Remove(tmpPath)
 		return "", fmt.Errorf("configSet: rename temp file: %w", err)
+	}
+
+	// Attempt hot reload if a reload function is available.
+	if reloadFunc != nil {
+		if err := reloadFunc(); err != nil {
+			return fmt.Sprintf("Set %s = %s\nWarning: config reload failed: %v. A restart may be required.", key, value, err), nil
+		}
+		return fmt.Sprintf("Set %s = %s\nConfig reloaded successfully.", key, value), nil
 	}
 
 	return fmt.Sprintf("Set %s = %s\nNote: A restart is required for changes to take effect.", key, value), nil

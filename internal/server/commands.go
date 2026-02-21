@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"murmur/internal/irc"
@@ -53,6 +54,13 @@ type DebugToggler interface {
 	Level() slog.Level
 }
 
+// Reloader is the interface the CommandHandler needs to trigger a hot config
+// reload. Defined here (where consumed) per Go convention.
+type Reloader interface {
+	// Reload re-reads the config file and applies safe changes.
+	Reload() error
+}
+
 // CommandHandler dispatches built-in `!` commands. Commands are handled
 // without involving the LLM — they provide quick status and management.
 type CommandHandler struct {
@@ -65,7 +73,8 @@ type CommandHandler struct {
 	model        ModelSwitcher
 	flood        FloodFlusher
 	debug        DebugToggler
-	allowedUsers []string
+	reloader     Reloader
+	allowedUsers atomic.Pointer[[]string]
 	startTime    time.Time
 	logger       *slog.Logger
 
@@ -81,6 +90,7 @@ type CommandHandler struct {
 // The approvals parameter may be nil if the approval flow is not configured.
 // The flood parameter may be nil if flood protection is not configured.
 // The debug parameter may be nil if the debug channel is not configured.
+// The reloader parameter may be nil if hot reload is not supported.
 func NewCommandHandler(
 	registry *Registry,
 	memory *Memory,
@@ -91,24 +101,27 @@ func NewCommandHandler(
 	model ModelSwitcher,
 	flood FloodFlusher,
 	debug DebugToggler,
+	reloader Reloader,
 	allowedUsers []string,
 	startTime time.Time,
 	logger *slog.Logger,
 ) *CommandHandler {
-	return &CommandHandler{
-		registry:     registry,
-		memory:       memory,
-		notes:        notes,
-		scheduler:    scheduler,
-		approvals:    approvals,
-		conn:         conn,
-		model:        model,
-		flood:        flood,
-		debug:        debug,
-		allowedUsers: allowedUsers,
-		startTime:    startTime,
-		logger:       logger,
+	h := &CommandHandler{
+		registry:  registry,
+		memory:    memory,
+		notes:     notes,
+		scheduler: scheduler,
+		approvals: approvals,
+		conn:      conn,
+		model:     model,
+		flood:     flood,
+		debug:     debug,
+		reloader:  reloader,
+		startTime: startTime,
+		logger:    logger,
 	}
+	h.allowedUsers.Store(&allowedUsers)
+	return h
 }
 
 // HandleCommand checks if the message is a `!` command and handles it.
@@ -121,7 +134,7 @@ func (h *CommandHandler) HandleCommand(channel, nick, message string) bool {
 	}
 
 	// Check authorization.
-	if len(h.allowedUsers) > 0 && !h.isAllowed(nick) {
+	if users := h.loadAllowedUsers(); len(users) > 0 && !h.isAllowed(nick) {
 		h.send(channel, "unauthorized: you are not in the allowed users list")
 		return true
 	}
@@ -160,6 +173,8 @@ func (h *CommandHandler) HandleCommand(channel, nick, message string) bool {
 		h.cmdTask(channel, args)
 	case "!debug":
 		h.cmdDebug(channel, args)
+	case "!reload":
+		h.cmdReload(channel)
 	case "!help":
 		h.cmdHelp(channel)
 	default:
@@ -589,6 +604,18 @@ func (h *CommandHandler) cmdPending(channel string) {
 	h.send(channel, fmt.Sprintf("pending approvals (%d):\n%s", len(pending), strings.Join(lines, "\n")))
 }
 
+func (h *CommandHandler) cmdReload(channel string) {
+	if h.reloader == nil {
+		h.send(channel, "hot reload not available")
+		return
+	}
+	if err := h.reloader.Reload(); err != nil {
+		h.send(channel, fmt.Sprintf("reload failed: %v", err))
+		return
+	}
+	h.send(channel, "config reloaded successfully")
+}
+
 func (h *CommandHandler) cmdDebug(channel string, args []string) {
 	if h.debug == nil {
 		h.send(channel, "debug channel not configured (set server.debug_channel in config)")
@@ -652,6 +679,7 @@ func (h *CommandHandler) cmdHelp(channel string) {
   !tasks — list scheduled tasks and reminders
   !task add/remove/enable/disable — manage scheduled tasks (30s granularity, UTC)
   !debug [on|off|level <level>] — toggle debug IRC channel logging
+  !reload — reload configuration from disk
   !help — show this help`
 	h.send(channel, help)
 }
@@ -664,8 +692,24 @@ func (h *CommandHandler) send(channel, message string) {
 	h.conn.Send(channel, message)
 }
 
+// loadAllowedUsers returns the current allowed users list from the atomic pointer.
+// Returns nil if no users have been stored (zero-value atomic pointer).
+func (h *CommandHandler) loadAllowedUsers() []string {
+	p := h.allowedUsers.Load()
+	if p == nil {
+		return nil
+	}
+	return *p
+}
+
+// UpdateAllowedUsers atomically replaces the allowed users list. This is
+// called during hot config reload.
+func (h *CommandHandler) UpdateAllowedUsers(users []string) {
+	h.allowedUsers.Store(&users)
+}
+
 func (h *CommandHandler) isAllowed(nick string) bool {
-	for _, u := range h.allowedUsers {
+	for _, u := range h.loadAllowedUsers() {
 		if strings.EqualFold(u, nick) {
 			return true
 		}

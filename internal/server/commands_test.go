@@ -95,18 +95,20 @@ func newTestCommandEnv(t *testing.T, allowedUsers []string) *testCommandEnv {
 	}
 
 	handler := &CommandHandler{
-		registry:     registry,
-		memory:       memory,
-		notes:        nil,
-		scheduler:    nil,
-		conn:         nil,
-		model:        model,
-		allowedUsers: allowedUsers,
-		startTime:    time.Now().Add(-5 * time.Minute),
-		logger:       logger,
+		registry:  registry,
+		memory:    memory,
+		notes:     nil,
+		scheduler: nil,
+		conn:      nil,
+		model:     model,
+		startTime: time.Now().Add(-5 * time.Minute),
+		logger:    logger,
 		sendFunc: func(channel, message string) {
 			env.sent = append(env.sent, message)
 		},
+	}
+	if allowedUsers != nil {
+		handler.allowedUsers.Store(&allowedUsers)
 	}
 	env.handler = handler
 
@@ -585,5 +587,101 @@ func TestCommandHandler_HelpIncludesApproval(t *testing.T) {
 	}
 	if !strings.Contains(msg, "!pending") {
 		t.Errorf("expected !pending in help, got: %s", msg)
+	}
+	if !strings.Contains(msg, "!reload") {
+		t.Errorf("expected !reload in help, got: %s", msg)
+	}
+}
+
+// mockReloader implements Reloader for testing.
+type mockReloader struct {
+	called bool
+	err    error
+}
+
+func (m *mockReloader) Reload() error {
+	m.called = true
+	return m.err
+}
+
+func TestCommandHandler_Reload(t *testing.T) {
+	t.Parallel()
+	env := newTestCommandEnv(t, nil)
+
+	reloader := &mockReloader{}
+	env.handler.reloader = reloader
+
+	env.handler.HandleCommand("#test", "admin", "!reload")
+
+	if !reloader.called {
+		t.Error("expected Reload to be called")
+	}
+	msg := env.lastSent()
+	if msg != "config reloaded successfully" {
+		t.Errorf("expected success message, got: %s", msg)
+	}
+}
+
+func TestCommandHandler_ReloadError(t *testing.T) {
+	t.Parallel()
+	env := newTestCommandEnv(t, nil)
+
+	reloader := &mockReloader{err: fmt.Errorf("bad config")}
+	env.handler.reloader = reloader
+
+	env.handler.HandleCommand("#test", "admin", "!reload")
+
+	msg := env.lastSent()
+	if !strings.Contains(msg, "reload failed") {
+		t.Errorf("expected 'reload failed' message, got: %s", msg)
+	}
+	if !strings.Contains(msg, "bad config") {
+		t.Errorf("expected error detail in message, got: %s", msg)
+	}
+}
+
+func TestCommandHandler_ReloadNilReloader(t *testing.T) {
+	t.Parallel()
+	env := newTestCommandEnv(t, nil)
+
+	// reloader is nil by default.
+	env.handler.HandleCommand("#test", "admin", "!reload")
+
+	msg := env.lastSent()
+	if msg != "hot reload not available" {
+		t.Errorf("expected 'hot reload not available', got: %s", msg)
+	}
+}
+
+func TestCommandHandler_UpdateAllowedUsers(t *testing.T) {
+	t.Parallel()
+	env := newTestCommandEnv(t, []string{"admin"})
+
+	// Initially, "admin" is allowed.
+	env.handler.HandleCommand("#test", "admin", "!status")
+	if len(env.sent) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(env.sent))
+	}
+
+	// "newuser" is not allowed.
+	env.handler.HandleCommand("#test", "newuser", "!status")
+	if len(env.sent) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(env.sent))
+	}
+	if env.sent[1] != "unauthorized: you are not in the allowed users list" {
+		t.Errorf("expected unauthorized message, got: %s", env.sent[1])
+	}
+
+	// Update allowed users to include "newuser".
+	env.handler.UpdateAllowedUsers([]string{"admin", "newuser"})
+
+	// Now "newuser" should be allowed.
+	env.handler.HandleCommand("#test", "newuser", "!status")
+	if len(env.sent) != 3 {
+		t.Fatalf("expected 3 messages, got %d", len(env.sent))
+	}
+	// Should get a status response, not unauthorized.
+	if strings.Contains(env.sent[2], "unauthorized") {
+		t.Errorf("expected authorized response, got: %s", env.sent[2])
 	}
 }

@@ -91,6 +91,10 @@ type BuildToolsOpts struct {
 	// ChannelPersister persists channel join/part state for auto-rejoin on
 	// reconnect. Pass nil to disable persistence (joins/parts are ephemeral).
 	ChannelPersister ChannelPersister
+	// ReloadFunc is an optional callback for hot config reload. When set,
+	// the config_manage tool calls it after a successful config write to
+	// apply changes without a restart. Pass nil to disable auto-reload.
+	ReloadFunc func() error
 }
 
 // BuildTools creates tool instances from the tool configuration. Each enabled
@@ -264,6 +268,7 @@ func BuildTools(opts BuildToolsOpts) ([]Tool, error) {
 	if cfg.ConfigManage != nil && cfg.ConfigManage.Enabled {
 		cmCfg := ConfigManageToolConfig{
 			ConfigPath: cfg.ConfigManage.ConfigPath,
+			ReloadFunc: opts.ReloadFunc,
 		}
 		result = append(result, NewConfigManageTool(cmCfg))
 		logger.Info("enabled tool", "name", "config_manage")

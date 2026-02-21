@@ -69,13 +69,31 @@ func runServer() {
 		os.Exit(1)
 	}
 
-	srv, err := server.New(cfg, logger)
+	srv, err := server.New(cfg, configPath, logger)
 	if err != nil {
 		logger.Error("failed to create server", "error", err)
 		os.Exit(1)
 	}
 
+	// Set up SIGHUP handler for hot config reload. This is separate from
+	// the SIGINT/SIGTERM handler in signalContext() because SIGHUP should
+	// trigger a reload, not a shutdown.
+	sighupCh := make(chan os.Signal, 1)
+	signal.Notify(sighupCh, syscall.SIGHUP)
+	go func() {
+		for range sighupCh {
+			logger.Info("received SIGHUP, reloading configuration")
+			if err := srv.Reload(); err != nil {
+				logger.Error("config reload failed", "error", err)
+			}
+		}
+	}()
+
 	ctx := signalContext()
+
+	// Stop the SIGHUP notifier when the server shuts down so the
+	// goroutine can exit cleanly.
+	defer signal.Stop(sighupCh)
 
 	if err := srv.Run(ctx); err != nil {
 		logger.Error("server exited with error", "error", err)
