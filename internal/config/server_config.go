@@ -25,7 +25,27 @@ type ServerConfig struct {
 	Vault     VaultConfig     `toml:"vault"`
 	Tools     ToolsConfig     `toml:"tools"`
 	API       APIConfig       `toml:"api"`
+	Dashboard DashboardConfig `toml:"dashboard"`
 	Debug     DebugConfig     `toml:"debug"`
+}
+
+// DashboardConfig holds settings for the web dashboard that provides a
+// browser-based IRC chat interface. Each browser session creates its own
+// IRC connection and authenticates via NickServ IDENTIFY.
+type DashboardConfig struct {
+	// Enabled controls whether the dashboard HTTP server is started.
+	Enabled bool `toml:"enabled"`
+	// Listen is the address to bind the dashboard HTTP server to.
+	// Defaults to "127.0.0.1:8082".
+	Listen string `toml:"listen"`
+	// SessionTimeout is how long a dashboard session stays valid without
+	// activity. Defaults to "24h".
+	SessionTimeout string `toml:"session_timeout"`
+	// ServerPassword is the IRC server password (PASS command) that is
+	// automatically sent when creating IRC connections for dashboard users.
+	// This allows dashboard users to connect without knowing the server
+	// password. Supports "vault:" prefix.
+	ServerPassword string `toml:"server_password"`
 }
 
 // DebugConfig holds settings for the debug IRC channel that receives live
@@ -370,6 +390,14 @@ func LoadServerConfig(path string) (*ServerConfig, error) {
 		cfg.API.EventRetentionDays = 30
 	}
 
+	// Default dashboard listen address and session timeout.
+	if cfg.Dashboard.Enabled && cfg.Dashboard.Listen == "" {
+		cfg.Dashboard.Listen = "127.0.0.1:8082"
+	}
+	if cfg.Dashboard.SessionTimeout == "" {
+		cfg.Dashboard.SessionTimeout = "24h"
+	}
+
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("LoadServerConfig: %w", err)
 	}
@@ -411,6 +439,10 @@ func (c *ServerConfig) Validate() error {
 		return err
 	}
 	if err := validatePositiveDuration(c.Approval.Timeout, "approval.timeout"); err != nil {
+		return err
+	}
+
+	if err := validatePositiveDuration(c.Dashboard.SessionTimeout, "dashboard.session_timeout"); err != nil {
 		return err
 	}
 

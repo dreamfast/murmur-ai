@@ -16,6 +16,7 @@ import (
 	"murmur/internal/api"
 	"murmur/internal/bus"
 	"murmur/internal/config"
+	"murmur/internal/dashboard"
 	"murmur/internal/db"
 	"murmur/internal/irc"
 	"murmur/internal/llm"
@@ -74,6 +75,9 @@ type Server struct {
 
 	// httpServer is the REST API HTTP server, nil when API is disabled.
 	httpServer *http.Server
+
+	// dashboardServer is the dashboard HTTP server, nil when dashboard is disabled.
+	dashboardServer *http.Server
 
 	// ircLogHandler is the IRC debug channel log handler, nil when debug
 	// channel is not configured. Exposed so commands can toggle it.
@@ -563,6 +567,39 @@ func (s *Server) Run(ctx context.Context) error {
 			defer monitorWg.Done()
 			<-monitorCtx.Done()
 			api.GracefulShutdown(context.Background(), s.httpServer, s.logger)
+		}()
+	}
+
+	// Start the dashboard server if enabled.
+	if startCfg.Dashboard.Enabled {
+		sessionTimeout, parseErr := time.ParseDuration(startCfg.Dashboard.SessionTimeout)
+		if parseErr != nil {
+			s.logger.Warn("invalid dashboard.session_timeout, using 24h", "error", parseErr)
+			sessionTimeout = 24 * time.Hour
+		}
+
+		sessions := dashboard.NewSessionStore(sessionTimeout, s.logger)
+		dashHandler := dashboard.NewHandler(sessions, startCfg.Dashboard, startCfg.IRC, s.logger)
+		s.dashboardServer = api.NewHTTPServer(startCfg.Dashboard.Listen, dashHandler, s.logger)
+
+		done := make(chan struct{})
+		sessions.StartCleanup(done)
+
+		monitorWg.Add(1)
+		go func() {
+			defer monitorWg.Done()
+			s.logger.Info("starting dashboard server", "listen", startCfg.Dashboard.Listen)
+			if err := s.dashboardServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				s.logger.Error("dashboard server error", "error", err)
+			}
+		}()
+
+		monitorWg.Add(1)
+		go func() {
+			defer monitorWg.Done()
+			<-monitorCtx.Done()
+			close(done) // stop session cleanup
+			api.GracefulShutdown(context.Background(), s.dashboardServer, s.logger)
 		}()
 	}
 

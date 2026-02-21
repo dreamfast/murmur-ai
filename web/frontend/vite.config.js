@@ -10,11 +10,11 @@ export default defineConfig({
   server: {
     proxy: {
       "/ws": {
-        target: "http://localhost:8080",
+        target: "http://localhost:8082",
         ws: true,
       },
       "/dashboard": {
-        target: "http://localhost:8080",
+        target: "http://localhost:8082",
       },
     },
   },
