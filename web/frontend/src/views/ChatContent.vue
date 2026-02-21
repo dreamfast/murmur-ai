@@ -34,10 +34,10 @@
         <div
           v-for="msg in filteredMessages"
           :key="msg.id"
-          class="group flex gap-2 rounded px-2 py-0.5 hover:bg-bg-secondary/50"
+          class="group flex gap-1 rounded px-1 py-0.5 hover:bg-bg-secondary/50 sm:gap-2 sm:px-2"
         >
-          <!-- Timestamp -->
-          <span class="flex-shrink-0 font-mono text-xs leading-6 text-text-muted opacity-0 group-hover:opacity-100 transition">
+          <!-- Timestamp (hidden on mobile, shown on hover for sm+) -->
+          <span class="hidden flex-shrink-0 font-mono text-xs leading-6 text-text-muted opacity-0 transition group-hover:opacity-100 sm:inline">
             {{ formatTime(msg.time) }}
           </span>
 
@@ -61,7 +61,7 @@
           <!-- Chat message -->
           <template v-else>
             <span
-              class="flex-shrink-0 font-mono text-sm font-bold leading-6"
+              class="max-w-16 flex-shrink-0 overflow-hidden text-ellipsis whitespace-nowrap font-mono text-sm font-bold leading-6 sm:max-w-none sm:overflow-visible sm:whitespace-normal"
               :style="{ color: nickColor(msg.nick) }"
             >{{ msg.nick }}</span>
             <!-- eslint-disable-next-line vue/no-v-html -- renderMessage escapes HTML before adding formatting -->
