@@ -2,7 +2,7 @@
 
 > Status: IN PROGRESS
 > Branch: feat/permissions-dashboard-setup
-> Updated: 2026-02-21T4
+> Updated: 2026-02-21T5
 
 ## Phase 1: Foundation
 
@@ -11,8 +11,8 @@
 | 1 | Permission Config Structs and Loading | `done` | fa7e92e |
 | 2 | Permission Manager and Enforcement in Agent Loop | `done` | 96f8895 |
 | 3 | NickServ Identity Verification | `done` | 819aa54 |
-| 4 | Admin Commands (!user and !channel) | `in_progress` | — |
-| 5 | Permissions Manage LLM Tool | `pending` | — |
+| 4 | Admin Commands (!user and !channel) | `done` | 4afb110 |
+| 5 | Permissions Manage LLM Tool | `in_progress` | — |
 | 6 | Per-User Rate Limiting Integration | `pending` | — |
 | 7 | Per-User API Keys for Webhooks | `pending` | — |
 | 8 | Scheduled Task Permission Tracking | `pending` | — |
