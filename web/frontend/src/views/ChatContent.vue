@@ -46,6 +46,18 @@
             <span class="text-xs leading-6 italic text-text-muted">{{ msg.text }}</span>
           </template>
 
+          <!-- Tool call approval request -->
+          <template v-else-if="getApproval(msg)">
+            <div class="min-w-0 flex-1">
+              <ToolCallCard
+                :approval="getApproval(msg)"
+                :status="approvalStatuses[getApproval(msg).id] || null"
+                @approve="handleApprove"
+                @deny="handleDeny"
+              />
+            </div>
+          </template>
+
           <!-- Chat message -->
           <template v-else>
             <span
@@ -113,12 +125,54 @@ import { useWebSocket, WS_STATE } from "../composables/useWebSocket.js";
 import { parseIRCColors, stripIRCColors } from "../utils/ircColors.js";
 import { renderMarkdown } from "../utils/markdown.js";
 import { matchCommands } from "../utils/commands.js";
+import { detectApprovalRequest, detectToolStatus } from "../utils/toolCalls.js";
 import { chatStore } from "../stores/chatStore.js";
+import ToolCallCard from "../components/ToolCallCard.vue";
 
 const nick = sessionStorage.getItem(SESSION_NICK_KEY) || "unknown";
 const channel = chatStore.channel;
 
 const { state: wsState, messages, users, topic, connect, send } = useWebSocket();
+
+// Track approval statuses (id -> "approved" | "denied" | "timeout").
+const approvalStatuses = ref({});
+
+/** Get the approval request from a message, if any. */
+function getApproval(msg) {
+  if (msg.type !== "message") return null;
+  return detectApprovalRequest(msg.text);
+}
+
+/** Send !approve command for a tool call. */
+function handleApprove(id) {
+  send(channel, "!approve");
+  approvalStatuses.value = { ...approvalStatuses.value, [id]: "approved" };
+}
+
+/** Send !deny command for a tool call. */
+function handleDeny(id) {
+  send(channel, "!deny");
+  approvalStatuses.value = { ...approvalStatuses.value, [id]: "denied" };
+}
+
+// Watch for tool status messages to update approval cards.
+watch(messages, (msgs) => {
+  // Check the latest message for tool status updates.
+  if (msgs.length === 0) return;
+  const latest = msgs[msgs.length - 1];
+  if (latest.type !== "message") return;
+  const status = detectToolStatus(latest.text);
+  if (status) {
+    // Find the matching pending approval and update its status.
+    for (const msg of msgs) {
+      const approval = detectApprovalRequest(msg.text);
+      if (approval && approval.name === status.tool && !approvalStatuses.value[approval.id]) {
+        approvalStatuses.value = { ...approvalStatuses.value, [approval.id]: status.type };
+        break;
+      }
+    }
+  }
+}, { deep: false });
 
 // Sync WebSocket state to the shared store for the sidebar user list.
 watch(users, (val) => { chatStore.users = val; }, { immediate: true });
