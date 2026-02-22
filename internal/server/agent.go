@@ -104,39 +104,60 @@ type Agent struct {
 	chanLocks map[string]*sync.Mutex
 }
 
-// NewAgent creates a new Agent with the given providers and configuration.
-// The defaultProvider must exist in the providers map. If providers is empty,
-// the agent will return errors when HandleMessage is called. The serverTools
-// registry holds tools that execute locally on the server without bus routing;
-// pass nil if no server-side tools are needed. The approvals parameter may be
-// nil if the approval flow is not needed (all tools execute immediately).
-// The channelSettings parameter may be nil if per-channel provider selection
-// is not needed (all channels use the global default).
-// When verbose is true, the agent sends status messages to IRC (thinking,
-// tool calls, results) so the user can follow what it's doing in real time.
-//
-// TODO: Refactor to an options struct — 19 positional parameters is too many.
-func NewAgent(
-	providers map[string]llm.Provider,
-	defaultProvider string,
-	serverTools *ToolRegistry,
-	registry *Registry,
-	memory *Memory,
-	router *Router,
-	approvals *ApprovalManager,
-	conn *irc.Connection,
-	systemPrompt string,
-	serverName string,
-	busChannel string,
-	maxHistory int,
-	crossChannelContext int,
-	channelSettings *ChannelSettingsStore,
-	toolTimeout time.Duration,
-	approvalTimeout time.Duration,
-	verbose bool,
-	debug config.DebugConfig,
-	logger *slog.Logger,
-) *Agent {
+// AgentParams holds all parameters for creating a new Agent. Using a struct
+// instead of positional parameters makes the constructor readable and allows
+// adding new fields without breaking existing call sites.
+type AgentParams struct {
+	// Providers is the map of named LLM providers. May be empty (commands
+	// still work, but HandleMessage returns errors).
+	Providers map[string]llm.Provider
+	// DefaultProvider is the name of the global default provider. Must exist
+	// in Providers if Providers is non-empty.
+	DefaultProvider string
+	// ServerTools holds tools that execute locally on the server without bus
+	// routing. May be nil (an empty registry is created).
+	ServerTools *ToolRegistry
+	// Registry is the client registry for bus-connected tool providers.
+	Registry *Registry
+	// Memory is the conversation memory store.
+	Memory *Memory
+	// Router routes tool calls to clients via the bus.
+	Router *Router
+	// Approvals manages the tool call approval flow. May be nil (all tools
+	// execute immediately).
+	Approvals *ApprovalManager
+	// Conn is the IRC connection. May be nil in tests.
+	Conn *irc.Connection
+	// SystemPrompt is the base system prompt text.
+	SystemPrompt string
+	// ServerName is the server's target name for shell routing.
+	ServerName string
+	// BusChannel is the bus channel name, excluded from cross-channel context.
+	BusChannel string
+	// MaxHistory is the maximum number of messages to include in LLM context.
+	MaxHistory int
+	// CrossChannelContext is the number of messages per other channel to
+	// include in the system prompt (0 = disabled).
+	CrossChannelContext int
+	// ChannelSettings stores per-channel provider/settings. May be nil.
+	ChannelSettings *ChannelSettingsStore
+	// ToolTimeout is the maximum duration for a single tool call.
+	ToolTimeout time.Duration
+	// ApprovalTimeout is how long to wait for user approval before denying.
+	ApprovalTimeout time.Duration
+	// Verbose enables real-time status messages to IRC.
+	Verbose bool
+	// Debug holds granular debug log category flags.
+	Debug config.DebugConfig
+	// Logger is the structured logger.
+	Logger *slog.Logger
+}
+
+// NewAgent creates a new Agent from the given parameters. See AgentParams for
+// field documentation.
+func NewAgent(p AgentParams) *Agent {
+	serverTools := p.ServerTools
+	serverName := p.ServerName
 	if serverTools == nil {
 		serverTools = NewToolRegistry()
 	}
@@ -145,28 +166,29 @@ func NewAgent(
 	}
 	a := &Agent{
 		cfg: agentConfig{
-			activeProvider:  defaultProvider,
-			systemPrompt:    systemPrompt,
-			maxHistory:      maxHistory,
-			crossChCtx:      crossChannelContext,
-			approvalTimeout: approvalTimeout,
-			verbose:         verbose,
-			debug:           debug,
+			activeProvider:  p.DefaultProvider,
+			systemPrompt:    p.SystemPrompt,
+			maxHistory:      p.MaxHistory,
+			crossChCtx:      p.CrossChannelContext,
+			approvalTimeout: p.ApprovalTimeout,
+			verbose:         p.Verbose,
+			debug:           p.Debug,
 		},
 		serverTools:     serverTools,
-		registry:        registry,
-		memory:          memory,
-		router:          router,
-		approvals:       approvals,
-		conn:            conn,
+		registry:        p.Registry,
+		memory:          p.Memory,
+		router:          p.Router,
+		approvals:       p.Approvals,
+		conn:            p.Conn,
 		serverName:      serverName,
-		busChannel:      busChannel,
-		channelSettings: channelSettings,
-		toolTimeout:     toolTimeout,
-		logger:          logger,
+		busChannel:      p.BusChannel,
+		channelSettings: p.ChannelSettings,
+		toolTimeout:     p.ToolTimeout,
+		logger:          p.Logger,
 		lastTopics:      make(map[string]string),
 		chanLocks:       make(map[string]*sync.Mutex),
 	}
+	providers := p.Providers
 	a.providers.Store(&providers)
 	return a
 }

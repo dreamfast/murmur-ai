@@ -113,27 +113,20 @@ func newTestAgentEnv(t *testing.T) *testAgentEnv {
 		mock:     mock,
 	}
 
-	agent := NewAgent(
-		providers,
-		"test-provider",
-		nil, // no server-side tools by default
-		registry,
-		memory,
-		router,
-		nil, // no approval manager by default
-		nil, // no IRC connection in tests
-		"You are a test assistant.",
-		"test-server",
-		"#test-bus",
-		100,
-		0,                    // cross-channel context disabled in tests
-		nil,                  // no channel settings by default
-		2*time.Second,        // short timeout for tests
-		2*time.Second,        // short approval timeout for tests
-		false,                // verbose off in tests
-		config.DebugConfig{}, // no debug logging in tests
-		logger,
-	)
+	agent := NewAgent(AgentParams{
+		Providers:       providers,
+		DefaultProvider: "test-provider",
+		Registry:        registry,
+		Memory:          memory,
+		Router:          router,
+		SystemPrompt:    "You are a test assistant.",
+		ServerName:      "test-server",
+		BusChannel:      "#test-bus",
+		MaxHistory:      100,
+		ToolTimeout:     2 * time.Second,
+		ApprovalTimeout: 2 * time.Second,
+		Logger:          logger,
+	})
 	agent.sendFunc = env.appendSent
 	env.agent = agent
 
@@ -517,27 +510,21 @@ func TestAgent_SetProvider_PerChannel(t *testing.T) {
 		"other-provider":   other,
 	}
 
-	agent := NewAgent(
-		providers,
-		"default-provider",
-		nil,
-		registry,
-		memory,
-		router,
-		nil,
-		nil,
-		"test prompt",
-		"test-server",
-		"#test-bus",
-		100,
-		0,
-		channelSettings,
-		2*time.Second,
-		2*time.Second,
-		false,
-		config.DebugConfig{},
-		logger,
-	)
+	agent := NewAgent(AgentParams{
+		Providers:       providers,
+		DefaultProvider: "default-provider",
+		Registry:        registry,
+		Memory:          memory,
+		Router:          router,
+		SystemPrompt:    "test prompt",
+		ServerName:      "test-server",
+		BusChannel:      "#test-bus",
+		MaxHistory:      100,
+		ChannelSettings: channelSettings,
+		ToolTimeout:     2 * time.Second,
+		ApprovalTimeout: 2 * time.Second,
+		Logger:          logger,
+	})
 
 	// Initially, channel should use global default.
 	if got := agent.GetProviderForChannel("#chan1"); got != "default-provider" {
@@ -597,27 +584,21 @@ func TestAgent_ResolveProvider(t *testing.T) {
 		"other-provider":   other,
 	}
 
-	agent := NewAgent(
-		providers,
-		"default-provider",
-		nil,
-		registry,
-		memory,
-		router,
-		nil,
-		nil,
-		"test prompt",
-		"test-server",
-		"#test-bus",
-		100,
-		0,
-		channelSettings,
-		2*time.Second,
-		2*time.Second,
-		false,
-		config.DebugConfig{},
-		logger,
-	)
+	agent := NewAgent(AgentParams{
+		Providers:       providers,
+		DefaultProvider: "default-provider",
+		Registry:        registry,
+		Memory:          memory,
+		Router:          router,
+		SystemPrompt:    "test prompt",
+		ServerName:      "test-server",
+		BusChannel:      "#test-bus",
+		MaxHistory:      100,
+		ChannelSettings: channelSettings,
+		ToolTimeout:     2 * time.Second,
+		ApprovalTimeout: 2 * time.Second,
+		Logger:          logger,
+	})
 
 	// No override — should resolve to global default.
 	p, err := agent.resolveProvider("#chan1", "user1", nil)
@@ -694,27 +675,21 @@ func TestAgent_ResolveProvider_StaleOverride(t *testing.T) {
 		// "removed-provider" is NOT in the providers map — simulates config removal.
 	}
 
-	agent := NewAgent(
-		providers,
-		"default-provider",
-		nil,
-		registry,
-		memory,
-		router,
-		nil,
-		nil,
-		"test prompt",
-		"test-server",
-		"#test-bus",
-		100,
-		0,
-		channelSettings,
-		2*time.Second,
-		2*time.Second,
-		false,
-		config.DebugConfig{},
-		logger,
-	)
+	agent := NewAgent(AgentParams{
+		Providers:       providers,
+		DefaultProvider: "default-provider",
+		Registry:        registry,
+		Memory:          memory,
+		Router:          router,
+		SystemPrompt:    "test prompt",
+		ServerName:      "test-server",
+		BusChannel:      "#test-bus",
+		MaxHistory:      100,
+		ChannelSettings: channelSettings,
+		ToolTimeout:     2 * time.Second,
+		ApprovalTimeout: 2 * time.Second,
+		Logger:          logger,
+	})
 
 	// resolveProvider should fall back to global default when override is stale.
 	p, err := agent.resolveProvider("#chan1", "user1", nil)
@@ -873,27 +848,19 @@ func TestAgent_NoProviders(t *testing.T) {
 	sender := bus.NewSender(nil, "#murmur-bus", "", 0, logger)
 	router := NewRouter(registry, sender, logger)
 
-	agent := NewAgent(
-		map[string]llm.Provider{},
-		"",
-		nil, // no server-side tools
-		registry,
-		memory,
-		router,
-		nil, // no approval manager
-		nil, // no IRC connection
-		"test prompt",
-		"test-server",
-		"#test-bus",
-		100,
-		0,   // cross-channel context disabled in tests
-		nil, // no channel settings
-		2*time.Second,
-		2*time.Second,
-		false,
-		config.DebugConfig{},
-		logger,
-	)
+	agent := NewAgent(AgentParams{
+		Providers:       map[string]llm.Provider{},
+		Registry:        registry,
+		Memory:          memory,
+		Router:          router,
+		SystemPrompt:    "test prompt",
+		ServerName:      "test-server",
+		BusChannel:      "#test-bus",
+		MaxHistory:      100,
+		ToolTimeout:     2 * time.Second,
+		ApprovalTimeout: 2 * time.Second,
+		Logger:          logger,
+	})
 
 	var sent []string
 	agent.sendFunc = func(channel, message string) {
@@ -1226,27 +1193,21 @@ func TestAgent_ServerToolExecution(t *testing.T) {
 		{Content: "Your note says: note value for todo"},
 	}
 
-	agent := NewAgent(
-		providers,
-		"test-provider",
-		serverTools,
-		registry,
-		memory,
-		router,
-		nil, // no approval manager
-		nil, // no IRC connection
-		"You are a test assistant.",
-		"test-server",
-		"#test-bus",
-		100,
-		0,   // cross-channel context disabled in tests
-		nil, // no channel settings
-		2*time.Second,
-		2*time.Second,
-		false,
-		config.DebugConfig{},
-		logger,
-	)
+	agent := NewAgent(AgentParams{
+		Providers:       providers,
+		DefaultProvider: "test-provider",
+		ServerTools:     serverTools,
+		Registry:        registry,
+		Memory:          memory,
+		Router:          router,
+		SystemPrompt:    "You are a test assistant.",
+		ServerName:      "test-server",
+		BusChannel:      "#test-bus",
+		MaxHistory:      100,
+		ToolTimeout:     2 * time.Second,
+		ApprovalTimeout: 2 * time.Second,
+		Logger:          logger,
+	})
 
 	var sent []string
 	var sentMu sync.Mutex
@@ -1353,27 +1314,21 @@ func TestAgent_ServerToolPriority(t *testing.T) {
 		{Content: "done"},
 	}
 
-	agent := NewAgent(
-		providers,
-		"test-provider",
-		serverTools,
-		registry,
-		memory,
-		router,
-		nil, // no approval manager
-		nil, // no IRC connection
-		"You are a test assistant.",
-		"test-server",
-		"#test-bus",
-		100,
-		0,   // cross-channel context disabled in tests
-		nil, // no channel settings
-		2*time.Second,
-		2*time.Second,
-		false,
-		config.DebugConfig{},
-		logger,
-	)
+	agent := NewAgent(AgentParams{
+		Providers:       providers,
+		DefaultProvider: "test-provider",
+		ServerTools:     serverTools,
+		Registry:        registry,
+		Memory:          memory,
+		Router:          router,
+		SystemPrompt:    "You are a test assistant.",
+		ServerName:      "test-server",
+		BusChannel:      "#test-bus",
+		MaxHistory:      100,
+		ToolTimeout:     2 * time.Second,
+		ApprovalTimeout: 2 * time.Second,
+		Logger:          logger,
+	})
 
 	var sent []string
 	var sentMu sync.Mutex
@@ -1451,27 +1406,21 @@ func TestAgent_ApprovalFlow_Auto(t *testing.T) {
 		{Content: "Files listed."},
 	}
 
-	agent := NewAgent(
-		providers,
-		"test-provider",
-		nil, // no server-side tools
-		registry,
-		memory,
-		router,
-		approvals,
-		nil, // no IRC connection
-		"You are a test assistant.",
-		"test-server",
-		"#test-bus",
-		100,
-		0,   // cross-channel context disabled in tests
-		nil, // no channel settings
-		2*time.Second,
-		2*time.Second,
-		false,
-		config.DebugConfig{},
-		logger,
-	)
+	agent := NewAgent(AgentParams{
+		Providers:       providers,
+		DefaultProvider: "test-provider",
+		Registry:        registry,
+		Memory:          memory,
+		Router:          router,
+		Approvals:       approvals,
+		SystemPrompt:    "You are a test assistant.",
+		ServerName:      "test-server",
+		BusChannel:      "#test-bus",
+		MaxHistory:      100,
+		ToolTimeout:     2 * time.Second,
+		ApprovalTimeout: 2 * time.Second,
+		Logger:          logger,
+	})
 
 	// Override tool routing to return a canned result (simulates bus routing).
 	agent.routeToolFunc = func(_ context.Context, toolName string, _ json.RawMessage) (string, error) {
@@ -1561,27 +1510,21 @@ func TestAgent_ApprovalFlow_Report(t *testing.T) {
 		{Content: "I can't execute that tool."},
 	}
 
-	agent := NewAgent(
-		providers,
-		"test-provider",
-		nil, // no server-side tools
-		registry,
-		memory,
-		router,
-		approvals,
-		nil, // no IRC connection
-		"You are a test assistant.",
-		"test-server",
-		"#test-bus",
-		100,
-		0,   // cross-channel context disabled in tests
-		nil, // no channel settings
-		2*time.Second,
-		2*time.Second,
-		false,
-		config.DebugConfig{},
-		logger,
-	)
+	agent := NewAgent(AgentParams{
+		Providers:       providers,
+		DefaultProvider: "test-provider",
+		Registry:        registry,
+		Memory:          memory,
+		Router:          router,
+		Approvals:       approvals,
+		SystemPrompt:    "You are a test assistant.",
+		ServerName:      "test-server",
+		BusChannel:      "#test-bus",
+		MaxHistory:      100,
+		ToolTimeout:     2 * time.Second,
+		ApprovalTimeout: 2 * time.Second,
+		Logger:          logger,
+	})
 
 	// Do NOT set routeToolFunc — let the real routing logic run so it
 	// hits the approval gate. The tool call should be rejected before
@@ -1679,27 +1622,21 @@ func TestAgent_ApprovalFlow_Approve(t *testing.T) {
 		{Content: "Files listed after approval."},
 	}
 
-	agent := NewAgent(
-		providers,
-		"test-provider",
-		nil, // no server-side tools
-		registry,
-		memory,
-		router,
-		approvals,
-		nil, // no IRC connection
-		"You are a test assistant.",
-		"test-server",
-		"#test-bus",
-		100,
-		0,   // cross-channel context disabled in tests
-		nil, // no channel settings
-		2*time.Second,
-		5*time.Second, // longer approval timeout for this test
-		false,
-		config.DebugConfig{},
-		logger,
-	)
+	agent := NewAgent(AgentParams{
+		Providers:       providers,
+		DefaultProvider: "test-provider",
+		Registry:        registry,
+		Memory:          memory,
+		Router:          router,
+		Approvals:       approvals,
+		SystemPrompt:    "You are a test assistant.",
+		ServerName:      "test-server",
+		BusChannel:      "#test-bus",
+		MaxHistory:      100,
+		ToolTimeout:     2 * time.Second,
+		ApprovalTimeout: 5 * time.Second, // longer approval timeout for this test
+		Logger:          logger,
+	})
 
 	// Override tool routing to return a canned result.
 	agent.routeToolFunc = func(_ context.Context, toolName string, _ json.RawMessage) (string, error) {
@@ -1805,27 +1742,21 @@ func TestAgent_BuildSystemPrompt_ChannelSpecificModel(t *testing.T) {
 		"kimi":             other,
 	}
 
-	agent := NewAgent(
-		providers,
-		"default-provider",
-		nil,
-		registry,
-		memory,
-		router,
-		nil,
-		nil,
-		"You are a test assistant.",
-		"test-server",
-		"#test-bus",
-		100,
-		0,
-		channelSettings,
-		2*time.Second,
-		2*time.Second,
-		false,
-		config.DebugConfig{},
-		logger,
-	)
+	agent := NewAgent(AgentParams{
+		Providers:       providers,
+		DefaultProvider: "default-provider",
+		Registry:        registry,
+		Memory:          memory,
+		Router:          router,
+		SystemPrompt:    "You are a test assistant.",
+		ServerName:      "test-server",
+		BusChannel:      "#test-bus",
+		MaxHistory:      100,
+		ChannelSettings: channelSettings,
+		ToolTimeout:     2 * time.Second,
+		ApprovalTimeout: 2 * time.Second,
+		Logger:          logger,
+	})
 
 	// Set per-channel override.
 	if err := agent.SetProvider("#chan1", "kimi"); err != nil {
@@ -1910,27 +1841,20 @@ func TestAgent_SyncChannelTopic_SkipsBusChannel(t *testing.T) {
 	mock := &llmtest.MockProvider{NameVal: "test-provider"}
 	providers := map[string]llm.Provider{"test-provider": mock}
 
-	agent := NewAgent(
-		providers,
-		"test-provider",
-		nil,
-		registry,
-		memory,
-		router,
-		nil,
-		nil, // no IRC connection
-		"test prompt",
-		"test-server",
-		"#test-bus",
-		100,
-		0,
-		nil,
-		2*time.Second,
-		2*time.Second,
-		false,
-		config.DebugConfig{},
-		logger,
-	)
+	agent := NewAgent(AgentParams{
+		Providers:       providers,
+		DefaultProvider: "test-provider",
+		Registry:        registry,
+		Memory:          memory,
+		Router:          router,
+		SystemPrompt:    "test prompt",
+		ServerName:      "test-server",
+		BusChannel:      "#test-bus",
+		MaxHistory:      100,
+		ToolTimeout:     2 * time.Second,
+		ApprovalTimeout: 2 * time.Second,
+		Logger:          logger,
+	})
 
 	// Even though conn is nil (so it's a no-op anyway), verify the bus
 	// channel guard works by checking that lastTopics is not updated.
@@ -2060,11 +1984,21 @@ func TestAgent_ExecuteTool_ServerTool(t *testing.T) {
 	mock := &llmtest.MockProvider{NameVal: "test-provider"}
 	providers := map[string]llm.Provider{"test-provider": mock}
 
-	agent := NewAgent(
-		providers, "test-provider", serverTools, registry, memory, router,
-		nil, nil, "test", "test-server", "#test-bus", 100, 0, nil,
-		2*time.Second, 2*time.Second, false, config.DebugConfig{}, logger,
-	)
+	agent := NewAgent(AgentParams{
+		Providers:       providers,
+		DefaultProvider: "test-provider",
+		ServerTools:     serverTools,
+		Registry:        registry,
+		Memory:          memory,
+		Router:          router,
+		SystemPrompt:    "test",
+		ServerName:      "test-server",
+		BusChannel:      "#test-bus",
+		MaxHistory:      100,
+		ToolTimeout:     2 * time.Second,
+		ApprovalTimeout: 2 * time.Second,
+		Logger:          logger,
+	})
 
 	ctx := context.Background()
 	result, err := agent.ExecuteTool(ctx, "note_get", map[string]any{"key": "todo"})
@@ -2097,11 +2031,20 @@ func TestAgent_ExecuteTool_BusTool(t *testing.T) {
 	mock := &llmtest.MockProvider{NameVal: "test-provider"}
 	providers := map[string]llm.Provider{"test-provider": mock}
 
-	agent := NewAgent(
-		providers, "test-provider", nil, registry, memory, router,
-		nil, nil, "test", "test-server", "#test-bus", 100, 0, nil,
-		2*time.Second, 2*time.Second, false, config.DebugConfig{}, logger,
-	)
+	agent := NewAgent(AgentParams{
+		Providers:       providers,
+		DefaultProvider: "test-provider",
+		Registry:        registry,
+		Memory:          memory,
+		Router:          router,
+		SystemPrompt:    "test",
+		ServerName:      "test-server",
+		BusChannel:      "#test-bus",
+		MaxHistory:      100,
+		ToolTimeout:     2 * time.Second,
+		ApprovalTimeout: 2 * time.Second,
+		Logger:          logger,
+	})
 
 	// Override routeToolFunc to simulate bus routing.
 	agent.routeToolFunc = func(_ context.Context, toolName string, args json.RawMessage) (string, error) {
@@ -2299,27 +2242,22 @@ func TestAgent_BuildSystemPrompt_DM(t *testing.T) {
 		t.Fatalf("NewConnection: %v", err)
 	}
 
-	agent := NewAgent(
-		providers,
-		"test-provider",
-		nil,
-		registry,
-		memory,
-		router,
-		nil,
-		conn,
-		"You are a test assistant.",
-		"test-server",
-		"#test-bus",
-		100,
-		3, // cross-channel context enabled
-		nil,
-		2*time.Second,
-		2*time.Second,
-		false,
-		config.DebugConfig{},
-		logger,
-	)
+	agent := NewAgent(AgentParams{
+		Providers:           providers,
+		DefaultProvider:     "test-provider",
+		Registry:            registry,
+		Memory:              memory,
+		Router:              router,
+		Conn:                conn,
+		SystemPrompt:        "You are a test assistant.",
+		ServerName:          "test-server",
+		BusChannel:          "#test-bus",
+		MaxHistory:          100,
+		CrossChannelContext: 3, // cross-channel context enabled
+		ToolTimeout:         2 * time.Second,
+		ApprovalTimeout:     2 * time.Second,
+		Logger:              logger,
+	})
 
 	// Test DM prompt: channel is a nick (no '#' prefix).
 	prompt := agent.buildSystemPrompt("alice", agent.loadConfig())

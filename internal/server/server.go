@@ -295,27 +295,27 @@ func New(cfg *config.ServerConfig, configPath string, logger *slog.Logger) (*Ser
 	}
 
 	// Create the agent (may have zero providers — commands still work).
-	agent := NewAgent(
-		providers,
-		cfg.LLM.Default,
-		serverTools,
-		registry,
-		memory,
-		router,
-		approvals,
-		conn,
-		systemPrompt,
-		cfg.Server.Name,
-		cfg.IRC.Channels.Bus,
-		cfg.Memory.MaxHistory,
-		cfg.Memory.CrossChannelContext,
-		channelSettings,
-		2*time.Minute,
-		approvalTimeout,
-		cfg.Server.Verbose,
-		cfg.Debug,
-		logger,
-	)
+	agent := NewAgent(AgentParams{
+		Providers:           providers,
+		DefaultProvider:     cfg.LLM.Default,
+		ServerTools:         serverTools,
+		Registry:            registry,
+		Memory:              memory,
+		Router:              router,
+		Approvals:           approvals,
+		Conn:                conn,
+		SystemPrompt:        systemPrompt,
+		ServerName:          cfg.Server.Name,
+		BusChannel:          cfg.IRC.Channels.Bus,
+		MaxHistory:          cfg.Memory.MaxHistory,
+		CrossChannelContext: cfg.Memory.CrossChannelContext,
+		ChannelSettings:     channelSettings,
+		ToolTimeout:         2 * time.Minute,
+		ApprovalTimeout:     approvalTimeout,
+		Verbose:             cfg.Server.Verbose,
+		Debug:               cfg.Debug,
+		Logger:              logger,
+	})
 
 	// Wire the permission manager into the agent.
 	agent.SetPermissions(pm)

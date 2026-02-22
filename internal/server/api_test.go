@@ -56,27 +56,21 @@ func newTestAPIEnv(t *testing.T) *testAPIEnv {
 	}
 	providers := map[string]llm.Provider{"test-provider": mock}
 
-	agent := NewAgent(
-		providers,
-		"test-provider",
-		serverTools,
-		registry,
-		memory,
-		router,
-		nil, // no approval manager
-		nil, // no IRC connection
-		"You are a test assistant.",
-		"test-server",
-		"#test-bus",
-		100,
-		0,   // cross-channel context disabled in tests
-		nil, // no channel settings
-		2*time.Second,
-		2*time.Second,
-		false,
-		config.DebugConfig{},
-		logger,
-	)
+	agent := NewAgent(AgentParams{
+		Providers:       providers,
+		DefaultProvider: "test-provider",
+		ServerTools:     serverTools,
+		Registry:        registry,
+		Memory:          memory,
+		Router:          router,
+		SystemPrompt:    "You are a test assistant.",
+		ServerName:      "test-server",
+		BusChannel:      "#test-bus",
+		MaxHistory:      100,
+		ToolTimeout:     2 * time.Second,
+		ApprovalTimeout: 2 * time.Second,
+		Logger:          logger,
+	})
 	// Suppress IRC sends in tests.
 	agent.sendFunc = func(_, _ string) {}
 
@@ -669,8 +663,21 @@ func TestAPI_AuthMiddleware_EmptyConfigKey(t *testing.T) {
 	mock := &llmtest.MockProvider{NameVal: "test-provider"}
 	providers := map[string]llm.Provider{"test-provider": mock}
 
-	agent := NewAgent(providers, "test-provider", serverTools, registry, memory, router,
-		nil, nil, "test", "test-server", "#test-bus", 100, 0, nil, 2*time.Second, 2*time.Second, false, config.DebugConfig{}, logger)
+	agent := NewAgent(AgentParams{
+		Providers:       providers,
+		DefaultProvider: "test-provider",
+		ServerTools:     serverTools,
+		Registry:        registry,
+		Memory:          memory,
+		Router:          router,
+		SystemPrompt:    "test",
+		ServerName:      "test-server",
+		BusChannel:      "#test-bus",
+		MaxHistory:      100,
+		ToolTimeout:     2 * time.Second,
+		ApprovalTimeout: 2 * time.Second,
+		Logger:          logger,
+	})
 	agent.sendFunc = func(_, _ string) {}
 
 	cfg := &config.ServerConfig{}
@@ -769,24 +776,21 @@ func newTestAPIEnvWithPerms(t *testing.T) *testAPIEnv {
 	}
 	providers := map[string]llm.Provider{"test-provider": mock}
 
-	agent := NewAgent(
-		providers,
-		"test-provider",
-		serverTools,
-		registry,
-		memory,
-		router,
-		nil, nil,
-		"You are a test assistant.",
-		"test-server",
-		"#test-bus",
-		100, 0, nil,
-		2*time.Second,
-		2*time.Second,
-		false,
-		config.DebugConfig{},
-		logger,
-	)
+	agent := NewAgent(AgentParams{
+		Providers:       providers,
+		DefaultProvider: "test-provider",
+		ServerTools:     serverTools,
+		Registry:        registry,
+		Memory:          memory,
+		Router:          router,
+		SystemPrompt:    "You are a test assistant.",
+		ServerName:      "test-server",
+		BusChannel:      "#test-bus",
+		MaxHistory:      100,
+		ToolTimeout:     2 * time.Second,
+		ApprovalTimeout: 2 * time.Second,
+		Logger:          logger,
+	})
 	agent.sendFunc = func(_, _ string) {}
 
 	// Create a PermissionManager with per-user API keys.
