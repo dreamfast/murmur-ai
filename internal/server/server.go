@@ -505,6 +505,10 @@ func New(cfg *config.ServerConfig, configPath string, logger *slog.Logger) (*Ser
 func (s *Server) Run(ctx context.Context) error {
 	s.logger.Info("starting murmur server")
 
+	// Propagate the lifecycle context to Memory so summarization timeout
+	// contexts are cancelled on shutdown.
+	s.memory.SetLifecycleContext(ctx)
+
 	// Wire the bus receiver to the message handler.
 	s.handler.RegisterBusHandler(s.receiver.HandleRaw)
 
@@ -609,6 +613,11 @@ func (s *Server) Run(ctx context.Context) error {
 	// Cancel the monitor and wait for it to finish.
 	monitorCancel()
 	monitorWg.Wait()
+
+	// Close the flood guard first to stop per-channel worker goroutines from
+	// picking up new messages. This also prevents enqueue from sending on
+	// closed channels. Workers that are mid-handler will finish naturally.
+	s.flood.Close()
 
 	// Wait for all in-flight agent goroutines to finish before closing the
 	// database. This prevents goroutines from hitting a closed DB.

@@ -34,6 +34,11 @@ type Memory struct {
 	summaryProvider llm.Provider // nil means summarization disabled
 	logger          *slog.Logger
 
+	// lifecycleCtx is the server's lifecycle context. Summarization timeout
+	// contexts are derived from this so they are cancelled on shutdown.
+	// Set via SetLifecycleContext; defaults to context.Background().
+	lifecycleCtx context.Context
+
 	// configMu protects maxHistory and summaryThreshold, which can be
 	// updated at runtime via UpdateConfig during hot config reload.
 	configMu         sync.RWMutex
@@ -59,8 +64,16 @@ func NewMemory(database *db.DB, maxHistory, summaryThreshold int, summaryProvide
 		summaryThreshold: summaryThreshold,
 		summaryProvider:  summaryProvider,
 		logger:           logger,
+		lifecycleCtx:     context.Background(),
 		summarizeMu:      make(map[string]*sync.Mutex),
 	}
+}
+
+// SetLifecycleContext sets the server lifecycle context used as the parent
+// for summarization timeout contexts. This ensures that in-flight
+// summarizations are cancelled when the server shuts down.
+func (m *Memory) SetLifecycleContext(ctx context.Context) {
+	m.lifecycleCtx = ctx
 }
 
 // AddMessage inserts a conversation message into the database. After the
@@ -121,7 +134,7 @@ func (m *Memory) AddMessage(channel, role, content, toolName, toolCallID string)
 			return nil
 		}
 		if count > m.loadSummaryThreshold() {
-			ctx, cancel := context.WithTimeout(context.Background(), summaryTimeout)
+			ctx, cancel := context.WithTimeout(m.lifecycleCtx, summaryTimeout)
 			defer cancel()
 			if err := m.MaybeSummarize(ctx, channel); err != nil {
 				m.logger.Error("AddMessage: summarization failed (non-fatal)",

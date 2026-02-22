@@ -39,6 +39,7 @@ type floodGuard struct {
 	mu       sync.Mutex
 	nicks    map[string]*nickState // per-nick rate state
 	channels map[string]chan pendingMsg
+	closed   bool // set by Close(); prevents enqueue after shutdown
 	logger   *slog.Logger
 }
 
@@ -101,15 +102,23 @@ func (fg *floodGuard) allow(nick string) bool {
 }
 
 // enqueue adds a message to the channel's bounded queue. Returns false if the
-// queue is full (message dropped). The handler function is called by the
-// channel's worker goroutine to process each message.
+// queue is full (message dropped) or if the flood guard has been closed. The
+// handler function is called by the channel's worker goroutine to process each
+// message.
 func (fg *floodGuard) enqueue(msg pendingMsg, handler func(pendingMsg)) bool {
-	ch := fg.getOrCreateChannel(msg.channel, handler)
-
+	fg.mu.Lock()
+	if fg.closed {
+		fg.mu.Unlock()
+		return false
+	}
+	ch := fg.getOrCreateChannelLocked(msg.channel, handler)
+	// Non-blocking send under lock to prevent racing with Close().
 	select {
 	case ch <- msg:
+		fg.mu.Unlock()
 		return true
 	default:
+		fg.mu.Unlock()
 		fg.logger.Warn("channel queue full, message dropped",
 			"channel", msg.channel,
 			"nick", msg.nick,
@@ -119,9 +128,15 @@ func (fg *floodGuard) enqueue(msg pendingMsg, handler func(pendingMsg)) bool {
 }
 
 // flush drains all pending messages from a channel's queue without processing
-// them. Returns the number of messages drained.
+// them. Returns the number of messages drained. Returns 0 if the flood guard
+// has been closed or the channel doesn't exist. Safe to call concurrently
+// with Close().
 func (fg *floodGuard) flush(channel string) int {
 	fg.mu.Lock()
+	if fg.closed {
+		fg.mu.Unlock()
+		return 0
+	}
 	ch, ok := fg.channels[channel]
 	fg.mu.Unlock()
 
@@ -132,7 +147,11 @@ func (fg *floodGuard) flush(channel string) int {
 	count := 0
 	for {
 		select {
-		case <-ch:
+		case _, open := <-ch:
+			if !open {
+				// Channel was closed by Close() concurrently.
+				return count
+			}
 			count++
 		default:
 			return count
@@ -140,12 +159,27 @@ func (fg *floodGuard) flush(channel string) int {
 	}
 }
 
-// getOrCreateChannel returns the buffered channel for a given IRC channel,
-// creating it and starting a worker goroutine if it doesn't exist yet.
-func (fg *floodGuard) getOrCreateChannel(channel string, handler func(pendingMsg)) chan pendingMsg {
+// Close stops all worker goroutines by closing their channels and prevents
+// further enqueue calls. It should be called during server shutdown to
+// prevent goroutine leaks. Safe to call concurrently with enqueue and
+// idempotent (multiple calls are harmless).
+func (fg *floodGuard) Close() {
 	fg.mu.Lock()
 	defer fg.mu.Unlock()
+	if fg.closed {
+		return
+	}
+	fg.closed = true
+	for name, ch := range fg.channels {
+		close(ch)
+		delete(fg.channels, name)
+	}
+}
 
+// getOrCreateChannelLocked returns the buffered channel for a given IRC
+// channel, creating it and starting a worker goroutine if it doesn't exist
+// yet. The caller must hold fg.mu.
+func (fg *floodGuard) getOrCreateChannelLocked(channel string, handler func(pendingMsg)) chan pendingMsg {
 	ch, ok := fg.channels[channel]
 	if ok {
 		return ch

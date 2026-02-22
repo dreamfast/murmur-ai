@@ -2,6 +2,7 @@ package dashboard
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"log/slog"
 	"sync"
@@ -85,13 +86,15 @@ func NewBridge(ctx context.Context, ws *websocket.Conn, cfg BridgeConfig, logger
 	bridgeCtx, cancel := context.WithCancel(ctx)
 
 	ircCfg := girc.Config{
-		Server:    cfg.IRCServer,
-		Port:      cfg.IRCPort,
-		Nick:      cfg.Nick,
-		User:      cfg.Nick,
-		Name:      "Murmur Dashboard",
-		SSL:       cfg.IRCTLS,
-		TLSConfig: nil,
+		Server: cfg.IRCServer,
+		Port:   cfg.IRCPort,
+		Nick:   cfg.Nick,
+		User:   cfg.Nick,
+		Name:   "Murmur Dashboard",
+		SSL:    cfg.IRCTLS,
+		TLSConfig: &tls.Config{
+			MinVersion: tls.VersionTLS12,
+		},
 	}
 	if cfg.ServerPassword != "" {
 		ircCfg.ServerPass = cfg.ServerPassword

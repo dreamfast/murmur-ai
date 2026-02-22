@@ -54,6 +54,12 @@ type Client struct {
 	// sendResponseFunc overrides the default response sending for testing.
 	// When nil, responses are sent via sender.SendToolResponse.
 	sendResponseFunc func(requestID, status, result string) error
+
+	// runCtx is the lifecycle context from Run(). Tool executions derive
+	// their timeout context from this so they are cancelled on shutdown.
+	// Protected by runCtxMu for safe concurrent access from bus callbacks.
+	runCtxMu sync.RWMutex
+	runCtx   context.Context
 }
 
 // New creates a new client from the given configuration. It does not connect
@@ -145,6 +151,13 @@ func New(cfg *config.ClientConfig, logger *slog.Logger) (*Client, error) {
 // deregisters and disconnects gracefully.
 func (c *Client) Run(ctx context.Context) error {
 	c.startTime = time.Now()
+
+	// Store the lifecycle context so bus callbacks (handleToolRequest) can
+	// derive timeout contexts that are cancelled on shutdown.
+	c.runCtxMu.Lock()
+	c.runCtx = ctx
+	c.runCtxMu.Unlock()
+
 	c.logger.Info("starting murmur client",
 		"client_id", c.cfg.Client.ID,
 		"tools", len(c.tools),
@@ -333,8 +346,15 @@ func (c *Client) handleToolRequest(nick string, msg *bus.ToolRequestMessage) {
 		args = make(map[string]any)
 	}
 
-	// Execute with timeout context.
-	ctx, cancel := context.WithTimeout(context.Background(), defaultToolTimeout)
+	// Execute with timeout context derived from the client's lifecycle
+	// context so that tool executions are cancelled on shutdown.
+	c.runCtxMu.RLock()
+	parent := c.runCtx
+	c.runCtxMu.RUnlock()
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, defaultToolTimeout)
 	defer cancel()
 
 	start := time.Now()

@@ -176,3 +176,44 @@ func TestFloodGuard_FlushUnknownChannel(t *testing.T) {
 		t.Fatal("flush of unknown channel should return 0")
 	}
 }
+
+func TestFloodGuard_Close(t *testing.T) {
+	t.Parallel()
+	fg := newTestFloodGuard()
+
+	done := make(chan struct{})
+	handler := func(m pendingMsg) {
+		close(done)
+	}
+
+	// Enqueue a message so a worker goroutine is created.
+	msg := pendingMsg{channel: "#test", nick: "grace", message: "hello"}
+	if !fg.enqueue(msg, handler) {
+		t.Fatal("enqueue should succeed before close")
+	}
+
+	// Wait for the worker to process the message.
+	<-done
+
+	// Close the flood guard.
+	fg.Close()
+
+	// Enqueue after close should return false (not panic).
+	if fg.enqueue(pendingMsg{channel: "#test", nick: "grace", message: "after"}, handler) {
+		t.Fatal("enqueue should fail after close")
+	}
+
+	// Flush after close should return 0.
+	if fg.flush("#test") != 0 {
+		t.Fatal("flush after close should return 0")
+	}
+}
+
+func TestFloodGuard_CloseIdempotent(t *testing.T) {
+	t.Parallel()
+	fg := newTestFloodGuard()
+
+	// Close without any channels should not panic.
+	fg.Close()
+	fg.Close() // second close should also be safe
+}
