@@ -11,6 +11,7 @@ import (
 
 	"murmur/internal/bus"
 	"murmur/internal/db"
+	"murmur/internal/tools"
 )
 
 // mockModelSwitcher implements ModelSwitcher for testing.
@@ -200,7 +201,7 @@ func TestCommandHandler_ClientsEmpty(t *testing.T) {
 	}
 }
 
-func TestCommandHandler_Tools(t *testing.T) {
+func TestCommandHandler_Tools_ClientOnly(t *testing.T) {
 	t.Parallel()
 	env := newTestCommandEnv(t, nil)
 
@@ -221,6 +222,94 @@ func TestCommandHandler_Tools(t *testing.T) {
 	}
 	if !strings.Contains(msg, "mail_read") {
 		t.Errorf("expected 'mail_read' in tools output, got: %s", msg)
+	}
+	if !strings.Contains(msg, "(client)") {
+		t.Errorf("expected '(client)' source label, got: %s", msg)
+	}
+	if !strings.Contains(msg, "available tools (2)") {
+		t.Errorf("expected tool count in header, got: %s", msg)
+	}
+}
+
+func TestCommandHandler_Tools_ServerAndClient(t *testing.T) {
+	t.Parallel()
+	env := newTestCommandEnv(t, nil)
+
+	// Add server tools.
+	st := NewToolRegistry()
+	if err := st.Register(tools.Tool{
+		Name:        "code_exec",
+		Description: "Execute code",
+		Parameters:  json.RawMessage(`{}`),
+	}); err != nil {
+		t.Fatalf("register server tool: %v", err)
+	}
+	env.handler.serverTools = st
+
+	// Add client tools.
+	env.registry.Register(&bus.RegisterMessage{
+		Type:     bus.TypeRegister,
+		ClientID: "laptop",
+		Hostname: "thinkpad",
+		Tools: []bus.ToolDef{
+			{Name: "shell", Description: "Run commands"},
+		},
+	})
+
+	env.handler.HandleCommand("#test", "user1", "!tools")
+	msg := env.lastSent()
+	if !strings.Contains(msg, "code_exec") {
+		t.Errorf("expected server tool 'code_exec' in output, got: %s", msg)
+	}
+	if !strings.Contains(msg, "(server)") {
+		t.Errorf("expected '(server)' source label, got: %s", msg)
+	}
+	if !strings.Contains(msg, "shell") {
+		t.Errorf("expected client tool 'shell' in output, got: %s", msg)
+	}
+	if !strings.Contains(msg, "(client)") {
+		t.Errorf("expected '(client)' source label, got: %s", msg)
+	}
+	if !strings.Contains(msg, "available tools (2)") {
+		t.Errorf("expected tool count in header, got: %s", msg)
+	}
+}
+
+func TestCommandHandler_Tools_ServerOnly(t *testing.T) {
+	t.Parallel()
+	env := newTestCommandEnv(t, nil)
+
+	// Add server tools only (simulates server-only mode with no clients).
+	st := NewToolRegistry()
+	if err := st.Register(tools.Tool{
+		Name:        "code_exec",
+		Description: "Execute code",
+		Parameters:  json.RawMessage(`{}`),
+	}); err != nil {
+		t.Fatalf("register server tool: %v", err)
+	}
+	if err := st.Register(tools.Tool{
+		Name:        "http_request",
+		Description: "Make HTTP requests",
+		Parameters:  json.RawMessage(`{}`),
+	}); err != nil {
+		t.Fatalf("register server tool: %v", err)
+	}
+	env.handler.serverTools = st
+
+	env.handler.HandleCommand("#test", "user1", "!tools")
+	msg := env.lastSent()
+	if !strings.Contains(msg, "code_exec") {
+		t.Errorf("expected 'code_exec' in output, got: %s", msg)
+	}
+	if !strings.Contains(msg, "http_request") {
+		t.Errorf("expected 'http_request' in output, got: %s", msg)
+	}
+	if !strings.Contains(msg, "(server)") {
+		t.Errorf("expected '(server)' source label, got: %s", msg)
+	}
+	if !strings.Contains(msg, "available tools (2)") {
+		t.Errorf("expected tool count in header, got: %s", msg)
 	}
 }
 

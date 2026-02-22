@@ -495,7 +495,7 @@ func New(cfg *config.ServerConfig, configPath string, logger *slog.Logger) (*Ser
 	if ircLogHandler != nil {
 		debugToggler = ircLogHandler
 	}
-	commands := NewCommandHandler(registry, memory, notesStore, scheduler, approvals, conn, modelSwitcher, flood, debugToggler, nil, cfg.Security.AllowedUsers, time.Now(), logger)
+	commands := NewCommandHandler(registry, serverTools, memory, notesStore, scheduler, approvals, conn, modelSwitcher, flood, debugToggler, nil, cfg.Security.AllowedUsers, time.Now(), logger)
 
 	s := &Server{
 		cfg:             cfg,

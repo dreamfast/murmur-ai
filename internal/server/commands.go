@@ -65,6 +65,7 @@ type Reloader interface {
 // without involving the LLM — they provide quick status and management.
 type CommandHandler struct {
 	registry     *Registry
+	serverTools  *ToolRegistry // server-side tools (may be nil)
 	memory       *Memory
 	notes        *NotesStore
 	scheduler    *Scheduler
@@ -93,8 +94,10 @@ type CommandHandler struct {
 // The flood parameter may be nil if flood protection is not configured.
 // The debug parameter may be nil if the debug channel is not configured.
 // The reloader parameter may be nil if hot reload is not supported.
+// The serverTools parameter may be nil if no server-side tools are registered.
 func NewCommandHandler(
 	registry *Registry,
+	serverTools *ToolRegistry,
 	memory *Memory,
 	notes *NotesStore,
 	scheduler *Scheduler,
@@ -109,18 +112,19 @@ func NewCommandHandler(
 	logger *slog.Logger,
 ) *CommandHandler {
 	h := &CommandHandler{
-		registry:  registry,
-		memory:    memory,
-		notes:     notes,
-		scheduler: scheduler,
-		approvals: approvals,
-		conn:      conn,
-		model:     model,
-		flood:     flood,
-		debug:     debug,
-		reloader:  reloader,
-		startTime: startTime,
-		logger:    logger,
+		registry:    registry,
+		serverTools: serverTools,
+		memory:      memory,
+		notes:       notes,
+		scheduler:   scheduler,
+		approvals:   approvals,
+		conn:        conn,
+		model:       model,
+		flood:       flood,
+		debug:       debug,
+		reloader:    reloader,
+		startTime:   startTime,
+		logger:      logger,
 	}
 	h.allowedUsers.Store(&allowedUsers)
 	return h
@@ -226,17 +230,26 @@ func (h *CommandHandler) cmdClients(channel string) {
 }
 
 func (h *CommandHandler) cmdTools(channel string) {
-	tools := h.registry.AllTools()
-	if len(tools) == 0 {
+	var lines []string
+
+	// Server-side tools.
+	if h.serverTools != nil {
+		for _, t := range h.serverTools.AllToolDefs() {
+			lines = append(lines, fmt.Sprintf("  %s — %s (server)", t.Name, t.Description))
+		}
+	}
+
+	// Client-provided tools.
+	for _, t := range h.registry.AllTools() {
+		lines = append(lines, fmt.Sprintf("  %s — %s (client)", t.Name, t.Description))
+	}
+
+	if len(lines) == 0 {
 		h.send(channel, "no tools available")
 		return
 	}
 
-	var lines []string
-	for _, t := range tools {
-		lines = append(lines, fmt.Sprintf("  %s — %s", t.Name, t.Description))
-	}
-	h.send(channel, "available tools:\n"+strings.Join(lines, "\n"))
+	h.send(channel, fmt.Sprintf("available tools (%d):\n%s", len(lines), strings.Join(lines, "\n")))
 }
 
 func (h *CommandHandler) cmdModel(channel string, args []string) {
