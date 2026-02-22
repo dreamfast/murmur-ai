@@ -1,0 +1,12 @@
+{
+  "name": "murmur-browser-server",
+  "version": "1.0.0",
+  "description": "Headless browser automation server for Murmur using Playwright",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "playwright": "1.49.0"
+  }
+}

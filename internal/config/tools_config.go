@@ -43,6 +43,9 @@ type ToolsConfig struct {
 	ConfigManage *ConfigManageConfig `toml:"config_manage"`
 	// IRCManage configures the irc_manage tool for IRC channel management.
 	IRCManage *IRCManageConfig `toml:"irc_manage"`
+	// Browser configures the browser automation tool backed by a Dockerized
+	// Playwright instance.
+	Browser *BrowserConfig `toml:"browser"`
 }
 
 // SystemInfoConfig configures the system_info tool which provides safe,
@@ -296,6 +299,33 @@ type IRCManageConfig struct {
 	Enabled bool `toml:"enabled"`
 }
 
+// BrowserConfig configures the browser automation tool backed by a Dockerized
+// Playwright instance. The tool communicates with a browser-server container
+// via HTTP.
+type BrowserConfig struct {
+	// Enabled controls whether the browser tool is registered.
+	Enabled bool `toml:"enabled"`
+	// Endpoint is the base URL of the browser-server HTTP API
+	// (e.g., "http://localhost:3001"). Required when enabled.
+	Endpoint string `toml:"endpoint"`
+	// Timeout is the maximum duration for browser operations (e.g., "30s").
+	// Defaults to "30s".
+	Timeout string `toml:"timeout"`
+	// MaxContentLength is the maximum number of characters to return from
+	// page content extraction. Defaults to 8000.
+	MaxContentLength int `toml:"max_content_length"`
+}
+
+// ParseTimeout parses the browser timeout string into a time.Duration.
+// Returns a default of 30s if the timeout is not set.
+func (b *BrowserConfig) ParseTimeout() (time.Duration, error) {
+	d, err := parseDurationDefault(b.Timeout, 30*time.Second)
+	if err != nil {
+		return 0, fmt.Errorf("BrowserConfig.ParseTimeout: %w", err)
+	}
+	return d, nil
+}
+
 // validate checks tool-specific configuration for correctness and applies
 // defaults where appropriate. Each tool type has its own validation method
 // to keep the logic focused and testable.
@@ -314,6 +344,7 @@ func (t *ToolsConfig) validate() error {
 		t.validateSearXNG,
 		t.validateOpenCode,
 		t.validateConfigManage,
+		t.validateBrowser,
 	}
 	for _, v := range validators {
 		if err := v(); err != nil {
@@ -510,6 +541,25 @@ func (t *ToolsConfig) validateConfigManage() error {
 		return fmt.Errorf("tools.config_manage.config_path: %w", err)
 	}
 	t.ConfigManage.ConfigPath = expanded
+	return nil
+}
+
+func (t *ToolsConfig) validateBrowser() error {
+	if t.Browser == nil || !t.Browser.Enabled {
+		return nil
+	}
+	if t.Browser.Endpoint == "" {
+		return fmt.Errorf("tools.browser.endpoint is required when browser is enabled")
+	}
+	if err := validatePositiveDuration(t.Browser.Timeout, "tools.browser.timeout"); err != nil {
+		return err
+	}
+	if t.Browser.MaxContentLength == 0 {
+		t.Browser.MaxContentLength = 8000
+	}
+	if t.Browser.MaxContentLength < 0 {
+		return fmt.Errorf("tools.browser.max_content_length must be non-negative, got %d", t.Browser.MaxContentLength)
+	}
 	return nil
 }
 

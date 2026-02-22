@@ -274,6 +274,20 @@ func BuildTools(opts BuildToolsOpts) ([]Tool, error) {
 		logger.Info("enabled tool", "name", "config_manage")
 	}
 
+	if cfg.Browser != nil && cfg.Browser.Enabled {
+		timeout, err := cfg.Browser.ParseTimeout()
+		if err != nil {
+			return nil, fmt.Errorf("BuildTools: browser timeout: %w", err)
+		}
+		browserCfg := BrowserToolConfig{
+			Endpoint:         cfg.Browser.Endpoint,
+			Timeout:          timeout,
+			MaxContentLength: cfg.Browser.MaxContentLength,
+		}
+		result = append(result, NewBrowserTool(browserCfg))
+		logger.Info("enabled tool", "name", "browser")
+	}
+
 	if cfg.IRCManage != nil && cfg.IRCManage.Enabled {
 		if opts.IRCManager == nil {
 			return nil, fmt.Errorf("BuildTools: irc_manage requires IRCManager but none was provided")

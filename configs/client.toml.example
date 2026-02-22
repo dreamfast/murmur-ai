@@ -157,6 +157,16 @@ interval = "30s"
 # password = "vault:opencode-password"
 # session_timeout = "5m"
 
+# Browser automation: headless browser via Dockerized Playwright.
+# Requires the browser service (see docker-compose.yml, profile "browser").
+# Use "http://browser:3001" when running inside Docker Compose,
+# or "http://localhost:3001" when running the client on the host.
+# [tools.browser]
+# enabled = true
+# endpoint = "http://localhost:3001"  # use "http://browser:3001" in Docker Compose
+# timeout = "30s"
+# max_content_length = 8000
+
 # --- Client Cron ---
 # Deterministic scheduled jobs executed locally via tool handlers.
 # Schedules use standard 5-field cron syntax (minute hour dom month dow).

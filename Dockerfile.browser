@@ -1,0 +1,24 @@
+# Browser automation server for Murmur.
+# Based on the official Playwright Docker image which includes Chromium and
+# all required system dependencies.
+#
+# Chromium runs with --no-sandbox inside the container because the container
+# itself provides the isolation boundary (no privileged mode, non-root user).
+# Memory/CPU limits are configured in docker-compose.yml via deploy.resources
+# and require Docker Compose v2+ or Swarm mode to be enforced.
+# The --no-sandbox flag is required when running as a non-root user (pwuser)
+# inside Docker.
+FROM mcr.microsoft.com/playwright:v1.49.0-noble
+
+WORKDIR /app
+
+COPY browser-server/package.json ./
+RUN npm install --production
+
+COPY browser-server/server.js ./
+
+EXPOSE 3001
+
+USER pwuser
+
+CMD ["node", "server.js"]

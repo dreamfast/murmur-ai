@@ -95,6 +95,26 @@ services:
 
   # --- Optional services (activated via profiles) ---
 
+  browser:
+    build:
+      context: .
+      dockerfile: Dockerfile.browser
+    profiles:
+      - browser
+      - full
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+          cpus: "1.0"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:3001/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
   searxng:
     image: searxng/searxng:latest
     profiles:
