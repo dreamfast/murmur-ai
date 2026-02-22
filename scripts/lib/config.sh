@@ -655,5 +655,11 @@ generate_env_file() {
 		content+="OPENROUTER_API_KEY=$OPENCODE_API_KEY"
 		content+=$'\n'
 	fi
+	# Persist Docker Compose profiles so profile-gated services (searxng,
+	# browser, opencode) start on subsequent `docker compose up` calls.
+	if [[ -n "${DOCKER_PROFILES:-}" ]]; then
+		content+="COMPOSE_PROFILES=$DOCKER_PROFILES"
+		content+=$'\n'
+	fi
 	printf '%s' "$content"
 }
