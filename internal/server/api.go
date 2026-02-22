@@ -33,8 +33,8 @@ func newServerAPIMux(s *Server) http.Handler {
 
 	// Apply middleware: recovery first (outermost), then auth.
 	var handler http.Handler = mux
-	handler = api.APIKeyMiddlewareWithUserKeys(s.cfg.API.APIKey, resolver)(handler)
-	handler = api.RecoverMiddleware(handler)
+	handler = api.APIKeyMiddlewareWithUserKeys(s.cfg.API.APIKey, resolver, s.logger)(handler)
+	handler = api.RecoverMiddleware(s.logger, handler)
 
 	return handler
 }
@@ -54,12 +54,12 @@ type eventRequest struct {
 func (s *Server) handlePostEvent(w http.ResponseWriter, r *http.Request) {
 	var req eventRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		api.JSONResponse(w, http.StatusBadRequest, "invalid JSON body")
+		api.JSONResponse(w, http.StatusBadRequest, "invalid JSON body", s.logger)
 		return
 	}
 
 	if req.Source == "" || req.EventType == "" || req.Summary == "" {
-		api.JSONResponse(w, http.StatusBadRequest, "source, event_type, and summary are required")
+		api.JSONResponse(w, http.StatusBadRequest, "source, event_type, and summary are required", s.logger)
 		return
 	}
 
@@ -81,7 +81,7 @@ func (s *Server) handlePostEvent(w http.ResponseWriter, r *http.Request) {
 	id, inserted, err := s.database.InsertEvent(r.Context(), event)
 	if err != nil {
 		s.logger.Error("api: failed to insert event", "error", err)
-		api.JSONResponse(w, http.StatusInternalServerError, "failed to store event")
+		api.JSONResponse(w, http.StatusInternalServerError, "failed to store event", s.logger)
 		return
 	}
 
@@ -90,7 +90,7 @@ func (s *Server) handlePostEvent(w http.ResponseWriter, r *http.Request) {
 		api.JSONResponse(w, http.StatusOK, map[string]any{
 			"id":        id,
 			"duplicate": true,
-		})
+		}, s.logger)
 		return
 	}
 
@@ -127,7 +127,7 @@ func (s *Server) handlePostEvent(w http.ResponseWriter, r *http.Request) {
 	api.JSONResponse(w, http.StatusAccepted, map[string]any{
 		"id":      id,
 		"message": "event accepted",
-	})
+	}, s.logger)
 }
 
 // handleGetEvents returns a paginated list of events.
@@ -139,7 +139,7 @@ func (s *Server) handleGetEvents(w http.ResponseWriter, r *http.Request) {
 	if afterStr := r.URL.Query().Get("after_id"); afterStr != "" {
 		afterID, err := strconv.ParseInt(afterStr, 10, 64)
 		if err != nil {
-			api.JSONResponse(w, http.StatusBadRequest, "invalid after_id parameter")
+			api.JSONResponse(w, http.StatusBadRequest, "invalid after_id parameter", s.logger)
 			return
 		}
 		q.AfterID = afterID
@@ -148,7 +148,7 @@ func (s *Server) handleGetEvents(w http.ResponseWriter, r *http.Request) {
 	if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
 		limit, err := strconv.Atoi(limitStr)
 		if err != nil {
-			api.JSONResponse(w, http.StatusBadRequest, "invalid limit parameter")
+			api.JSONResponse(w, http.StatusBadRequest, "invalid limit parameter", s.logger)
 			return
 		}
 		q.Limit = limit
@@ -157,11 +157,11 @@ func (s *Server) handleGetEvents(w http.ResponseWriter, r *http.Request) {
 	events, err := s.database.ListEvents(r.Context(), q)
 	if err != nil {
 		s.logger.Error("api: failed to list events", "error", err)
-		api.JSONResponse(w, http.StatusInternalServerError, "failed to list events")
+		api.JSONResponse(w, http.StatusInternalServerError, "failed to list events", s.logger)
 		return
 	}
 
-	api.JSONResponse(w, http.StatusOK, events)
+	api.JSONResponse(w, http.StatusOK, events, s.logger)
 }
 
 // handleGetStatus returns server status information.
@@ -178,7 +178,7 @@ func (s *Server) handleGetStatus(w http.ResponseWriter, _ *http.Request) {
 		"api_version": "v1",
 	}
 
-	api.JSONResponse(w, http.StatusOK, status)
+	api.JSONResponse(w, http.StatusOK, status, s.logger)
 }
 
 // handleGetClients returns a list of connected clients with their tools.
@@ -208,10 +208,10 @@ func (s *Server) handleGetClients(w http.ResponseWriter, _ *http.Request) {
 		})
 	}
 
-	api.JSONResponse(w, http.StatusOK, result)
+	api.JSONResponse(w, http.StatusOK, result, s.logger)
 }
 
 // handleGetHealth returns a simple health check response.
 func (s *Server) handleGetHealth(w http.ResponseWriter, _ *http.Request) {
-	api.JSONResponse(w, http.StatusOK, map[string]string{"status": "ok"})
+	api.JSONResponse(w, http.StatusOK, map[string]string{"status": "ok"}, s.logger)
 }

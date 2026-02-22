@@ -37,7 +37,7 @@ func TestJSONResponse_Success(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			w := httptest.NewRecorder()
-			JSONResponse(w, tt.status, tt.data)
+			JSONResponse(w, tt.status, tt.data, nil)
 
 			if w.Code != tt.status {
 				t.Errorf("expected status %d, got %d", tt.status, w.Code)
@@ -95,7 +95,7 @@ func TestJSONResponse_Error(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			w := httptest.NewRecorder()
-			JSONResponse(w, tt.status, tt.data)
+			JSONResponse(w, tt.status, tt.data, nil)
 
 			if w.Code != tt.status {
 				t.Errorf("expected status %d, got %d", tt.status, w.Code)
@@ -119,7 +119,7 @@ func TestJSONResponse_NilData(t *testing.T) {
 	t.Parallel()
 
 	w := httptest.NewRecorder()
-	JSONResponse(w, http.StatusOK, nil)
+	JSONResponse(w, http.StatusOK, nil, nil)
 
 	var resp Response
 	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
@@ -133,7 +133,7 @@ func TestJSONResponse_NilData(t *testing.T) {
 func TestAPIKeyMiddleware_ValidKey(t *testing.T) {
 	t.Parallel()
 
-	handler := APIKeyMiddleware("test-secret")(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	handler := APIKeyMiddleware("test-secret", nil)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -151,7 +151,7 @@ func TestAPIKeyMiddleware_ValidKey(t *testing.T) {
 func TestAPIKeyMiddleware_CaseInsensitiveScheme(t *testing.T) {
 	t.Parallel()
 
-	handler := APIKeyMiddleware("test-secret")(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	handler := APIKeyMiddleware("test-secret", nil)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -170,7 +170,7 @@ func TestAPIKeyMiddleware_CaseInsensitiveScheme(t *testing.T) {
 func TestAPIKeyMiddleware_InvalidKey(t *testing.T) {
 	t.Parallel()
 
-	handler := APIKeyMiddleware("test-secret")(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	handler := APIKeyMiddleware("test-secret", nil)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -196,7 +196,7 @@ func TestAPIKeyMiddleware_InvalidKey(t *testing.T) {
 func TestAPIKeyMiddleware_MissingHeader(t *testing.T) {
 	t.Parallel()
 
-	handler := APIKeyMiddleware("test-secret")(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	handler := APIKeyMiddleware("test-secret", nil)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -213,7 +213,7 @@ func TestAPIKeyMiddleware_MissingHeader(t *testing.T) {
 func TestAPIKeyMiddleware_EmptyKeyBypass(t *testing.T) {
 	t.Parallel()
 
-	handler := APIKeyMiddleware("")(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	handler := APIKeyMiddleware("", nil)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -236,7 +236,7 @@ func TestRecoverMiddleware(t *testing.T) {
 		panic("test panic")
 	})
 
-	handler := RecoverMiddleware(panicking)
+	handler := RecoverMiddleware(nil, panicking)
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	w := httptest.NewRecorder()
@@ -268,7 +268,7 @@ func TestRecoverMiddleware_NoPanic(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	handler := RecoverMiddleware(normal)
+	handler := RecoverMiddleware(nil, normal)
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	w := httptest.NewRecorder()
@@ -291,7 +291,7 @@ func TestAPIKeyMiddlewareWithUserKeys_PerUserKey(t *testing.T) {
 	}
 
 	var capturedNick string
-	handler := APIKeyMiddlewareWithUserKeys("global-key", resolver)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := APIKeyMiddlewareWithUserKeys("global-key", resolver, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		capturedNick = AuthNick(r.Context())
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -316,7 +316,7 @@ func TestAPIKeyMiddlewareWithUserKeys_GlobalKeyFallback(t *testing.T) {
 	resolver := func(key string) string { return "" } // no per-user match
 
 	var capturedNick string
-	handler := APIKeyMiddlewareWithUserKeys("global-key", resolver)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := APIKeyMiddlewareWithUserKeys("global-key", resolver, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		capturedNick = AuthNick(r.Context())
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -340,7 +340,7 @@ func TestAPIKeyMiddlewareWithUserKeys_InvalidKey(t *testing.T) {
 
 	resolver := func(key string) string { return "" }
 
-	handler := APIKeyMiddlewareWithUserKeys("global-key", resolver)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	handler := APIKeyMiddlewareWithUserKeys("global-key", resolver, nil)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -359,7 +359,7 @@ func TestAPIKeyMiddlewareWithUserKeys_NilResolver(t *testing.T) {
 	t.Parallel()
 
 	// With nil resolver, should behave like the original middleware.
-	handler := APIKeyMiddlewareWithUserKeys("global-key", nil)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	handler := APIKeyMiddlewareWithUserKeys("global-key", nil, nil)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 

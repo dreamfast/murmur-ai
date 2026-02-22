@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 )
@@ -52,7 +53,7 @@ func (db *DB) GetCustomTool(name string) (*CustomTool, error) {
 	).Scan(&tool.Name, &tool.Description, &tool.Parameters, &tool.Backend,
 		&tool.BackendConfig, &tool.Enabled, &tool.Created, &tool.Updated)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return nil, err
 		}
 		return nil, fmt.Errorf("GetCustomTool: %w", err)

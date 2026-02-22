@@ -208,7 +208,7 @@ func scanEvent(row *sql.Row) (*Event, error) {
 
 	err := row.Scan(&e.ID, &eventID, &e.Source, &e.EventType, &e.Summary,
 		&data, &e.Channel, &processedAt, &e.Timestamp)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {

@@ -31,8 +31,8 @@ type UserKeyResolver func(apiKey string) string
 // empty, the middleware is a no-op (all requests pass through). The expected
 // header format is "Bearer <key>" (scheme matching is case-insensitive per
 // RFC 7235 Section 2.1).
-func APIKeyMiddleware(key string) func(http.Handler) http.Handler {
-	return APIKeyMiddlewareWithUserKeys(key, nil)
+func APIKeyMiddleware(key string, logger *slog.Logger) func(http.Handler) http.Handler {
+	return APIKeyMiddlewareWithUserKeys(key, nil, logger)
 }
 
 // APIKeyMiddlewareWithUserKeys returns middleware that validates the
@@ -41,7 +41,8 @@ func APIKeyMiddleware(key string) func(http.Handler) http.Handler {
 // key matches, the resolved nick is stored in the request context (retrievable
 // via AuthNick). If no per-user key matches, the global key is checked.
 // If the global key is empty and no resolver is provided, all requests pass.
-func APIKeyMiddlewareWithUserKeys(globalKey string, resolver UserKeyResolver) func(http.Handler) http.Handler {
+// The logger is used for JSON response encoding failures.
+func APIKeyMiddlewareWithUserKeys(globalKey string, resolver UserKeyResolver, logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Skip auth if no key is configured and no resolver is set.
@@ -55,7 +56,7 @@ func APIKeyMiddlewareWithUserKeys(globalKey string, resolver UserKeyResolver) fu
 			// Parse scheme and token (case-insensitive scheme per RFC 7235).
 			scheme, token, found := strings.Cut(provided, " ")
 			if !found || !strings.EqualFold(scheme, "Bearer") {
-				JSONResponse(w, http.StatusUnauthorized, "invalid or missing api key")
+				JSONResponse(w, http.StatusUnauthorized, "invalid or missing api key", logger)
 				return
 			}
 
@@ -74,24 +75,29 @@ func APIKeyMiddlewareWithUserKeys(globalKey string, resolver UserKeyResolver) fu
 				return
 			}
 
-			JSONResponse(w, http.StatusUnauthorized, "invalid or missing api key")
+			JSONResponse(w, http.StatusUnauthorized, "invalid or missing api key", logger)
 		})
 	}
 }
 
 // RecoverMiddleware returns middleware that recovers from panics in HTTP
 // handlers, logs the stack trace, and returns a 500 Internal Server Error.
-func RecoverMiddleware(next http.Handler) http.Handler {
+// The logger is used for panic logging and JSON response encoding failures;
+// if nil, the default slog logger is used.
+func RecoverMiddleware(logger *slog.Logger, next http.Handler) http.Handler {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if rec := recover(); rec != nil {
-				slog.Error("api: panic recovered",
+				logger.Error("api: panic recovered",
 					"panic", rec,
 					"method", r.Method,
 					"path", r.URL.Path,
 					"stack", string(debug.Stack()),
 				)
-				JSONResponse(w, http.StatusInternalServerError, "internal server error")
+				JSONResponse(w, http.StatusInternalServerError, "internal server error", logger)
 			}
 		}()
 		next.ServeHTTP(w, r)

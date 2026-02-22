@@ -25,8 +25,9 @@ type Response struct {
 // For status codes < 400, the response has ok=true with the data field.
 // For status codes >= 400, data is expected to be a string error message.
 // Non-string data for error responses produces a generic "internal server error"
-// to prevent accidental information leakage.
-func JSONResponse(w http.ResponseWriter, status int, data any) {
+// to prevent accidental information leakage. The logger is used to report
+// encoding failures; if nil, the default slog logger is used.
+func JSONResponse(w http.ResponseWriter, status int, data any, logger *slog.Logger) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 
@@ -42,7 +43,10 @@ func JSONResponse(w http.ResponseWriter, status int, data any) {
 	}
 
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
-		slog.Error("api: failed to encode JSON response", "error", err)
+		if logger == nil {
+			logger = slog.Default()
+		}
+		logger.Error("api: failed to encode JSON response", "error", err)
 	}
 }
 

@@ -2,6 +2,7 @@ package server
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -48,7 +49,7 @@ func (s *ChannelSettingsStore) Get(channel string) (*ChannelSettings, error) {
 		channel,
 	).Scan(&cs.Channel, &cs.Provider, &cs.AutoJoin, &cs.TopicPrefix)
 
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
@@ -133,7 +134,7 @@ func (s *ChannelSettingsStore) GetProvider(channel string) (string, error) {
 		channel,
 	).Scan(&provider)
 
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}
 	if err != nil {

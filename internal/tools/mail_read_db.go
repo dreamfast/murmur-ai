@@ -2,6 +2,7 @@ package tools
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -200,7 +201,7 @@ func (m *mailDB) readByID(headerMessageID string) (*mailMessage, error) {
 		&msg.MessageID, &msg.From, &msg.Subject,
 		&dateUsec, &folder, &body,
 	)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {

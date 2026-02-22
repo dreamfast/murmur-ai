@@ -20,8 +20,8 @@ func newClientAPIMux(c *Client) http.Handler {
 
 	// Apply middleware: recovery first (outermost), then auth.
 	var handler http.Handler = mux
-	handler = api.APIKeyMiddleware(c.cfg.API.APIKey)(handler)
-	handler = api.RecoverMiddleware(handler)
+	handler = api.APIKeyMiddleware(c.cfg.API.APIKey, c.logger)(handler)
+	handler = api.RecoverMiddleware(c.logger, handler)
 
 	return handler
 }
@@ -43,7 +43,7 @@ const maxEventBodyBytes = 64 * 1024 // 64 KB
 func (c *Client) handlePostEvent(w http.ResponseWriter, r *http.Request) {
 	// Check IRC connectivity before accepting the event.
 	if !c.isConnected() {
-		api.JSONResponse(w, http.StatusServiceUnavailable, "irc disconnected")
+		api.JSONResponse(w, http.StatusServiceUnavailable, "irc disconnected", c.logger)
 		return
 	}
 
@@ -52,12 +52,12 @@ func (c *Client) handlePostEvent(w http.ResponseWriter, r *http.Request) {
 
 	var req clientEventRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		api.JSONResponse(w, http.StatusBadRequest, "invalid JSON body")
+		api.JSONResponse(w, http.StatusBadRequest, "invalid JSON body", c.logger)
 		return
 	}
 
 	if req.Source == "" || req.EventType == "" || req.Summary == "" {
-		api.JSONResponse(w, http.StatusBadRequest, "source, event_type, and summary are required")
+		api.JSONResponse(w, http.StatusBadRequest, "source, event_type, and summary are required", c.logger)
 		return
 	}
 
@@ -75,14 +75,14 @@ func (c *Client) handlePostEvent(w http.ResponseWriter, r *http.Request) {
 		timestamp,
 	); err != nil {
 		c.logger.Error("api: failed to forward event via bus", "error", err)
-		api.JSONResponse(w, http.StatusInternalServerError, "failed to forward event")
+		api.JSONResponse(w, http.StatusInternalServerError, "failed to forward event", c.logger)
 		return
 	}
 
 	api.JSONResponse(w, http.StatusAccepted, map[string]any{
 		"message":   "event forwarded",
 		"client_id": c.cfg.Client.ID,
-	})
+	}, c.logger)
 }
 
 // handleGetStatus returns client status information.
@@ -107,10 +107,10 @@ func (c *Client) handleGetStatus(w http.ResponseWriter, _ *http.Request) {
 		"api_version": "v1",
 	}
 
-	api.JSONResponse(w, http.StatusOK, status)
+	api.JSONResponse(w, http.StatusOK, status, c.logger)
 }
 
 // handleGetHealth returns a simple health check response.
 func (c *Client) handleGetHealth(w http.ResponseWriter, _ *http.Request) {
-	api.JSONResponse(w, http.StatusOK, map[string]string{"status": "ok"})
+	api.JSONResponse(w, http.StatusOK, map[string]string{"status": "ok"}, c.logger)
 }
