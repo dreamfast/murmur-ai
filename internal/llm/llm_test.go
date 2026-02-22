@@ -528,6 +528,62 @@ func TestMarshalMessages_ReasoningMode_TextOnlyAssistant_NoReasoning(t *testing.
 	}
 }
 
+func TestMarshalMessages_ToolEmptyContent_StillPresent(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.LLMProviderConfig{
+		APIBase: "http://localhost", APIKey: "k", Model: "m",
+		MaxTokens: 100, Temperature: 0.7,
+	}
+	p := NewOpenAICompatProvider("openrouter", cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	// Tool message with empty content (e.g., shell returned 0 bytes).
+	msgs := []Message{
+		{Role: RoleUser, Content: "run a command"},
+		{Role: RoleAssistant, ToolCalls: []ToolCall{
+			{ID: "c1", Type: "function", Function: FunctionCall{Name: "shell", Arguments: `{"command":"true"}`}},
+		}},
+		{Role: RoleTool, Content: "", ToolCallID: "c1", Name: "shell"},
+	}
+
+	raw, err := p.marshalMessages(msgs)
+	if err != nil {
+		t.Fatalf("marshalMessages: %v", err)
+	}
+
+	// The tool message (index 2) must have "content" present, even if empty.
+	var toolMsg map[string]any
+	if err := json.Unmarshal(raw[2], &toolMsg); err != nil {
+		t.Fatalf("unmarshal tool msg: %v", err)
+	}
+	content, ok := toolMsg["content"]
+	if !ok {
+		t.Fatal("tool message must have 'content' field, even when empty")
+	}
+	if content != "" {
+		t.Errorf("content = %q, want empty string", content)
+	}
+
+	// The user message (index 0) must also have "content".
+	var userMsg map[string]any
+	if err := json.Unmarshal(raw[0], &userMsg); err != nil {
+		t.Fatalf("unmarshal user msg: %v", err)
+	}
+	if _, ok := userMsg["content"]; !ok {
+		t.Fatal("user message must have 'content' field")
+	}
+
+	// The assistant message (index 1) with tool_calls and empty content
+	// should NOT have "content" (to avoid sending "content":"" alongside tool_calls).
+	var assistantMsg map[string]any
+	if err := json.Unmarshal(raw[1], &assistantMsg); err != nil {
+		t.Fatalf("unmarshal assistant msg: %v", err)
+	}
+	if _, ok := assistantMsg["content"]; ok {
+		t.Error("assistant message with tool_calls and empty content should omit 'content'")
+	}
+}
+
 func TestOpenAICompatProvider_UserAgent(t *testing.T) {
 	t.Parallel()
 

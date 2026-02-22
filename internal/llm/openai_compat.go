@@ -121,13 +121,15 @@ type openAIRequest struct {
 }
 
 // wireMessage is the on-the-wire JSON format for a message sent to the API.
-// Unlike Message, ReasoningContent is a *string so we can distinguish between
-// "omit the field" (nil) and "include as empty string" (pointer to "").
-// This is required for Kimi's thinking mode which demands reasoning_content
-// be present (even empty) on assistant messages with tool_calls.
+// Pointer fields (*string) use omitempty to distinguish "omit the field" (nil)
+// from "include as empty string" (pointer to ""). This is needed for:
+//   - Content: some providers (e.g., Qwen3 via OpenRouter) require "content" on
+//     all non-assistant messages, even when the tool result is empty.
+//   - ReasoningContent: Kimi's thinking mode demands reasoning_content be present
+//     (even empty) on assistant messages with tool_calls.
 type wireMessage struct {
 	Role             string     `json:"role"`
-	Content          string     `json:"content,omitempty"`
+	Content          *string    `json:"content,omitempty"`
 	ReasoningContent *string    `json:"reasoning_content,omitempty"`
 	ToolCalls        []ToolCall `json:"tool_calls,omitempty"`
 	ToolCallID       string     `json:"tool_call_id,omitempty"`
@@ -316,11 +318,24 @@ func (p *OpenAICompatProvider) marshalMessages(msgs []Message) ([]json.RawMessag
 	for i, msg := range msgs {
 		wm := wireMessage{
 			Role:       msg.Role,
-			Content:    msg.Content,
 			ToolCalls:  msg.ToolCalls,
 			ToolCallID: msg.ToolCallID,
 			Name:       msg.Name,
 		}
+
+		// Content handling: non-assistant messages (user, system, tool) must
+		// always include "content" in the JSON, even when empty. Some providers
+		// (e.g., Qwen3 via OpenRouter) reject messages without it. For
+		// assistant messages, only include content when non-empty to avoid
+		// sending "content":"" alongside tool_calls (which some providers dislike).
+		if msg.Role != RoleAssistant {
+			c := msg.Content
+			wm.Content = &c
+		} else if msg.Content != "" {
+			c := msg.Content
+			wm.Content = &c
+		}
+		// Assistant with empty content: Content stays nil → omitted.
 
 		if p.reasoning && msg.Role == RoleAssistant && len(msg.ToolCalls) > 0 {
 			// Reasoning provider: always include reasoning_content on
