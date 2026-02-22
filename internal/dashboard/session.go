@@ -4,12 +4,12 @@
 package dashboard
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"log/slog"
 	"net/http"
 	"sync"
 	"time"
+
+	mcrypto "murmur/internal/crypto"
 )
 
 const (
@@ -59,11 +59,11 @@ func NewSessionStore(timeout time.Duration, logger *slog.Logger) *SessionStore {
 // Create generates a new session for the given nick and returns it.
 // The session ID and signing key are cryptographically random hex strings.
 func (s *SessionStore) Create(nick string) (*Session, error) {
-	id, err := generateRandomHex(sessionIDLen)
+	id, err := mcrypto.RandomHex(sessionIDLen)
 	if err != nil {
 		return nil, err
 	}
-	sigKey, err := generateRandomHex(signingKeyLen)
+	sigKey, err := mcrypto.RandomHex(signingKeyLen)
 	if err != nil {
 		return nil, err
 	}
@@ -216,14 +216,4 @@ func (s *SessionStore) Count() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return len(s.sessions)
-}
-
-// generateRandomHex creates a cryptographically random hex string of the
-// given byte length (output is 2*n hex characters).
-func generateRandomHex(n int) (string, error) {
-	b := make([]byte, n)
-	if _, err := rand.Read(b); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(b), nil
 }

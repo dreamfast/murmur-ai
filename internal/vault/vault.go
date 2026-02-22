@@ -6,7 +6,6 @@ package vault
 import (
 	"crypto/aes"
 	"crypto/cipher"
-	"crypto/rand"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -19,6 +18,7 @@ import (
 	"golang.org/x/crypto/argon2"
 
 	"murmur/internal/config"
+	mcrypto "murmur/internal/crypto"
 )
 
 // ErrKeyNotFound is returned when a vault key does not exist.
@@ -118,7 +118,7 @@ func (v *Vault) Set(key, value string) error {
 		return fmt.Errorf("vault.Set: key must not be empty")
 	}
 
-	nonce, err := randomBytes(nonceLen)
+	nonce, err := mcrypto.RandomBytes(nonceLen)
 	if err != nil {
 		return fmt.Errorf("vault.Set: generate nonce: %w", err)
 	}
@@ -442,7 +442,7 @@ func getOrCreateSalt(db *sql.DB) ([]byte, error) {
 	}
 
 	// Generate a new salt.
-	salt, err = randomBytes(saltLen)
+	salt, err = mcrypto.RandomBytes(saltLen)
 	if err != nil {
 		return nil, fmt.Errorf("getOrCreateSalt: generate: %w", err)
 	}
@@ -460,13 +460,4 @@ func getOrCreateSalt(db *sql.DB) ([]byte, error) {
 		return nil, fmt.Errorf("getOrCreateSalt: re-read: %w", err)
 	}
 	return salt, nil
-}
-
-// randomBytes generates n cryptographically random bytes.
-func randomBytes(n int) ([]byte, error) {
-	b := make([]byte, n)
-	if _, err := rand.Read(b); err != nil {
-		return nil, fmt.Errorf("randomBytes: %w", err)
-	}
-	return b, nil
 }

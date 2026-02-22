@@ -1,15 +1,12 @@
 package bus
 
 import (
-	"crypto/hmac"
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"unicode/utf8"
 
+	mcrypto "murmur/internal/crypto"
 	"murmur/internal/irc"
 )
 
@@ -161,21 +158,12 @@ func (s *Sender) maybeSign(jsonMsg string) (string, error) {
 // over the canonical form: the JSON object with "signature":"" (empty string).
 // This allows the receiver to verify by zeroing the signature field.
 func signMessage(jsonMsg string, key []byte) (string, error) {
-	// Build the canonical form: inject "signature":"" into the object.
-	var obj map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(jsonMsg), &obj); err != nil {
-		return "", fmt.Errorf("signMessage: unmarshal: %w", err)
-	}
-	obj["signature"] = json.RawMessage(`""`)
-	canonical, err := json.Marshal(obj)
+	canonical, obj, err := canonicalForm(jsonMsg)
 	if err != nil {
-		return "", fmt.Errorf("signMessage: marshal canonical: %w", err)
+		return "", fmt.Errorf("signMessage: %w", err)
 	}
 
-	// Compute HMAC over the canonical form.
-	mac := hmac.New(sha256.New, key)
-	mac.Write(canonical)
-	sig := hex.EncodeToString(mac.Sum(nil))
+	sig := mcrypto.SignHMAC(string(key), canonical)
 
 	// Replace the empty signature with the actual signature.
 	obj["signature"] = json.RawMessage(`"` + sig + `"`)
@@ -184,6 +172,22 @@ func signMessage(jsonMsg string, key []byte) (string, error) {
 		return "", fmt.Errorf("signMessage: marshal signed: %w", err)
 	}
 	return string(out), nil
+}
+
+// canonicalForm builds the canonical JSON representation for HMAC signing.
+// It sets the "signature" field to "" and returns the marshaled bytes along
+// with the parsed object for further manipulation.
+func canonicalForm(jsonMsg string) ([]byte, map[string]json.RawMessage, error) {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(jsonMsg), &obj); err != nil {
+		return nil, nil, fmt.Errorf("unmarshal: %w", err)
+	}
+	obj["signature"] = json.RawMessage(`""`)
+	canonical, err := json.Marshal(obj)
+	if err != nil {
+		return nil, nil, fmt.Errorf("marshal canonical: %w", err)
+	}
+	return canonical, obj, nil
 }
 
 // SendRegister sends a client registration message. The autonomy parameter
@@ -253,11 +257,7 @@ func (s *Sender) SendEvent(clientID, source, eventType, summary, data, eventID, 
 
 // randomHex returns n random bytes encoded as a hex string (2n characters).
 func randomHex(n int) (string, error) {
-	b := make([]byte, n)
-	if _, err := rand.Read(b); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(b), nil
+	return mcrypto.RandomHex(n)
 }
 
 // splitString splits s into chunks of at most size bytes, always cutting at

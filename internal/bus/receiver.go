@@ -1,15 +1,14 @@
 package bus
 
 import (
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
 	"time"
+
+	mcrypto "murmur/internal/crypto"
 )
 
 // partBuffer accumulates chunks of a multi-part message.
@@ -136,18 +135,12 @@ func verifyMessage(jsonMsg string, key []byte) error {
 	}
 
 	// Reconstruct the canonical form (signature field set to "").
-	obj["signature"] = json.RawMessage(`""`)
-	canonical, err := json.Marshal(obj)
+	canonical, _, err := canonicalForm(jsonMsg)
 	if err != nil {
-		return fmt.Errorf("verifyMessage: marshal canonical: %w", err)
+		return fmt.Errorf("verifyMessage: %w", err)
 	}
 
-	// Compute expected HMAC.
-	mac := hmac.New(sha256.New, key)
-	mac.Write(canonical)
-	expected := hex.EncodeToString(mac.Sum(nil))
-
-	if !hmac.Equal([]byte(sig), []byte(expected)) {
+	if !mcrypto.VerifyHMAC(string(key), sig, canonical) {
 		return ErrInvalidSignature
 	}
 	return nil

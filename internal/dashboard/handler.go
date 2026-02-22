@@ -2,8 +2,6 @@ package dashboard
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"io/fs"
@@ -19,6 +17,7 @@ import (
 	"github.com/coder/websocket"
 
 	"murmur/internal/config"
+	mcrypto "murmur/internal/crypto"
 	"murmur/web"
 )
 
@@ -362,16 +361,13 @@ func (h *Handler) verifySignature(r *http.Request, sess *Session, body string) b
 	}
 
 	// Compute expected signature: HMAC-SHA256(key, timestamp+method+path+body).
+	// The signing key is hex-encoded; decode it to use as the raw HMAC key.
 	keyBytes, err := hex.DecodeString(sess.SigningKey)
 	if err != nil {
 		return false
 	}
-	mac := hmac.New(sha256.New, keyBytes)
 	payload := tsStr + r.Method + r.URL.Path + body
-	mac.Write([]byte(payload))
-	expected := hex.EncodeToString(mac.Sum(nil))
-
-	return hmac.Equal([]byte(sig), []byte(expected))
+	return mcrypto.VerifyHMAC(string(keyBytes), sig, []byte(payload))
 }
 
 // checkLoginRate returns true if the IP has not exceeded the login rate limit.

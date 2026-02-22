@@ -5,9 +5,7 @@ package main
 import (
 	"bufio"
 	"context"
-	"crypto/rand"
 	"crypto/tls"
-	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"os"
@@ -23,6 +21,7 @@ import (
 
 	"murmur/internal/client"
 	"murmur/internal/config"
+	mcrypto "murmur/internal/crypto"
 	"murmur/internal/server"
 	"murmur/internal/vault"
 )
@@ -179,7 +178,11 @@ func runStatus() {
 // or the timeout expires.
 func ircSendAndCollect(cfg *config.ServerConfig, message string, timeout time.Duration) (string, error) {
 	// Generate a unique temporary nick.
-	nick := "murmur-cli-" + randomHex(4)
+	randSuffix, err := mcrypto.RandomHex(4)
+	if err != nil {
+		return "", fmt.Errorf("generate nick: %w", err)
+	}
+	nick := "murmur-cli-" + randSuffix
 
 	gircCfg := girc.Config{
 		Server: cfg.IRC.Server,
@@ -309,17 +312,6 @@ func parseSendMessage() string {
 		}
 	}
 	return strings.Join(remaining, " ")
-}
-
-// randomHex returns n random bytes encoded as a hex string.
-// It panics if the system's cryptographic random number generator fails,
-// as this indicates a critical system issue.
-func randomHex(n int) string {
-	b := make([]byte, n)
-	if _, err := rand.Read(b); err != nil {
-		panic("crypto/rand failed: " + err.Error())
-	}
-	return hex.EncodeToString(b)
 }
 
 // runVault handles the vault subcommand for managing encrypted secrets.
