@@ -93,16 +93,19 @@ generate_bcrypt_hash() {
 
 # ─── Registration orchestration ─────────────────────────────────────────────
 
-# docker_register_all_nicks — registers admin, bot, and client nicks with NickServ
-# Expects from caller: ADMIN_NICK, ADMIN_PASS, BOT_NICKSERV_PASS, CLIENT_NICKSERV_PASS
-docker_register_all_nicks() {
+# docker_register_nicks — registers admin, bot, and optionally client nicks with NickServ
+# Expects from caller: ADMIN_NICK, ADMIN_PASS, BOT_NICKSERV_PASS,
+#   CLIENT_NICKSERV_PASS, SETUP_LOCAL_CLIENT
+docker_register_nicks() {
 	divider
 	info "${BOLD}Registering IRC accounts with NickServ...${RESET}"
 
 	if [[ "$DRY_RUN" == "true" ]]; then
 		info "[dry-run] Would register admin nick '$ADMIN_NICK'"
 		info "[dry-run] Would register bot nick 'murmur'"
-		info "[dry-run] Would register client nick 'murmur-client'"
+		if [[ "${SETUP_LOCAL_CLIENT:-true}" == "true" ]]; then
+			info "[dry-run] Would register client nick 'murmur-client'"
+		fi
 		return 0
 	fi
 
@@ -118,17 +121,25 @@ docker_register_all_nicks() {
 		warn "  Register manually: /msg NickServ REGISTER <password>"
 	fi
 
-	# Register client nick (murmur-client)
-	if ! nickserv_register "murmur-client" "$CLIENT_NICKSERV_PASS" "Murmur Client"; then
-		warn "Could not register client nick 'murmur-client' — the client may not be able to identify."
-		warn "  Register manually: /msg NickServ REGISTER <password>"
+	# Register client nick (murmur-client) — only when local client is enabled
+	if [[ "${SETUP_LOCAL_CLIENT:-true}" == "true" ]]; then
+		if ! nickserv_register "murmur-client" "$CLIENT_NICKSERV_PASS" "Murmur Client"; then
+			warn "Could not register client nick 'murmur-client' — the client may not be able to identify."
+			warn "  Register manually: /msg NickServ REGISTER <password>"
+		fi
 	fi
 }
 
 # docker_store_nickserv_secrets — stores NickServ and OPER secrets in vault
+# Expects from caller: BOT_NICKSERV_PASS, CLIENT_NICKSERV_PASS, OPER_PASS,
+#   SETUP_LOCAL_CLIENT
 docker_store_nickserv_secrets() {
 	if [[ "$DRY_RUN" == "true" ]]; then
-		info "[dry-run] Would store vault secrets: nickserv-password, client-nickserv-password, oper-password"
+		local secrets="nickserv-password, oper-password"
+		if [[ "${SETUP_LOCAL_CLIENT:-true}" == "true" ]]; then
+			secrets="nickserv-password, client-nickserv-password, oper-password"
+		fi
+		info "[dry-run] Would store vault secrets: $secrets"
 		return 0
 	fi
 

@@ -618,6 +618,21 @@ fi
 
 success "Tools: ${SELECTED_TOOLS[*]:-none}"
 
+# ─── Local Client (sub-question within tools step) ──────────────────────────
+
+echo ""
+info "A local client runs alongside the server and provides tool execution."
+info "You can skip this if you'll connect remote clients instead."
+
+SETUP_LOCAL_CLIENT="true"
+if ! ask_yesno "Set up a local client alongside the server?" "y"; then
+	SETUP_LOCAL_CLIENT="false"
+	success "Server-only mode — no local client"
+	info "Run ${DIM}./scripts/setup.sh client${RESET} on a remote machine to add clients later."
+else
+	success "Local client will be configured"
+fi
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Generate Configuration
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -642,7 +657,10 @@ if [[ "$INSTALL_MODE" == "docker" ]]; then
 
 	# Generate NickServ and OPER passwords (needed for config generation)
 	BOT_NICKSERV_PASS="$(generate_passphrase)"
-	CLIENT_NICKSERV_PASS="$(generate_passphrase)"
+	CLIENT_NICKSERV_PASS=""
+	if [[ "$SETUP_LOCAL_CLIENT" == "true" ]]; then
+		CLIENT_NICKSERV_PASS="$(generate_passphrase)"
+	fi
 	OPER_PASS="$(generate_passphrase)"
 
 	# Generate OPER bcrypt hash (needed for ergo config)
@@ -660,14 +678,17 @@ if [[ "$INSTALL_MODE" == "docker" ]]; then
 
 	# Generate and write configs
 	SERVER_CONFIG="$(generate_server_config)"
-	CLIENT_CONFIG="$(generate_client_config)"
 	PERMISSIONS_CONFIG="$(generate_permissions_config)"
 	ENV_CONTENT="$(generate_env_file)"
 
 	write_file "$CONFIGS_DIR/server.docker.toml" "$SERVER_CONFIG"
-	write_file "$CONFIGS_DIR/client.docker.toml" "$CLIENT_CONFIG"
 	write_file "$CONFIGS_DIR/permissions.toml" "$PERMISSIONS_CONFIG"
 	write_file_secure "$PROJECT_DIR/.env" "$ENV_CONTENT"
+
+	if [[ "$SETUP_LOCAL_CLIENT" == "true" ]]; then
+		CLIENT_CONFIG="$(generate_client_config)"
+		write_file "$CONFIGS_DIR/client.docker.toml" "$CLIENT_CONFIG"
+	fi
 
 	# Handle ergo config (server password + OPER credentials)
 	docker_setup_ergo_config
@@ -675,9 +696,9 @@ if [[ "$INSTALL_MODE" == "docker" ]]; then
 	# Build Docker images
 	docker_build
 
-	# Start IRC server and register all nicks
+	# Start IRC server and register nicks
 	docker_start_ircd
-	docker_register_all_nicks
+	docker_register_nicks
 
 	# Store vault secrets (including NickServ and OPER passwords)
 	docker_store_secrets
@@ -691,16 +712,22 @@ else
 
 	# Generate NickServ and OPER passwords (needed for config generation)
 	BOT_NICKSERV_PASS="$(generate_passphrase)"
-	CLIENT_NICKSERV_PASS="$(generate_passphrase)"
+	CLIENT_NICKSERV_PASS=""
+	if [[ "$SETUP_LOCAL_CLIENT" == "true" ]]; then
+		CLIENT_NICKSERV_PASS="$(generate_passphrase)"
+	fi
 	OPER_PASS="$(generate_passphrase)"
 
 	SERVER_CONFIG="$(generate_server_config)"
-	CLIENT_CONFIG="$(generate_client_config)"
 	PERMISSIONS_CONFIG="$(generate_permissions_config)"
 
 	write_file "$DEFAULT_DATA_DIR/server.toml" "$SERVER_CONFIG"
-	write_file "$DEFAULT_DATA_DIR/client.toml" "$CLIENT_CONFIG"
 	write_file "$DEFAULT_DATA_DIR/permissions.toml" "$PERMISSIONS_CONFIG"
+
+	if [[ "$SETUP_LOCAL_CLIENT" == "true" ]]; then
+		CLIENT_CONFIG="$(generate_client_config)"
+		write_file "$DEFAULT_DATA_DIR/client.toml" "$CLIENT_CONFIG"
+	fi
 
 	# Copy system prompt
 	if [[ -f "$CONFIGS_DIR/system_prompt.md" ]]; then
@@ -730,7 +757,9 @@ else
 		vault_store_bare "llm-api-key" "$LLM_KEY"
 		vault_store_bare "api-key" "$API_KEY"
 		vault_store_bare "nickserv-password" "$BOT_NICKSERV_PASS"
-		vault_store_bare "client-nickserv-password" "$CLIENT_NICKSERV_PASS"
+		if [[ "$SETUP_LOCAL_CLIENT" == "true" ]]; then
+			vault_store_bare "client-nickserv-password" "$CLIENT_NICKSERV_PASS"
+		fi
 		vault_store_bare "oper-password" "$OPER_PASS"
 
 		if [[ "$SEARCH_PROVIDER" == "brave" && -n "$BRAVE_KEY" ]]; then
@@ -749,7 +778,9 @@ else
 	warn "Connect as each nick and run:"
 	echo "    ${DIM}$ADMIN_NICK:      /msg NickServ REGISTER <your admin password>${RESET}"
 	echo "    ${DIM}murmur:           /msg NickServ REGISTER $BOT_NICKSERV_PASS${RESET}"
-	echo "    ${DIM}murmur-client:    /msg NickServ REGISTER $CLIENT_NICKSERV_PASS${RESET}"
+	if [[ "$SETUP_LOCAL_CLIENT" == "true" ]]; then
+		echo "    ${DIM}murmur-client:    /msg NickServ REGISTER $CLIENT_NICKSERV_PASS${RESET}"
+	fi
 	warn "These passwords are stored in the vault — they must match what NickServ has."
 fi
 
@@ -785,6 +816,11 @@ if [[ "$INSTALL_MODE" == "docker" ]]; then
 	echo "  ${BOLD}After connecting, identify with NickServ:${RESET}"
 	echo "    ${DIM}/msg NickServ IDENTIFY $ADMIN_NICK <your-password>${RESET}"
 	echo ""
+	if [[ "$SETUP_LOCAL_CLIENT" != "true" ]]; then
+		echo "  ${BOLD}Add a client later:${RESET}"
+		echo "    ${DIM}./scripts/setup.sh client${RESET}  — on a remote machine"
+		echo ""
+	fi
 	echo "  ${BOLD}Manage services:${RESET}"
 	echo "    ${DIM}docker compose ps${RESET}          — check status"
 	echo "    ${DIM}docker compose logs -f${RESET}     — view logs"
@@ -794,15 +830,19 @@ if [[ "$INSTALL_MODE" == "docker" ]]; then
 else
 	echo "  ${BOLD}Config files:${RESET}"
 	echo "    Server:      ${DIM}$DEFAULT_DATA_DIR/server.toml${RESET}"
-	echo "    Client:      ${DIM}$DEFAULT_DATA_DIR/client.toml${RESET}"
+	if [[ "$SETUP_LOCAL_CLIENT" == "true" ]]; then
+		echo "    Client:      ${DIM}$DEFAULT_DATA_DIR/client.toml${RESET}"
+	fi
 	echo "    Permissions: ${DIM}$DEFAULT_DATA_DIR/permissions.toml${RESET}"
 	echo ""
 	echo "  ${BOLD}Start the server:${RESET}"
 	echo "    ${DIM}MURMUR_VAULT_PASS=$VAULT_PASS $PROJECT_DIR/bin/murmur server --config $DEFAULT_DATA_DIR/server.toml${RESET}"
 	echo ""
-	echo "  ${BOLD}Start the client (separate terminal):${RESET}"
-	echo "    ${DIM}MURMUR_VAULT_PASS=$VAULT_PASS $PROJECT_DIR/bin/murmur client --config $DEFAULT_DATA_DIR/client.toml${RESET}"
-	echo ""
+	if [[ "$SETUP_LOCAL_CLIENT" == "true" ]]; then
+		echo "  ${BOLD}Start the client (separate terminal):${RESET}"
+		echo "    ${DIM}MURMUR_VAULT_PASS=$VAULT_PASS $PROJECT_DIR/bin/murmur client --config $DEFAULT_DATA_DIR/client.toml${RESET}"
+		echo ""
+	fi
 	echo "  ${BOLD}Note:${RESET} You'll need an IRC server (e.g., Ergo) running on localhost:6667."
 	echo "  See: ${DIM}https://ergo.chat/manual.html${RESET}"
 	echo ""

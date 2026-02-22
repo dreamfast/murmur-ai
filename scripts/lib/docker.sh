@@ -81,20 +81,28 @@ docker_start_ircd() {
 
 # ─── Start all services ─────────────────────────────────────────────────────
 
-# docker_start_all — starts all services (respects --dry-run)
+# docker_start_all — starts services (respects --dry-run and SETUP_LOCAL_CLIENT)
+# When SETUP_LOCAL_CLIENT is false, murmur-client is excluded from startup.
+# Expects from caller: SETUP_LOCAL_CLIENT
 docker_start_all() {
 	divider
 	info "${BOLD}Starting all services...${RESET}"
 
+	# Build the list of services to start and health-check
+	local services=("ircd" "murmur-server")
+	if [[ "${SETUP_LOCAL_CLIENT:-true}" == "true" ]]; then
+		services+=("murmur-client")
+	fi
+
 	if [[ "$DRY_RUN" != "true" ]]; then
-		compose_cmd up -d
+		compose_cmd up -d "${services[@]}"
 
 		# Wait a moment for services to start
 		sleep 3
 
 		# Health check
 		info "Checking service health..."
-		for svc in ircd murmur-server murmur-client; do
+		for svc in "${services[@]}"; do
 			if compose_cmd ps --format '{{.Service}} {{.Status}}' 2>/dev/null | grep -q "$svc.*Up"; then
 				success "$svc is running"
 			else
@@ -102,7 +110,7 @@ docker_start_all() {
 			fi
 		done
 	else
-		info "[dry-run] Would run: docker compose up -d"
+		info "[dry-run] Would run: docker compose up -d ${services[*]}"
 	fi
 }
 
@@ -179,7 +187,7 @@ docker_setup_ergo_config() {
 }
 
 # ─── NickServ registration ───────────────────────────────────────────────────
-# Registration logic lives in nickserv.sh: docker_register_all_nicks.
+# Registration logic lives in nickserv.sh: docker_register_nicks.
 
 # ─── Vault secrets ──────────────────────────────────────────────────────────
 
