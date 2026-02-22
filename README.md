@@ -65,33 +65,48 @@ Murmur's approach is to use IRC as the message bus and physically separate the L
 
 Everything runs in Docker. You need **Docker** and **an LLM API key** (OpenRouter, OpenAI, or any OpenAI-compatible endpoint).
 
-### 1. Clone and set up
+### Quick install (curl-pipe)
 
 ```bash
-git clone https://github.com/yourusername/murmur.git
-cd murmur
+curl -fsSL https://raw.githubusercontent.com/dreamfast/murmur-ai/main/scripts/install.sh | bash
 ```
 
-### 2. Run the setup wizard
+This clones the repo to `~/murmur` and runs the setup wizard. Re-running pulls the latest version. Customize with environment variables:
+
+```bash
+MURMUR_INSTALL_DIR=/opt/murmur MURMUR_BRANCH=develop curl -fsSL ... | bash
+```
+
+### Manual install
+
+```bash
+git clone https://github.com/dreamfast/murmur-ai.git
+cd murmur-ai
+./scripts/setup.sh
+```
+
+### The setup wizard
 
 The interactive setup wizard handles everything -- building containers, configuring the IRC server, creating your admin account, storing secrets in the encrypted vault, and optionally enabling the web dashboard:
 
 ```bash
-./scripts/setup.sh
+./scripts/setup.sh              # full server setup (interactive)
+./scripts/setup.sh client       # standalone client setup (remote machine)
+./scripts/setup.sh --dry-run    # preview without writing files
 ```
 
 The wizard walks you through 8 steps:
 
 1. **Installation mode** -- Docker (recommended) or bare metal
 2. **Vault passphrase** -- encrypts your secrets at rest
-3. **LLM provider** -- OpenRouter, OpenAI, Anthropic, Ollama, or custom endpoint
+3. **LLM provider** -- OpenRouter, OpenAI, Ollama, or custom endpoint + optional RAG memory search
 4. **Admin account** -- your IRC nick and NickServ password (auto-registered on the bundled Ergo server)
 5. **IRC server password** -- optional, protects the IRC server from unauthorized connections
 6. **Web dashboard** -- optional browser-based chat interface (port 8082)
-7. **Search** -- SearXNG (self-hosted) or Brave Search API
-8. **Tools** -- code execution (Piston), shell, and other tools
+7. **Search** -- Brave Search API key (optional; SearXNG available as a tool)
+8. **Server tools** -- shell, code execution (Piston), browser automation, OpenCode, SearXNG, systeminfo, and more + optional local client setup
 
-The wizard generates all config files, builds Docker images, registers your admin account on the IRC server, stores secrets in the vault, starts all services, and runs a health check.
+The wizard generates all config files, builds Docker images, registers your admin account on the IRC server, stores secrets in the vault, starts all services, and runs a health check. You can opt out of the local client to run a server-only deployment and add remote clients later.
 
 Use `--dry-run` to preview what the wizard would do without making changes.
 
@@ -118,9 +133,13 @@ docker compose logs -f murmur-client
 
 ### Setting up remote clients
 
-The setup wizard also supports configuring standalone clients on remote machines:
+The setup wizard supports configuring standalone clients on remote machines:
 
 ```bash
+# On the remote machine — curl-pipe install
+curl -fsSL https://raw.githubusercontent.com/dreamfast/murmur-ai/main/scripts/install.sh | bash -s -- client
+
+# Or if already cloned
 ./scripts/setup.sh client
 ```
 
@@ -833,6 +852,8 @@ Tools are capabilities provided by clients or the server. The server discovers c
 | `image_gen` | Generate images via ComfyUI (Stable Diffusion) | Client | ComfyUI instance |
 | `file_ops` | Read, list, search, stat files | Client | Mounted directories |
 | `http_request` | Make outbound HTTP requests with SSRF protection | Server | Nothing extra |
+| `browser` | Headless browser automation (navigate, screenshot, extract, click) | Server | Playwright container |
+| `opencode` | AI coding agent for code generation and editing | Server | OpenCode container |
 | `irc_manage` | Join/part channels, send messages, set topics, kick/ban/op, read history | Server | Nothing extra |
 | `config_manage` | Read/write server TOML config at runtime (auto-reloads) | Server | Nothing extra |
 | `reminder_add` | Set one-time reminders with absolute or relative times | Server | Nothing extra |
@@ -943,6 +964,19 @@ The LLM receives recent messages from up to 5 other joined channels as part of i
 
 Cross-channel context is excluded from DMs to keep private conversations focused and avoid leaking channel activity.
 
+### RAG Memory Search
+
+When enabled, Murmur indexes conversation summaries and ingested files into an FTS5 full-text search index. The LLM can search past conversations and documents to recall information from weeks or months ago.
+
+```toml
+[memory.rag]
+enabled = true
+auto_ingest_summaries = true       # index conversation summaries automatically
+# files = ["~/notes/project.md"]   # optional files to index on startup
+```
+
+RAG uses SQLite FTS5 -- no external vector database or embedding API required. Enable it during the setup wizard (Step 3) or add the config section manually.
+
 `!forget` clears all history and summaries for the current channel.
 
 ## Secrets Vault
@@ -1005,7 +1039,8 @@ murmur/
 │   ├── system_prompt.md             # Default system prompt
 │   └── ergo.yaml                    # Ergo IRC server config
 ├── scripts/
-│   └── setup.sh                     # Interactive setup wizard (server + client modes)
+│   ├── setup.sh                     # Interactive setup wizard (server + client modes)
+│   └── install.sh                   # Curl-pipe bootstrap installer
 ├── Makefile
 ├── Dockerfile                       # Multi-stage: Node (pnpm) → Go → Alpine
 ├── docker-compose.yml
