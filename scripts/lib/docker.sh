@@ -195,10 +195,17 @@ docker_store_secrets() {
 		if [[ "$SEARCH_PROVIDER" == "brave" && -n "$BRAVE_KEY" ]]; then
 			vault_store_docker "brave-search-key" "$BRAVE_KEY"
 		fi
+
+		if [[ -n "$IRC_SERVER_PASS" ]]; then
+			vault_store_docker "irc-server-password" "$IRC_SERVER_PASS"
+		fi
 	else
 		info "[dry-run] Would store vault secrets: llm-api-key, api-key"
 		if [[ "$SEARCH_PROVIDER" == "brave" ]]; then
 			info "[dry-run] Would store vault secret: brave-search-key"
+		fi
+		if [[ -n "$IRC_SERVER_PASS" ]]; then
+			info "[dry-run] Would store vault secret: irc-server-password"
 		fi
 	fi
 }

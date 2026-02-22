@@ -305,6 +305,12 @@ TOML
 enabled = true
 listen = "0.0.0.0:$DASHBOARD_PORT"
 TOML
+		# Auto-populate server_password so dashboard users don't need to know it
+		if [[ -n "$IRC_SERVER_PASS" ]]; then
+			cat <<'TOML'
+server_password = "vault:irc-server-password"
+TOML
+		fi
 	fi
 
 	# Debug (commented out)

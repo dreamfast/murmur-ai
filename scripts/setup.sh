@@ -736,6 +736,10 @@ else
 		if [[ "$SEARCH_PROVIDER" == "brave" && -n "$BRAVE_KEY" ]]; then
 			vault_store_bare "brave-search-key" "$BRAVE_KEY"
 		fi
+
+		if [[ -n "$IRC_SERVER_PASS" ]]; then
+			vault_store_bare "irc-server-password" "$IRC_SERVER_PASS"
+		fi
 	else
 		info "[dry-run] Would store vault secrets"
 	fi
