@@ -95,3 +95,160 @@ export async function signedWebSocketURL(path) {
 
   return url;
 }
+
+// --- Admin API client ---
+
+const ADMIN_API = "/dashboard/api";
+
+/**
+ * Send a signed JSON request to an admin API endpoint.
+ * Handles JSON serialization and Content-Type header automatically.
+ *
+ * @param {string} path   — API sub-path (e.g. "/users")
+ * @param {object} opts   — { method, body (object), ... }
+ * @returns {Promise<{ok: boolean, data?: any, error?: string, status: number}>}
+ */
+async function adminFetch(path, opts = {}) {
+  const fullPath = ADMIN_API + path;
+  const fetchOpts = { method: opts.method || "GET" };
+
+  if (opts.body !== undefined) {
+    fetchOpts.body = JSON.stringify(opts.body);
+    fetchOpts.headers = { "Content-Type": "application/json" };
+  }
+
+  const res = await signedFetch(fullPath, fetchOpts);
+  let json;
+  try {
+    json = await res.json();
+  } catch {
+    return { ok: false, error: `Server returned ${res.status}`, status: res.status };
+  }
+  return { ...json, status: res.status };
+}
+
+// --- Users ---
+
+/** List all users. */
+export function adminListUsers() {
+  return adminFetch("/users");
+}
+
+/** Get a single user by nick. */
+export function adminGetUser(nick) {
+  return adminFetch(`/users/${encodeURIComponent(nick)}`);
+}
+
+/** Create a new user. */
+export function adminCreateUser(user) {
+  return adminFetch("/users", { method: "POST", body: user });
+}
+
+/** Update an existing user (partial update). */
+export function adminUpdateUser(nick, fields) {
+  return adminFetch(`/users/${encodeURIComponent(nick)}`, {
+    method: "PUT",
+    body: fields,
+  });
+}
+
+/** Delete a user by nick. */
+export function adminDeleteUser(nick) {
+  return adminFetch(`/users/${encodeURIComponent(nick)}`, {
+    method: "DELETE",
+  });
+}
+
+// --- Tools ---
+
+/** List all tools (server + client + custom) with source. */
+export function adminListTools() {
+  return adminFetch("/tools");
+}
+
+/** List custom tools only. */
+export function adminListCustomTools() {
+  return adminFetch("/tools/custom");
+}
+
+/** Create a new custom tool. */
+export function adminCreateCustomTool(tool) {
+  return adminFetch("/tools/custom", { method: "POST", body: tool });
+}
+
+/** Update an existing custom tool (partial update). */
+export function adminUpdateCustomTool(name, fields) {
+  return adminFetch(`/tools/custom/${encodeURIComponent(name)}`, {
+    method: "PUT",
+    body: fields,
+  });
+}
+
+/** Delete a custom tool by name. */
+export function adminDeleteCustomTool(name) {
+  return adminFetch(`/tools/custom/${encodeURIComponent(name)}`, {
+    method: "DELETE",
+  });
+}
+
+/** Toggle a custom tool enabled/disabled. */
+export function adminToggleCustomTool(name, enabled) {
+  return adminFetch(`/tools/custom/${encodeURIComponent(name)}/toggle`, {
+    method: "POST",
+    body: { enabled },
+  });
+}
+
+// --- Tasks ---
+
+/** List all scheduled tasks. */
+export function adminListTasks() {
+  return adminFetch("/tasks");
+}
+
+/** Create a new task (cron or one-shot). */
+export function adminCreateTask(task) {
+  return adminFetch("/tasks", { method: "POST", body: task });
+}
+
+/** Delete a task by ID. */
+export function adminDeleteTask(id) {
+  return adminFetch(`/tasks/${id}`, { method: "DELETE" });
+}
+
+/** Toggle a task enabled/disabled. */
+export function adminToggleTask(id, enabled) {
+  return adminFetch(`/tasks/${id}/toggle`, {
+    method: "POST",
+    body: { enabled },
+  });
+}
+
+// --- Channels ---
+
+/** List all channel settings. */
+export function adminListChannels() {
+  return adminFetch("/channels");
+}
+
+/** Update channel settings. Channel name must include the # prefix. */
+export function adminUpdateChannel(channel, settings) {
+  return adminFetch(`/channels/${encodeURIComponent(channel)}`, {
+    method: "PUT",
+    body: settings,
+  });
+}
+
+// --- Providers ---
+
+/** List all configured LLM providers. */
+export function adminListProviders() {
+  return adminFetch("/providers");
+}
+
+// --- System ---
+
+/** Trigger a server configuration reload. */
+export function adminReloadConfig() {
+  return adminFetch("/system/reload", { method: "POST", body: {} });
+}

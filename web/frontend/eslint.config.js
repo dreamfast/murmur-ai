@@ -22,6 +22,7 @@ export default [
       // Formatting preferences — we use Prettier-style inline attributes.
       "vue/max-attributes-per-line": "off",
       "vue/singleline-html-element-content-newline": "off",
+      "vue/multiline-html-element-content-newline": "off",
       // Allow self-closing on HTML elements (Vue convention).
       "vue/html-self-closing": "off",
     },

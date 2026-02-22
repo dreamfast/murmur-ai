@@ -25,8 +25,38 @@ const routes = [
       },
       {
         path: "admin",
-        name: "admin",
         component: () => import("../views/Admin.vue"),
+        children: [
+          {
+            path: "",
+            redirect: { name: "admin-users" },
+          },
+          {
+            path: "users",
+            name: "admin-users",
+            component: () => import("../views/admin/UsersPanel.vue"),
+          },
+          {
+            path: "tools",
+            name: "admin-tools",
+            component: () => import("../views/admin/ToolsPanel.vue"),
+          },
+          {
+            path: "tasks",
+            name: "admin-tasks",
+            component: () => import("../views/admin/TasksPanel.vue"),
+          },
+          {
+            path: "channels",
+            name: "admin-channels",
+            component: () => import("../views/admin/ChannelsPanel.vue"),
+          },
+          {
+            path: "system",
+            name: "admin-system",
+            component: () => import("../views/admin/SystemPanel.vue"),
+          },
+        ],
       },
     ],
   },

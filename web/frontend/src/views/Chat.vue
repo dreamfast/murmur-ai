@@ -72,10 +72,10 @@
 
         <!-- Admin link -->
         <router-link
-          :to="{ name: 'admin' }"
+          :to="{ name: 'admin-users' }"
           class="mt-2 flex items-center gap-2 rounded px-3 py-2 text-sm transition"
           :class="
-            $route.name === 'admin'
+            isAdminRoute
               ? 'bg-bg-hover text-text-primary'
               : 'text-text-secondary hover:bg-bg-hover hover:text-text-primary'
           "
@@ -259,6 +259,11 @@ const activeUsers = computed(() => {
     });
 });
 
+/** Whether the current route is an admin sub-route. */
+const isAdminRoute = computed(() => {
+  return route.name?.startsWith("admin");
+});
+
 /** Topic of the active channel. */
 const activeTopic = computed(() => {
   const state = chatStore.channelState[chatStore.activeChannel];
@@ -292,16 +297,10 @@ function handleJoinChannel() {
 }
 
 const pageTitle = computed(() => {
-  switch (route.name) {
-    case "overview":
-      return "Overview";
-    case "chat":
-      return chatStore.activeChannel || "#murmur";
-    case "admin":
-      return "Admin Panel";
-    default:
-      return "murmur";
-  }
+  if (route.name === "overview") return "Overview";
+  if (route.name === "chat") return chatStore.activeChannel || "#murmur";
+  if (isAdminRoute.value) return "Admin Panel";
+  return "murmur";
 });
 
 async function handleLogout() {
