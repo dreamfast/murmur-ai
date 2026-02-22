@@ -2,8 +2,11 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestTruncateOutput_Short(t *testing.T) {
@@ -165,5 +168,138 @@ func TestRunCommand_ContextCancelled(t *testing.T) {
 	_, err := RunCommand(ctx, "sleep", "10")
 	if err == nil {
 		t.Fatal("expected error for cancelled context, got nil")
+	}
+}
+
+func TestOptionalIntArg(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		args       map[string]any
+		key        string
+		defaultVal int
+		want       int
+	}{
+		{
+			name:       "float64 value",
+			args:       map[string]any{"count": float64(42)},
+			key:        "count",
+			defaultVal: 10,
+			want:       42,
+		},
+		{
+			name:       "int value",
+			args:       map[string]any{"count": 7},
+			key:        "count",
+			defaultVal: 10,
+			want:       7,
+		},
+		{
+			name:       "json.Number value",
+			args:       map[string]any{"count": json.Number("99")},
+			key:        "count",
+			defaultVal: 10,
+			want:       99,
+		},
+		{
+			name:       "json.Number invalid",
+			args:       map[string]any{"count": json.Number("abc")},
+			key:        "count",
+			defaultVal: 10,
+			want:       10,
+		},
+		{
+			name:       "missing key",
+			args:       map[string]any{},
+			key:        "count",
+			defaultVal: 5,
+			want:       5,
+		},
+		{
+			name:       "wrong type",
+			args:       map[string]any{"count": "not-a-number"},
+			key:        "count",
+			defaultVal: 5,
+			want:       5,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := OptionalIntArg(tt.args, tt.key, tt.defaultVal)
+			if got != tt.want {
+				t.Errorf("OptionalIntArg() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestNewHTTPClient_Injected(t *testing.T) {
+	t.Parallel()
+
+	injected := &http.Client{Timeout: 99 * time.Second}
+	got := NewHTTPClient(5*time.Second, injected)
+	if got != injected {
+		t.Error("NewHTTPClient should return injected client when non-nil")
+	}
+}
+
+func TestNewHTTPClient_Default(t *testing.T) {
+	t.Parallel()
+
+	got := NewHTTPClient(15*time.Second, nil)
+	if got == nil {
+		t.Fatal("NewHTTPClient should return non-nil client")
+	}
+	if got.Timeout != 15*time.Second {
+		t.Errorf("NewHTTPClient timeout = %v, want %v", got.Timeout, 15*time.Second)
+	}
+}
+
+func TestTruncateString(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		input  string
+		maxLen int
+		want   string
+	}{
+		{
+			name:   "short string unchanged",
+			input:  "hello",
+			maxLen: 10,
+			want:   "hello",
+		},
+		{
+			name:   "exact length unchanged",
+			input:  "hello",
+			maxLen: 5,
+			want:   "hello",
+		},
+		{
+			name:   "long string truncated",
+			input:  "hello world",
+			maxLen: 5,
+			want:   "hello...",
+		},
+		{
+			name:   "empty string",
+			input:  "",
+			maxLen: 10,
+			want:   "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := TruncateString(tt.input, tt.maxLen)
+			if got != tt.want {
+				t.Errorf("TruncateString(%q, %d) = %q, want %q", tt.input, tt.maxLen, got, tt.want)
+			}
+		})
 	}
 }

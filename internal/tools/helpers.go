@@ -3,8 +3,11 @@ package tools
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"os/exec"
+	"time"
 )
 
 // MaxOutputBytes is the maximum tool output size in bytes before truncation.
@@ -97,4 +100,45 @@ func RunCommand(ctx context.Context, name string, args ...string) (string, error
 	}
 
 	return output, nil
+}
+
+// OptionalIntArg extracts an optional integer argument from the args map.
+// JSON numbers are unmarshaled as float64, so this handles the conversion.
+// Returns defaultVal if the key is missing or the value is not a number.
+func OptionalIntArg(args map[string]any, key string, defaultVal int) int {
+	v, ok := args[key]
+	if !ok {
+		return defaultVal
+	}
+	switch n := v.(type) {
+	case float64:
+		return int(n)
+	case int:
+		return n
+	case json.Number:
+		i, err := n.Int64()
+		if err != nil {
+			return defaultVal
+		}
+		return int(i)
+	default:
+		return defaultVal
+	}
+}
+
+// NewHTTPClient returns the injected HTTP client if non-nil, otherwise creates
+// a new client with the given timeout.
+func NewHTTPClient(timeout time.Duration, injected *http.Client) *http.Client {
+	if injected != nil {
+		return injected
+	}
+	return &http.Client{Timeout: timeout}
+}
+
+// TruncateString truncates s to maxLen bytes, appending "..." if truncated.
+func TruncateString(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
 }

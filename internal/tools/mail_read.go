@@ -265,7 +265,7 @@ func handleMailRead(_ context.Context, args map[string]any, profilePath, fallbac
 
 	accountSelector := OptionalStringArg(args, "account", "")
 	folder := OptionalStringArg(args, "folder", "")
-	limit := optionalIntArg(args, "limit", 10)
+	limit := OptionalIntArg(args, "limit", 10)
 	if limit <= 0 {
 		limit = 10
 	}
@@ -731,28 +731,4 @@ func formatFullMessage(m mailMessage) string {
 	fmt.Fprintf(&b, "From: %s\nSubject: %s\nDate: %s\nMessage-ID: %s\n\n%s",
 		m.From, m.Subject, m.Date, m.MessageID, m.Body)
 	return TruncateOutput(b.String())
-}
-
-// optionalIntArg extracts an optional integer argument from the args map.
-// JSON numbers are unmarshaled as float64, so this handles the conversion.
-// Returns defaultVal if the key is missing or the value is not a number.
-func optionalIntArg(args map[string]any, key string, defaultVal int) int {
-	v, ok := args[key]
-	if !ok {
-		return defaultVal
-	}
-	switch n := v.(type) {
-	case float64:
-		return int(n)
-	case int:
-		return n
-	case json.Number:
-		i, err := n.Int64()
-		if err != nil {
-			return defaultVal
-		}
-		return int(i)
-	default:
-		return defaultVal
-	}
 }

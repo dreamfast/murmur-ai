@@ -98,7 +98,7 @@ func newFileOpsHandler(cfg FileOpsToolConfig) func(ctx context.Context, args map
 		case "read":
 			return fileOpsRead(ctx, resolvedPath)
 		case "list":
-			limit := optionalIntArg(args, "limit", fileOpsDefaultListLimit)
+			limit := OptionalIntArg(args, "limit", fileOpsDefaultListLimit)
 			return fileOpsList(ctx, resolvedPath, limit)
 		case "search":
 			query := OptionalStringArg(args, "query", "")

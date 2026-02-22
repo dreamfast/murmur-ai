@@ -84,10 +84,7 @@ func NewImageGenTool(cfg ImageGenToolConfig) Tool {
 
 // newImageGenHandler returns a handler function closed over the image_gen config.
 func newImageGenHandler(cfg ImageGenToolConfig) func(ctx context.Context, args map[string]any) (string, error) {
-	client := cfg.HTTPClient
-	if client == nil {
-		client = &http.Client{Timeout: 30 * time.Second}
-	}
+	client := NewHTTPClient(30*time.Second, cfg.HTTPClient)
 
 	checkpointName := cfg.CheckpointName
 	if checkpointName == "" {
@@ -101,10 +98,10 @@ func newImageGenHandler(cfg ImageGenToolConfig) func(ctx context.Context, args m
 		}
 
 		negPrompt := OptionalStringArg(args, "negative_prompt", "")
-		width := optionalIntArg(args, "width", 1024)
-		height := optionalIntArg(args, "height", 1024)
-		steps := optionalIntArg(args, "steps", 20)
-		seed := optionalIntArg(args, "seed", -1)
+		width := OptionalIntArg(args, "width", 1024)
+		height := OptionalIntArg(args, "height", 1024)
+		steps := OptionalIntArg(args, "steps", 20)
+		seed := OptionalIntArg(args, "seed", -1)
 
 		// Validate dimensions.
 		if err := validateDimensions(width, height); err != nil {

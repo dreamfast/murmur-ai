@@ -56,10 +56,7 @@ func NewRSSTool(cfg RSSToolConfig) Tool {
 
 // newRSSHandler returns a handler function closed over the RSS config.
 func newRSSHandler(cfg RSSToolConfig) func(ctx context.Context, args map[string]any) (string, error) {
-	client := cfg.HTTPClient
-	if client == nil {
-		client = &http.Client{Timeout: rssHTTPTimeout}
-	}
+	client := NewHTTPClient(rssHTTPTimeout, cfg.HTTPClient)
 
 	maxItems := cfg.MaxItems
 	if maxItems <= 0 {
@@ -81,13 +78,8 @@ func newRSSHandler(cfg RSSToolConfig) func(ctx context.Context, args map[string]
 		}
 
 		// Determine item count.
-		count := maxItems
-		if v, ok := args["count"]; ok {
-			if n, ok := v.(float64); ok && n > 0 {
-				count = int(n)
-			}
-		}
-		if count > maxItems {
+		count := OptionalIntArg(args, "count", maxItems)
+		if count <= 0 || count > maxItems {
 			count = maxItems
 		}
 

@@ -44,9 +44,7 @@ type braveSearchResult struct {
 // Brave Search API. The httpClient parameter allows injection of a custom
 // client for testing; pass nil to use a default client with a 15s timeout.
 func NewWebSearchTool(cfg WebSearchToolConfig, httpClient *http.Client) Tool {
-	if httpClient == nil {
-		httpClient = &http.Client{Timeout: defaultSearchTimeout}
-	}
+	httpClient = NewHTTPClient(defaultSearchTimeout, httpClient)
 
 	maxResults := cfg.MaxResults
 	if maxResults <= 0 {
@@ -95,7 +93,7 @@ func handleWebSearchWithURL(ctx context.Context, args map[string]any, apiKey str
 		return "", err
 	}
 
-	count := optionalIntArg(args, "count", maxResults)
+	count := OptionalIntArg(args, "count", maxResults)
 	if count <= 0 {
 		count = maxResults
 	}

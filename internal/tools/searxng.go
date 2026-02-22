@@ -44,9 +44,7 @@ type searxngResult struct {
 // self-hosted SearXNG instance. The httpClient parameter allows injection of a
 // custom client for testing; pass nil to use a default client with a 15s timeout.
 func NewSearXNGTool(cfg SearXNGToolConfig, httpClient *http.Client) Tool {
-	if httpClient == nil {
-		httpClient = &http.Client{Timeout: searxngDefaultTimeout}
-	}
+	httpClient = NewHTTPClient(searxngDefaultTimeout, httpClient)
 
 	maxResults := cfg.MaxResults
 	if maxResults <= 0 {
@@ -101,7 +99,7 @@ func handleSearXNG(ctx context.Context, args map[string]any, baseURL string, max
 		return "", err
 	}
 
-	count := optionalIntArg(args, "count", maxResults)
+	count := OptionalIntArg(args, "count", maxResults)
 	if count <= 0 {
 		count = maxResults
 	}

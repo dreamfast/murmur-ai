@@ -214,7 +214,7 @@ func whoisExpiry(ctx context.Context, domain string) (string, error) {
 	expiry := parseWhoisExpiry(output)
 	if expiry == "" {
 		return fmt.Sprintf("Whois for %s: could not parse expiry date from whois output.\n\nRaw output (first 2000 chars):\n%s",
-			domain, truncateString(output, 2000)), nil
+			domain, TruncateString(output, 2000)), nil
 	}
 
 	return fmt.Sprintf("Domain: %s\nExpiry: %s", domain, expiry), nil
@@ -235,12 +235,4 @@ func parseWhoisExpiry(output string) string {
 		}
 	}
 	return ""
-}
-
-// truncateString truncates a string to maxLen characters.
-func truncateString(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen] + "..."
 }
