@@ -140,6 +140,14 @@ docker_setup_ergo_config() {
 						"$CONFIGS_DIR/ergo.generated.yaml" >"$CONFIGS_DIR/ergo.generated.yaml.tmp" &&
 						mv "$CONFIGS_DIR/ergo.generated.yaml.tmp" "$CONFIGS_DIR/ergo.generated.yaml"
 				fi
+				# When a server password is set alongside login-via-pass-command,
+				# ergo requires skip-server-password: true so NickServ IDENTIFY
+				# via PASS still works.
+				if grep -q "skip-server-password:" "$CONFIGS_DIR/ergo.generated.yaml" 2>/dev/null; then
+					awk '/^[[:space:]]*skip-server-password:/{print "    skip-server-password: true"; next}1' \
+						"$CONFIGS_DIR/ergo.generated.yaml" >"$CONFIGS_DIR/ergo.generated.yaml.tmp" &&
+						mv "$CONFIGS_DIR/ergo.generated.yaml.tmp" "$CONFIGS_DIR/ergo.generated.yaml"
+				fi
 				success "IRC server password configured in ergo.generated.yaml"
 			else
 				warn "Could not generate bcrypt hash — set IRC server password manually in ergo.generated.yaml"

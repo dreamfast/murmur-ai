@@ -44,7 +44,7 @@ nickserv_register() {
 			sleep 5
 			printf 'QUIT :setup\r\n'
 		} | compose_cmd exec -T ircd \
-			sh -c 'timeout 15 nc localhost 6667 2>/dev/null' 2>&1)" || true
+			sh -c 'timeout -t 15 nc localhost 6667 2>/dev/null' 2>&1)" || true
 
 		# Check for success indicators
 		if [[ "$irc_output" == *"Account created"* ]] ||
