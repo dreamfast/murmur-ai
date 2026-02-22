@@ -927,11 +927,7 @@ func (s *Server) handleUserMessage(ctx context.Context, channel, nick, message s
 	// Check authorization: if AllowedUsers is configured, only listed nicks
 	// can interact. Unauthorized users are silently ignored for agent messages
 	// (commands handle their own authorization with a rejection message).
-	//
-	// TODO: Deduplicate allowlist check with commands.go — both use
-	// case-insensitive EqualFold loops. Consider extracting to a shared
-	// helper. (Low priority)
-	if users := s.loadAllowedUsers(); len(users) > 0 && !s.isAllowed(nick) {
+	if users := s.loadAllowedUsers(); len(users) > 0 && !IsNickAllowed(nick, users) {
 		// Still let commands handle authorization (they send rejection messages).
 		if strings.HasPrefix(message, "!") {
 			s.commands.HandleCommand(channel, nick, message)
@@ -1010,16 +1006,6 @@ func (s *Server) loadAllowedUsers() []string {
 		return nil
 	}
 	return *p
-}
-
-// isAllowed checks if a nick is in the allowed users list (case-insensitive).
-func (s *Server) isAllowed(nick string) bool {
-	for _, u := range s.loadAllowedUsers() {
-		if strings.EqualFold(u, nick) {
-			return true
-		}
-	}
-	return false
 }
 
 // loadCfg returns the current server config under read lock. This is used by

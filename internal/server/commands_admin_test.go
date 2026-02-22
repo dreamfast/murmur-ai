@@ -128,11 +128,11 @@ func TestCmdUser_Info(t *testing.T) {
 
 	env.handler.HandleCommand("#test", "admin", "!user info admin")
 	msg := env.lastSent()
-	if !strings.Contains(msg, "user: admin") {
-		t.Errorf("expected 'user: admin', got: %s", msg)
+	if !strings.Contains(msg, "User: admin") {
+		t.Errorf("expected 'User: admin', got: %s", msg)
 	}
-	if !strings.Contains(msg, "role: admin") {
-		t.Errorf("expected 'role: admin', got: %s", msg)
+	if !strings.Contains(msg, "Role: admin") {
+		t.Errorf("expected 'Role: admin', got: %s", msg)
 	}
 }
 
@@ -508,8 +508,8 @@ func TestCmdChannel_Info(t *testing.T) {
 
 	env.handler.HandleCommand("#test", "admin", "!channel info #general")
 	msg := env.lastSent()
-	if !strings.Contains(msg, "channel: #general") {
-		t.Errorf("expected 'channel: #general', got: %s", msg)
+	if !strings.Contains(msg, "Channel: #general") {
+		t.Errorf("expected 'Channel: #general', got: %s", msg)
 	}
 	if !strings.Contains(msg, "shell") {
 		t.Errorf("expected 'shell' in tools, got: %s", msg)
@@ -680,97 +680,5 @@ func TestCmdHelp_IncludesAdminCommands(t *testing.T) {
 	}
 	if !strings.Contains(msg, "!channel") {
 		t.Errorf("expected !channel in help, got: %s", msg)
-	}
-}
-
-func TestParseCSV(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name   string
-		input  []string
-		expect []string
-	}{
-		{
-			name:   "comma separated",
-			input:  []string{"shell,mail_read,code_exec"},
-			expect: []string{"shell", "mail_read", "code_exec"},
-		},
-		{
-			name:   "space separated",
-			input:  []string{"shell", "mail_read", "code_exec"},
-			expect: []string{"shell", "mail_read", "code_exec"},
-		},
-		{
-			name:   "mixed",
-			input:  []string{"shell,mail_read", "code_exec"},
-			expect: []string{"shell", "mail_read", "code_exec"},
-		},
-		{
-			name:   "with spaces around commas",
-			input:  []string{"shell, mail_read, code_exec"},
-			expect: []string{"shell", "mail_read", "code_exec"},
-		},
-		{
-			name:   "single value",
-			input:  []string{"*"},
-			expect: []string{"*"},
-		},
-		{
-			name:   "empty values filtered",
-			input:  []string{"shell,,mail_read"},
-			expect: []string{"shell", "mail_read"},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			got := parseCSV(tt.input)
-			if len(got) != len(tt.expect) {
-				t.Fatalf("got %v, want %v", got, tt.expect)
-			}
-			for i := range got {
-				if got[i] != tt.expect[i] {
-					t.Errorf("index %d: got %q, want %q", i, got[i], tt.expect[i])
-				}
-			}
-		})
-	}
-}
-
-func TestFormatList(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name   string
-		input  []string
-		expect string
-	}{
-		{
-			name:   "empty",
-			input:  nil,
-			expect: "(all)",
-		},
-		{
-			name:   "single",
-			input:  []string{"shell"},
-			expect: "shell",
-		},
-		{
-			name:   "multiple",
-			input:  []string{"shell", "mail_read"},
-			expect: "shell, mail_read",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			got := formatList(tt.input)
-			if got != tt.expect {
-				t.Errorf("got %q, want %q", got, tt.expect)
-			}
-		})
 	}
 }

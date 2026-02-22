@@ -173,32 +173,7 @@ func RegisterSchedulerTools(registry *ToolRegistry, scheduler *Scheduler, defaul
 				if len(taskList) == 0 {
 					return "No scheduled tasks or reminders.", nil
 				}
-				var lines []string
-				for _, t := range taskList {
-					status := "enabled"
-					if !t.Enabled {
-						status = "disabled"
-					}
-					nextRun := "N/A"
-					if t.NextRun.Valid {
-						nextRun = t.NextRun.Time.UTC().Format("2006-01-02 15:04 UTC")
-					}
-					typeLabel := "cron"
-					schedInfo := t.Schedule
-					if t.Type == TaskTypeOnce {
-						typeLabel = "once"
-						if t.RunAt.Valid {
-							schedInfo = "at " + t.RunAt.Time.UTC().Format("2006-01-02 15:04 UTC")
-						}
-					}
-					creator := ""
-					if t.CreatedBy != "" {
-						creator = ", by:" + t.CreatedBy
-					}
-					lines = append(lines, fmt.Sprintf("  #%d [%s] [%s] %s — %q (next: %s%s)",
-						t.ID, typeLabel, status, schedInfo, t.Name, nextRun, creator))
-				}
-				return "Scheduled tasks:\n" + strings.Join(lines, "\n"), nil
+				return "Scheduled tasks:\n" + FormatTaskList(taskList), nil
 			},
 		},
 		{

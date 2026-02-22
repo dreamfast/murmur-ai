@@ -2,7 +2,6 @@ package server
 
 import (
 	"fmt"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -116,24 +115,7 @@ func (h *CommandHandler) cmdUserList(channel string) {
 		h.send(channel, "no users configured")
 		return
 	}
-
-	// Sort nicks for deterministic output.
-	nicks := make([]string, 0, len(cfg.Users))
-	for nick := range cfg.Users {
-		nicks = append(nicks, nick)
-	}
-	sort.Strings(nicks)
-
-	var lines []string
-	for _, nick := range nicks {
-		u := cfg.Users[nick]
-		role := u.Role
-		if role == "" {
-			role = "user"
-		}
-		lines = append(lines, fmt.Sprintf("  %s [%s]", nick, role))
-	}
-	h.send(channel, "users:\n"+strings.Join(lines, "\n"))
+	h.send(channel, "users:\n"+FormatUserList(cfg.Users))
 }
 
 // cmdUserInfo shows detailed permissions for a user.
@@ -154,35 +136,7 @@ func (h *CommandHandler) cmdUserInfo(channel, target string) {
 		return
 	}
 
-	role := user.Role
-	if role == "" {
-		role = "user"
-	}
-	autonomy := user.Autonomy
-	if autonomy == "" {
-		autonomy = "(default)"
-	}
-
-	var parts []string
-	parts = append(parts, fmt.Sprintf("user: %s", target))
-	parts = append(parts, fmt.Sprintf("  role: %s", role))
-	parts = append(parts, fmt.Sprintf("  tools: %s", formatList(user.Tools)))
-	if len(user.DenyTools) > 0 {
-		parts = append(parts, fmt.Sprintf("  deny_tools: %s", formatList(user.DenyTools)))
-	}
-	parts = append(parts, fmt.Sprintf("  autonomy: %s", autonomy))
-	parts = append(parts, fmt.Sprintf("  models: %s", formatList(user.AllowedModels)))
-	if len(user.DenyModels) > 0 {
-		parts = append(parts, fmt.Sprintf("  deny_models: %s", formatList(user.DenyModels)))
-	}
-	if user.MaxMessagesPerHour != 0 {
-		parts = append(parts, fmt.Sprintf("  ratelimit: %d/hr", user.MaxMessagesPerHour))
-	}
-	if user.APIKey != "" {
-		parts = append(parts, "  api_key: (set)")
-	}
-
-	h.send(channel, strings.Join(parts, "\n"))
+	h.send(channel, FormatUserPermissions(target, user))
 }
 
 // cmdUserAdd adds a new user with the given role.
@@ -259,13 +213,13 @@ func (h *CommandHandler) cmdUserSet(channel, target, field string, values []stri
 	case "role":
 		user.Role = values[0]
 	case "tools":
-		user.Tools = parseCSV(values)
+		user.Tools = ParseCSV(values)
 	case "deny":
-		user.DenyTools = parseCSV(values)
+		user.DenyTools = ParseCSV(values)
 	case "autonomy":
 		user.Autonomy = values[0]
 	case "model":
-		user.AllowedModels = parseCSV(values)
+		user.AllowedModels = ParseCSV(values)
 	case "ratelimit":
 		n, err := strconv.Atoi(values[0])
 		if err != nil {
@@ -294,23 +248,7 @@ func (h *CommandHandler) cmdChannelList(channel string) {
 		h.send(channel, "no channels configured")
 		return
 	}
-
-	channels := make([]string, 0, len(cfg.Channels))
-	for ch := range cfg.Channels {
-		channels = append(channels, ch)
-	}
-	sort.Strings(channels)
-
-	var lines []string
-	for _, ch := range channels {
-		cp := cfg.Channels[ch]
-		autonomy := cp.Autonomy
-		if autonomy == "" {
-			autonomy = "(default)"
-		}
-		lines = append(lines, fmt.Sprintf("  %s [autonomy: %s]", ch, autonomy))
-	}
-	h.send(channel, "channels:\n"+strings.Join(lines, "\n"))
+	h.send(channel, "channels:\n"+FormatChannelList(cfg.Channels))
 }
 
 // cmdChannelInfo shows detailed permissions for a channel.
@@ -331,22 +269,7 @@ func (h *CommandHandler) cmdChannelInfo(channel, target string) {
 		return
 	}
 
-	ch := cfg.Channels[target]
-	autonomy := ch.Autonomy
-	if autonomy == "" {
-		autonomy = "(default)"
-	}
-
-	var parts []string
-	parts = append(parts, fmt.Sprintf("channel: %s", target))
-	parts = append(parts, fmt.Sprintf("  tools: %s", formatList(ch.Tools)))
-	if len(ch.DenyTools) > 0 {
-		parts = append(parts, fmt.Sprintf("  deny_tools: %s", formatList(ch.DenyTools)))
-	}
-	parts = append(parts, fmt.Sprintf("  autonomy: %s", autonomy))
-	parts = append(parts, fmt.Sprintf("  models: %s", formatList(ch.AllowedModels)))
-
-	h.send(channel, strings.Join(parts, "\n"))
+	h.send(channel, FormatChannelPermissions(target, cfg.Channels[target]))
 }
 
 // cmdChannelSet modifies a single field on a channel.
@@ -371,13 +294,13 @@ func (h *CommandHandler) cmdChannelSet(channel, target, field string, values []s
 
 	switch field {
 	case "tools":
-		ch.Tools = parseCSV(values)
+		ch.Tools = ParseCSV(values)
 	case "deny":
-		ch.DenyTools = parseCSV(values)
+		ch.DenyTools = ParseCSV(values)
 	case "autonomy":
 		ch.Autonomy = values[0]
 	case "model":
-		ch.AllowedModels = parseCSV(values)
+		ch.AllowedModels = ParseCSV(values)
 	default:
 		h.send(channel, fmt.Sprintf("unknown field %q (use tools, deny, autonomy, model)", field))
 		return
@@ -402,28 +325,4 @@ func (h *CommandHandler) reloadPermissions(channel string) {
 		h.logger.Error("failed to reload after permissions change", "error", err)
 		h.send(channel, fmt.Sprintf("warning: change saved but reload failed: %v", err))
 	}
-}
-
-// formatList formats a string slice for display. Returns "(all)" for empty
-// lists (which means "no restriction") and joins non-empty lists with ", ".
-func formatList(items []string) string {
-	if len(items) == 0 {
-		return "(all)"
-	}
-	return strings.Join(items, ", ")
-}
-
-// parseCSV splits comma-separated or space-separated values into a list.
-// Handles both "shell,mail_read" and "shell mail_read" formats.
-func parseCSV(values []string) []string {
-	var result []string
-	for _, v := range values {
-		for _, item := range strings.Split(v, ",") {
-			item = strings.TrimSpace(item)
-			if item != "" {
-				result = append(result, item)
-			}
-		}
-	}
-	return result
 }

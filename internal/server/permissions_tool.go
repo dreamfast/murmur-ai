@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -133,24 +132,7 @@ func permListUsers(pm *PermissionManager) (string, error) {
 	if len(cfg.Users) == 0 {
 		return "No users configured.", nil
 	}
-
-	nicks := make([]string, 0, len(cfg.Users))
-	for nick := range cfg.Users {
-		nicks = append(nicks, nick)
-	}
-	sort.Strings(nicks)
-
-	var sb strings.Builder
-	sb.WriteString("Users:\n")
-	for _, nick := range nicks {
-		u := cfg.Users[nick]
-		role := u.Role
-		if role == "" {
-			role = "user"
-		}
-		fmt.Fprintf(&sb, "  %s [%s]\n", nick, role)
-	}
-	return sb.String(), nil
+	return "Users:\n" + FormatUserList(cfg.Users) + "\n", nil
 }
 
 // permGetUser returns detailed information about a user.
@@ -175,34 +157,7 @@ func permGetUser(args map[string]any, pm *PermissionManager) (string, error) {
 		return fmt.Sprintf("User %q not found (using default permissions).", target), nil
 	}
 
-	role := user.Role
-	if role == "" {
-		role = "user"
-	}
-	autonomy := user.Autonomy
-	if autonomy == "" {
-		autonomy = "(default)"
-	}
-
-	var sb strings.Builder
-	fmt.Fprintf(&sb, "User: %s\n", target)
-	fmt.Fprintf(&sb, "  Role: %s\n", role)
-	fmt.Fprintf(&sb, "  Tools: %s\n", formatList(user.Tools))
-	if len(user.DenyTools) > 0 {
-		fmt.Fprintf(&sb, "  Deny tools: %s\n", formatList(user.DenyTools))
-	}
-	fmt.Fprintf(&sb, "  Autonomy: %s\n", autonomy)
-	fmt.Fprintf(&sb, "  Models: %s\n", formatList(user.AllowedModels))
-	if len(user.DenyModels) > 0 {
-		fmt.Fprintf(&sb, "  Deny models: %s\n", formatList(user.DenyModels))
-	}
-	if user.MaxMessagesPerHour != 0 {
-		fmt.Fprintf(&sb, "  Rate limit: %d/hr\n", user.MaxMessagesPerHour)
-	}
-	if user.APIKey != "" {
-		sb.WriteString("  API key: (set)\n")
-	}
-	return sb.String(), nil
+	return FormatUserPermissions(target, user) + "\n", nil
 }
 
 // permAddUser adds a new user with the given role.
@@ -281,16 +236,16 @@ func permSetUserField(args map[string]any, pw *PermissionsWriter, pm *Permission
 		}
 		user.Role = value
 	case "tools":
-		user.Tools = splitCSV(value)
+		user.Tools = SplitCSV(value)
 	case "deny":
-		user.DenyTools = splitCSV(value)
+		user.DenyTools = SplitCSV(value)
 	case "autonomy":
 		if value == "" {
 			return "Value is required for autonomy.", nil
 		}
 		user.Autonomy = value
 	case "model":
-		user.AllowedModels = splitCSV(value)
+		user.AllowedModels = SplitCSV(value)
 	case "ratelimit":
 		if value == "" {
 			return "Value is required for ratelimit.", nil
@@ -318,24 +273,7 @@ func permListChannels(pm *PermissionManager) (string, error) {
 	if len(cfg.Channels) == 0 {
 		return "No channels configured.", nil
 	}
-
-	channels := make([]string, 0, len(cfg.Channels))
-	for ch := range cfg.Channels {
-		channels = append(channels, ch)
-	}
-	sort.Strings(channels)
-
-	var sb strings.Builder
-	sb.WriteString("Channels:\n")
-	for _, ch := range channels {
-		cp := cfg.Channels[ch]
-		autonomy := cp.Autonomy
-		if autonomy == "" {
-			autonomy = "(default)"
-		}
-		fmt.Fprintf(&sb, "  %s [autonomy: %s]\n", ch, autonomy)
-	}
-	return sb.String(), nil
+	return "Channels:\n" + FormatChannelList(cfg.Channels) + "\n", nil
 }
 
 // permGetChannel returns detailed information about a channel.
@@ -361,21 +299,7 @@ func permGetChannel(args map[string]any, pm *PermissionManager) (string, error) 
 		return fmt.Sprintf("Channel %q not configured.", target), nil
 	}
 
-	ch := cfg.Channels[canonicalTarget]
-	autonomy := ch.Autonomy
-	if autonomy == "" {
-		autonomy = "(default)"
-	}
-
-	var sb strings.Builder
-	fmt.Fprintf(&sb, "Channel: %s\n", canonicalTarget)
-	fmt.Fprintf(&sb, "  Tools: %s\n", formatList(ch.Tools))
-	if len(ch.DenyTools) > 0 {
-		fmt.Fprintf(&sb, "  Deny tools: %s\n", formatList(ch.DenyTools))
-	}
-	fmt.Fprintf(&sb, "  Autonomy: %s\n", autonomy)
-	fmt.Fprintf(&sb, "  Models: %s\n", formatList(ch.AllowedModels))
-	return sb.String(), nil
+	return FormatChannelPermissions(canonicalTarget, cfg.Channels[canonicalTarget]) + "\n", nil
 }
 
 // permSetChannelField modifies a single field on a channel.
@@ -401,16 +325,16 @@ func permSetChannelField(args map[string]any, pw *PermissionsWriter, pm *Permiss
 
 	switch field {
 	case "tools":
-		ch.Tools = splitCSV(value)
+		ch.Tools = SplitCSV(value)
 	case "deny":
-		ch.DenyTools = splitCSV(value)
+		ch.DenyTools = SplitCSV(value)
 	case "autonomy":
 		if value == "" {
 			return "Value is required for autonomy.", nil
 		}
 		ch.Autonomy = value
 	case "model":
-		ch.AllowedModels = splitCSV(value)
+		ch.AllowedModels = SplitCSV(value)
 	}
 
 	if err := pw.WriteChannel(canonicalTarget, ch); err != nil {
@@ -434,20 +358,4 @@ func reloadPermissions(reloader Reloader, logger *slog.Logger) error {
 		return err
 	}
 	return nil
-}
-
-// splitCSV splits a comma-separated string into a list of trimmed, non-empty
-// values. Returns nil for empty input.
-func splitCSV(s string) []string {
-	if s == "" {
-		return nil
-	}
-	var result []string
-	for _, item := range strings.Split(s, ",") {
-		item = strings.TrimSpace(item)
-		if item != "" {
-			result = append(result, item)
-		}
-	}
-	return result
 }

@@ -671,38 +671,6 @@ func TestPermissionsManage_RegisterTool_Duplicate(t *testing.T) {
 	}
 }
 
-func TestSplitCSV(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name  string
-		input string
-		want  []string
-	}{
-		{"empty", "", nil},
-		{"single", "shell", []string{"shell"}},
-		{"comma_separated", "shell,mail_read", []string{"shell", "mail_read"}},
-		{"with_spaces", "shell, mail_read, note_*", []string{"shell", "mail_read", "note_*"}},
-		{"trailing_comma", "shell,", []string{"shell"}},
-		{"only_commas", ",,,", nil},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			got := splitCSV(tt.input)
-			if len(got) != len(tt.want) {
-				t.Fatalf("splitCSV(%q) = %v, want %v", tt.input, got, tt.want)
-			}
-			for i := range got {
-				if got[i] != tt.want[i] {
-					t.Errorf("splitCSV(%q)[%d] = %q, want %q", tt.input, i, got[i], tt.want[i])
-				}
-			}
-		})
-	}
-}
-
 func TestPermissionsManage_SetUserRole_EmptyValue(t *testing.T) {
 	t.Parallel()
 	env := newTestPermToolEnv(t)

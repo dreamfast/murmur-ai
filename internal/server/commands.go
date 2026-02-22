@@ -136,7 +136,7 @@ func (h *CommandHandler) HandleCommand(channel, nick, message string) bool {
 	}
 
 	// Check authorization.
-	if users := h.loadAllowedUsers(); len(users) > 0 && !h.isAllowed(nick) {
+	if users := h.loadAllowedUsers(); len(users) > 0 && !IsNickAllowed(nick, users) {
 		h.send(channel, "unauthorized: you are not in the allowed users list")
 		return true
 	}
@@ -441,32 +441,7 @@ func (h *CommandHandler) cmdTasks(channel string) {
 		return
 	}
 
-	var lines []string
-	for _, t := range tasks {
-		status := "enabled"
-		if !t.Enabled {
-			status = "disabled"
-		}
-		nextRun := "—"
-		if t.NextRun.Valid {
-			nextRun = t.NextRun.Time.UTC().Format("2006-01-02 15:04 UTC")
-		}
-		typeLabel := "cron"
-		schedInfo := t.Schedule
-		if t.Type == TaskTypeOnce {
-			typeLabel = "once"
-			if t.RunAt.Valid {
-				schedInfo = "at " + t.RunAt.Time.UTC().Format("2006-01-02 15:04 UTC")
-			}
-		}
-		creator := ""
-		if t.CreatedBy != "" {
-			creator = " by:" + t.CreatedBy
-		}
-		lines = append(lines, fmt.Sprintf("  #%d [%s] %s [%s] %s — next: %s — %s%s",
-			t.ID, typeLabel, t.Name, schedInfo, t.Channel, nextRun, status, creator))
-	}
-	h.send(channel, "scheduled tasks:\n"+strings.Join(lines, "\n"))
+	h.send(channel, "scheduled tasks:\n"+FormatTaskList(tasks))
 }
 
 func (h *CommandHandler) cmdTask(channel, nick string, args []string) {
@@ -718,13 +693,4 @@ func (h *CommandHandler) loadAllowedUsers() []string {
 // called during hot config reload.
 func (h *CommandHandler) UpdateAllowedUsers(users []string) {
 	h.allowedUsers.Store(&users)
-}
-
-func (h *CommandHandler) isAllowed(nick string) bool {
-	for _, u := range h.loadAllowedUsers() {
-		if strings.EqualFold(u, nick) {
-			return true
-		}
-	}
-	return false
 }

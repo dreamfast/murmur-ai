@@ -986,8 +986,8 @@ func TestTaskCommands_ListShowsCreatedBy(t *testing.T) {
 	if len(sent) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(sent))
 	}
-	if !strings.Contains(sent[0], "by:alice") {
-		t.Errorf("expected 'by:alice' in output, got: %s", sent[0])
+	if !strings.Contains(sent[0], "by: alice") {
+		t.Errorf("expected 'by: alice' in output, got: %s", sent[0])
 	}
 }
 
