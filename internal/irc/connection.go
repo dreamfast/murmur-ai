@@ -221,8 +221,11 @@ func NewConnection(cfg config.IRCConfig, channels []string, logger *slog.Logger)
 		logger.Error("OPER authentication failed: no oper host match")
 	})
 
-	// Route incoming PRIVMSG to registered handlers.
-	client.Handlers.Add(girc.PRIVMSG, func(_ *girc.Client, e girc.Event) {
+	// Route incoming PRIVMSG to registered handlers. Must use AddBg so the
+	// handler runs in a background goroutine — the message handler may call
+	// Whois() which blocks waiting for numeric replies that are dispatched
+	// on the same event loop. Running synchronously would deadlock.
+	client.Handlers.AddBg(girc.PRIVMSG, func(_ *girc.Client, e girc.Event) {
 		if len(e.Params) == 0 || e.Source == nil {
 			return
 		}

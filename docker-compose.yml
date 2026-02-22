@@ -5,7 +5,7 @@ services:
       - "6667:6667"       # plaintext -- for your IRC client to connect
       - "6697:6697"       # TLS (self-signed cert auto-generated)
     volumes:
-      - ./configs/ergo.yaml:/ircd/ircd.yaml:ro
+      - ./configs/ergo.generated.yaml:/ircd/ircd.yaml:ro
       - ./configs/ergo.motd:/ircd/ergo.motd:ro
       - ircd-data:/ircd/db
     restart: unless-stopped
