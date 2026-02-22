@@ -4,7 +4,8 @@
 # Sourced by setup.sh; do not execute directly.
 # Requires: common.sh (for toml_escape, toml_key, DEFAULT_DATA_DIR)
 # Expects from caller: INSTALL_MODE, IRC_SERVER_PASS, IRC_SERVER_PASS_TOML,
-#   LLM_PROVIDER_ID, LLM_API_BASE, LLM_MODEL, ADMIN_NICK_TOML, ADMIN_NICK_KEY,
+#   LLM_PROVIDER_ID, LLM_API_BASE, LLM_MODEL, LLM_USER_AGENT, LLM_REASONING,
+#   ADMIN_NICK_TOML, ADMIN_NICK_KEY,
 #   BUS_KEY, VAULT_PASS, DASHBOARD_ENABLED, DASHBOARD_PORT, SEARCH_PROVIDER,
 #   TOOL_SHELL, TOOL_CODE_EXEC, TOOL_RSS, TOOL_DNS, TOOL_HTTP,
 #   TOOL_IRC_MANAGE, TOOL_CONFIG_MANAGE, TOOL_SYSTEMINFO, TOOL_SEARXNG,
@@ -93,6 +94,21 @@ api_key = "vault:llm-api-key"
 model = "$(toml_escape "$LLM_MODEL")"
 max_tokens = 8192
 temperature = 0.7
+TOML
+
+	# Provider-specific fields (user_agent, reasoning)
+	if [[ -n "${LLM_USER_AGENT:-}" ]]; then
+		cat <<TOML
+user_agent = "$(toml_escape "$LLM_USER_AGENT")"
+TOML
+	fi
+	if [[ "${LLM_REASONING:-false}" == "true" ]]; then
+		cat <<TOML
+reasoning = true
+TOML
+	fi
+
+	cat <<TOML
 
 [memory]
 db_path = "$memory_db_path"

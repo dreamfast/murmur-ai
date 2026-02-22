@@ -391,7 +391,9 @@ step 3 "LLM Provider"
 info "Murmur needs an LLM provider for its AI agent. Pick one (or add more later)."
 
 LLM_PROVIDER=""
-ask_choice LLM_PROVIDER "Select your LLM provider" "OpenRouter|OpenAI|Ollama|Custom" "OpenRouter"
+LLM_USER_AGENT=""
+LLM_REASONING="false"
+ask_choice LLM_PROVIDER "Select your LLM provider" "OpenRouter|OpenAI|Kimi|Ollama|Custom" "OpenRouter"
 
 case "$LLM_PROVIDER" in
 OpenRouter)
@@ -403,6 +405,14 @@ OpenAI)
 	LLM_API_BASE="https://api.openai.com/v1"
 	LLM_DEFAULT_MODEL="gpt-4.1"
 	LLM_PROVIDER_ID="openai"
+	;;
+Kimi)
+	LLM_API_BASE="https://api.kimi.com/coding/v1"
+	LLM_DEFAULT_MODEL="kimi-k2-0711-preview"
+	LLM_PROVIDER_ID="kimi"
+	# Kimi's coding API requires a User-Agent header for access.
+	LLM_USER_AGENT="claude-code/1.0"
+	LLM_REASONING="true"
 	;;
 Ollama)
 	LLM_API_BASE=""

@@ -38,11 +38,13 @@ temperature = 0.7
 # temperature = 0.7
 
 # [llm.providers.kimi]
-# api_base = "https://api.moonshot.cn/v1"
+# api_base = "https://api.kimi.com/coding/v1"
 # api_key = "vault:kimi-key"
-# model = "moonshot-v1-128k"
+# model = "kimi-k2-0711-preview"
 # max_tokens = 8192
 # temperature = 0.7
+# user_agent = "claude-code/1.0"
+# reasoning = true
 
 # [llm.providers.ollama]
 # api_base = "http://localhost:11434/v1"
