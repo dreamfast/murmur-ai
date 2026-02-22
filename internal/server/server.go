@@ -335,6 +335,7 @@ func New(cfg *config.ServerConfig, configPath string, logger *slog.Logger) (*Ser
 	// Create the agent (may have zero providers — commands still work).
 	agent := NewAgent(AgentParams{
 		Providers:           providers,
+		ProviderFallbacks:   buildProviderFallbacks(cfg),
 		DefaultProvider:     cfg.LLM.Default,
 		ServerTools:         serverTools,
 		Registry:            registry,
@@ -684,6 +685,19 @@ func (s *Server) Run(ctx context.Context) error {
 // restarting. It resolves vault references, rebuilds LLM providers, and
 // updates the agent, command handler, and memory with new values.
 //
+// buildProviderFallbacks extracts the fallback chains from the config into
+// a map keyed by provider name. Only providers with non-empty Fallbacks are
+// included.
+func buildProviderFallbacks(cfg *config.ServerConfig) map[string][]string {
+	fallbacks := make(map[string][]string)
+	for name, provCfg := range cfg.LLM.Providers {
+		if len(provCfg.Fallbacks) > 0 {
+			fallbacks[name] = provCfg.Fallbacks
+		}
+	}
+	return fallbacks
+}
+
 // Safe to reload: LLM providers, allowed_users, verbose, system_prompt,
 // max_history, cross_channel_context, approval_timeout, summary_threshold,
 // debug channel toggle.
@@ -824,7 +838,7 @@ func (s *Server) Reload() error {
 	}
 
 	// Apply changes atomically to each component.
-	s.agent.UpdateProviders(providers, cfg.LLM.Default)
+	s.agent.UpdateProviders(providers, cfg.LLM.Default, buildProviderFallbacks(cfg))
 	s.agent.UpdateConfig(cfg.Server.Verbose, cfg.Memory.MaxHistory, cfg.Memory.CrossChannelContext, approvalTimeout, systemPrompt, cfg.Debug)
 	s.commands.UpdateAllowedUsers(cfg.Security.AllowedUsers)
 	s.allowedUsers.Store(&cfg.Security.AllowedUsers)

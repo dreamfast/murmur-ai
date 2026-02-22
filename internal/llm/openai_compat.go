@@ -15,11 +15,44 @@ import (
 	"murmur/internal/config"
 )
 
-// errPermanent wraps errors that should not be retried (4xx responses).
+// errPermanent wraps errors that should not be retried (4xx responses
+// other than 429).
 type errPermanent struct{ err error }
 
 func (e *errPermanent) Error() string { return e.err.Error() }
 func (e *errPermanent) Unwrap() error { return e.err }
+
+// errRateLimited wraps 429 Too Many Requests errors. These are distinct
+// from other 4xx errors because they are retryable via provider failover.
+type errRateLimited struct{ err error }
+
+func (e *errRateLimited) Error() string { return e.err.Error() }
+func (e *errRateLimited) Unwrap() error { return e.err }
+
+// IsPermanent reports whether err is a permanent (non-retryable) error,
+// typically a 4xx HTTP response other than 429.
+func IsPermanent(err error) bool {
+	var perm *errPermanent
+	return errors.As(err, &perm)
+}
+
+// IsRateLimited reports whether err is a 429 rate limit error.
+func IsRateLimited(err error) bool {
+	var rl *errRateLimited
+	return errors.As(err, &rl)
+}
+
+// NewPermanentError wraps err as a permanent (non-retryable) error.
+// This is primarily useful for testing failover logic from other packages.
+func NewPermanentError(err error) error {
+	return &errPermanent{err: err}
+}
+
+// NewRateLimitedError wraps err as a rate-limited (429) error.
+// This is primarily useful for testing failover logic from other packages.
+func NewRateLimitedError(err error) error {
+	return &errRateLimited{err: err}
+}
 
 // OpenAICompatProvider implements Provider using the OpenAI-compatible
 // /v1/chat/completions endpoint. It works with OpenRouter, Kimi, GLM,
@@ -165,9 +198,15 @@ func (p *OpenAICompatProvider) ChatCompletion(ctx context.Context, req *ChatRequ
 			if ctx.Err() != nil {
 				return nil, fmt.Errorf("ChatCompletion: context cancelled: %w", ctx.Err())
 			}
-			// Permanent errors (4xx) — don't retry.
+			// Permanent errors (4xx except 429) — don't retry.
 			var perm *errPermanent
 			if errors.As(err, &perm) {
+				return nil, err
+			}
+			// Rate limited (429) — don't retry within same provider,
+			// let the caller handle failover to another provider.
+			var rl *errRateLimited
+			if errors.As(err, &rl) {
 				return nil, err
 			}
 			// Retryable errors (5xx, network) — retry with backoff.
@@ -223,7 +262,16 @@ func (p *OpenAICompatProvider) doRequest(ctx context.Context, url string, payloa
 		return nil, fmt.Errorf("doRequest: server error %d: %s", httpResp.StatusCode, truncate(string(respBody), 200))
 	}
 
-	// 4xx errors are not retried — wrap as permanent.
+	// 429 Too Many Requests — retryable via failover, distinct from permanent 4xx.
+	if httpResp.StatusCode == http.StatusTooManyRequests {
+		var apiResp openAIResponse
+		if jsonErr := json.Unmarshal(respBody, &apiResp); jsonErr == nil && apiResp.Error != nil {
+			return nil, &errRateLimited{fmt.Errorf("doRequest: rate limited (429): %s", apiResp.Error.Message)}
+		}
+		return nil, &errRateLimited{fmt.Errorf("doRequest: rate limited (429): %s", truncate(string(respBody), 200))}
+	}
+
+	// Other 4xx errors are not retried — wrap as permanent.
 	if httpResp.StatusCode >= 400 {
 		var apiResp openAIResponse
 		if jsonErr := json.Unmarshal(respBody, &apiResp); jsonErr == nil && apiResp.Error != nil {

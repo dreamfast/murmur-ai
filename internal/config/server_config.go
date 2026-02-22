@@ -140,6 +140,10 @@ type LLMProviderConfig struct {
 	// (even if empty) when sent back. When false, reasoning_content is
 	// stripped from outgoing messages. Required for Kimi's thinking mode.
 	Reasoning bool `toml:"reasoning"`
+	// Fallbacks is an ordered list of provider names to try when this provider
+	// fails with a retryable error (5xx or 429 rate limit). Each name must
+	// reference another entry in llm.providers.
+	Fallbacks []string `toml:"fallbacks"`
 }
 
 // MemoryConfig holds conversation memory settings.
@@ -463,6 +467,24 @@ func (c *ServerConfig) Validate() error {
 	if c.LLM.Default != "" && len(c.LLM.Providers) > 0 {
 		if _, ok := c.LLM.Providers[c.LLM.Default]; !ok {
 			return fmt.Errorf("llm.default %q not found in llm.providers", c.LLM.Default)
+		}
+	}
+
+	// Validate fallback references: each fallback name must exist in providers,
+	// must not reference itself, and must not contain duplicates.
+	for name, prov := range c.LLM.Providers {
+		seen := make(map[string]bool, len(prov.Fallbacks))
+		for _, fb := range prov.Fallbacks {
+			if _, ok := c.LLM.Providers[fb]; !ok {
+				return fmt.Errorf("llm.providers.%s.fallbacks: %q not found in llm.providers", name, fb)
+			}
+			if fb == name {
+				return fmt.Errorf("llm.providers.%s.fallbacks: provider cannot list itself as a fallback", name)
+			}
+			if seen[fb] {
+				return fmt.Errorf("llm.providers.%s.fallbacks: duplicate fallback %q", name, fb)
+			}
+			seen[fb] = true
 		}
 	}
 

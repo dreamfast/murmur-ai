@@ -81,7 +81,8 @@ type agentConfig struct {
 // multiple LLM calls and tool invocations before producing a final text response.
 type Agent struct {
 	providers atomic.Pointer[map[string]llm.Provider]
-	mu        sync.RWMutex // protects cfg (agentConfig fields)
+	fallbacks atomic.Pointer[map[string][]string] // provider name -> ordered fallback names
+	mu        sync.RWMutex                        // protects cfg (agentConfig fields)
 	cfg       agentConfig
 
 	serverTools     *ToolRegistry
@@ -128,6 +129,9 @@ type AgentParams struct {
 	// Providers is the map of named LLM providers. May be empty (commands
 	// still work, but HandleMessage returns errors).
 	Providers map[string]llm.Provider
+	// ProviderFallbacks maps each provider name to its ordered list of
+	// fallback provider names. Used for failover on 5xx/429 errors.
+	ProviderFallbacks map[string][]string
 	// DefaultProvider is the name of the global default provider. Must exist
 	// in Providers if Providers is non-empty.
 	DefaultProvider string
@@ -207,6 +211,11 @@ func NewAgent(p AgentParams) *Agent {
 	}
 	providers := p.Providers
 	a.providers.Store(&providers)
+	fallbacks := p.ProviderFallbacks
+	if fallbacks == nil {
+		fallbacks = make(map[string][]string)
+	}
+	a.fallbacks.Store(&fallbacks)
 	return a
 }
 
@@ -215,19 +224,70 @@ func (a *Agent) loadProviders() map[string]llm.Provider {
 	return *a.providers.Load()
 }
 
-// UpdateProviders atomically replaces the providers map and updates the
-// default provider name. This is called during hot config reload to swap
+// loadFallbacks returns the current fallbacks map from the atomic pointer.
+func (a *Agent) loadFallbacks() map[string][]string {
+	return *a.fallbacks.Load()
+}
+
+// getProviderChain returns an ordered list of providers to try for a request.
+// The primary provider is first, followed by its configured fallbacks (if any).
+// Providers not found in the map or not allowed for the user are skipped.
+func (a *Agent) getProviderChain(primary llm.Provider, nick, channel string, pm *PermissionManager) []llm.Provider {
+	chain := []llm.Provider{primary}
+	providers := a.loadProviders()
+	fallbacks := a.loadFallbacks()
+
+	fbNames, ok := fallbacks[primary.Name()]
+	if !ok || len(fbNames) == 0 {
+		return chain
+	}
+
+	allToolNames := a.getAllToolNames()
+	allModelNames := a.GetProviderNames()
+
+	for _, name := range fbNames {
+		p, exists := providers[name]
+		if !exists {
+			a.logger.Warn("fallback provider not found, skipping",
+				"primary", primary.Name(),
+				"fallback", name,
+			)
+			continue
+		}
+		// Check model permissions if applicable.
+		if pm != nil && nick != "" && !strings.HasPrefix(nick, "_") {
+			if !pm.IsModelAllowed(nick, channel, name, allToolNames, allModelNames) {
+				a.logger.Debug("fallback provider not allowed for user, skipping",
+					"primary", primary.Name(),
+					"fallback", name,
+					"nick", nick,
+					"channel", channel,
+				)
+				continue
+			}
+		}
+		chain = append(chain, p)
+	}
+	return chain
+}
+
+// UpdateProviders atomically replaces the providers map, fallback chains,
+// and default provider name. This is called during hot config reload to swap
 // in a new set of LLM providers without restarting. The activeProvider is
-// updated under mu (write lock) BEFORE the providers map is stored via
-// atomic pointer. This ordering ensures that getActiveProvider() never
-// sees a new providers map with a stale activeProvider name — the worst
-// case is briefly seeing the new activeProvider with the old map, which
-// safely falls back to "provider not found" (a transient, retryable error).
-func (a *Agent) UpdateProviders(providers map[string]llm.Provider, defaultName string) {
+// updated under the mutex, while the providers map and fallbacks are swapped
+// atomically. There is a brief window where a concurrent goroutine in
+// runLoop() sees a new providers map with stale fallbacks (or vice versa) —
+// the worst case is a fallback name not resolving, which is handled
+// gracefully by skipping the missing provider.
+func (a *Agent) UpdateProviders(providers map[string]llm.Provider, defaultName string, fallbacks map[string][]string) {
 	a.mu.Lock()
 	a.cfg.activeProvider = defaultName
 	a.mu.Unlock()
 	a.providers.Store(&providers)
+	if fallbacks == nil {
+		fallbacks = make(map[string][]string)
+	}
+	a.fallbacks.Store(&fallbacks)
 }
 
 // SetPermissions replaces the agent's permission manager. This is safe for
@@ -531,32 +591,65 @@ func (a *Agent) runLoop(ctx context.Context, memoryChannel, ircChannel, nick str
 
 		tools := llm.ConvertBusTools(busTools)
 
-		// Get the provider for this channel (per-channel override or global default).
+		// Get the primary provider for this channel (per-channel override or global default).
 		// Use ircChannel for provider resolution (real channel context).
-		provider, err := a.resolveProvider(ircChannel, nick, pm)
+		primaryProvider, err := a.resolveProvider(ircChannel, nick, pm)
 		if err != nil {
 			a.logger.Error("no active provider", "error", err, "channel", ircChannel)
 			a.send(ircChannel, "error: no LLM provider available")
 			return
 		}
 
+		// Build the provider chain: primary + configured fallbacks.
+		providerChain := a.getProviderChain(primaryProvider, nick, ircChannel, pm)
+
 		if i == 0 {
-			a.status(ircChannel, cfg.verbose, fmt.Sprintf("thinking... [%s, %d tools]", provider.Name(), len(tools)))
+			a.status(ircChannel, cfg.verbose, fmt.Sprintf("thinking... [%s, %d tools]", primaryProvider.Name(), len(tools)))
 		} else {
-			a.status(ircChannel, cfg.verbose, fmt.Sprintf("thinking... [%s, iteration %d]", provider.Name(), i+1))
+			a.status(ircChannel, cfg.verbose, fmt.Sprintf("thinking... [%s, iteration %d]", primaryProvider.Name(), i+1))
 		}
 
-		// Call the LLM with timing measurement.
+		// Call the LLM with failover: try each provider in the chain until
+		// one succeeds. Permanent errors (4xx except 429) stop the chain.
+		var resp *llm.ChatResponse
+		var usedProvider llm.Provider
 		llmStart := time.Now()
-		resp, err := provider.ChatCompletion(ctx, &llm.ChatRequest{
-			Messages: messages,
-			Tools:    tools,
-		})
+		for pi, p := range providerChain {
+			resp, err = p.ChatCompletion(ctx, &llm.ChatRequest{
+				Messages: messages,
+				Tools:    tools,
+			})
+			if err == nil {
+				usedProvider = p
+				if pi > 0 {
+					a.send(ircChannel, fmt.Sprintf("[failover] %s failed, using %s", primaryProvider.Name(), p.Name()))
+				}
+				break
+			}
+			// Context cancelled — stop immediately.
+			if ctx.Err() != nil {
+				break
+			}
+			// Permanent errors (4xx except 429) — don't try other providers.
+			if llm.IsPermanent(err) {
+				usedProvider = p
+				break
+			}
+			// Retryable (5xx, 429) — log and try next provider.
+			a.logger.Warn("provider failed, trying fallback",
+				"failed", p.Name(),
+				"error", err,
+				"channel", ircChannel,
+			)
+		}
 		llmDuration := time.Since(llmStart)
+		if usedProvider == nil {
+			usedProvider = primaryProvider
+		}
 		if err != nil {
 			a.logger.Error("LLM call failed",
 				"error", err,
-				"provider", provider.Name(),
+				"provider", usedProvider.Name(),
 				"channel", ircChannel,
 				"iteration", i,
 				"latency", llmDuration,
@@ -566,7 +659,7 @@ func (a *Agent) runLoop(ctx context.Context, memoryChannel, ircChannel, nick str
 		}
 		if cfg.debug.LogLLMRequests {
 			a.logger.Info("llm_request",
-				"provider", provider.Name(),
+				"provider", usedProvider.Name(),
 				"channel", ircChannel,
 				"iteration", i,
 				"latency", llmDuration,

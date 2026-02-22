@@ -2361,7 +2361,7 @@ func TestAgent_UpdateProviders(t *testing.T) {
 		"new-provider": newMock,
 		"extra":        &llmtest.MockProvider{NameVal: "extra"},
 	}
-	env.agent.UpdateProviders(newProviders, "new-provider")
+	env.agent.UpdateProviders(newProviders, "new-provider", nil)
 
 	// Verify the swap took effect.
 	names = env.agent.GetProviderNames()
@@ -2646,6 +2646,300 @@ func TestHandleEvent_IsolatedContext(t *testing.T) {
 	}
 	if sent[0] != "Backup completed successfully." {
 		t.Errorf("sent = %q", sent[0])
+	}
+}
+
+// --- Provider failover tests ---
+
+func TestProviderFailover_FallsBackOn5xx(t *testing.T) {
+	t.Parallel()
+	env := newTestAgentEnv(t)
+
+	// Primary provider returns a 5xx-like error (not permanent, not rate limited).
+	primaryMock := &llmtest.MockProvider{
+		NameVal: "primary",
+		Errors:  []error{fmt.Errorf("server error 500")},
+	}
+	fallbackMock := &llmtest.MockProvider{
+		NameVal: "fallback",
+		Responses: []*llm.ChatResponse{
+			{Content: "fallback response"},
+		},
+	}
+
+	providers := map[string]llm.Provider{
+		"primary":  primaryMock,
+		"fallback": fallbackMock,
+	}
+	fallbacks := map[string][]string{
+		"primary": {"fallback"},
+	}
+	env.agent.UpdateProviders(providers, "primary", fallbacks)
+
+	ctx := context.Background()
+	env.agent.HandleMessage(ctx, "#test", "user1", "hello")
+
+	sent := env.getSent()
+	// Should have the failover notice + the fallback response.
+	var hasFailoverNotice, hasFallbackResponse bool
+	for _, msg := range sent {
+		if strings.Contains(msg, "[failover]") && strings.Contains(msg, "primary") && strings.Contains(msg, "fallback") {
+			hasFailoverNotice = true
+		}
+		if msg == "fallback response" {
+			hasFallbackResponse = true
+		}
+	}
+	if !hasFailoverNotice {
+		t.Errorf("expected failover notice in sent messages: %v", sent)
+	}
+	if !hasFallbackResponse {
+		t.Errorf("expected fallback response in sent messages: %v", sent)
+	}
+}
+
+func TestProviderFailover_FallsBackOn429(t *testing.T) {
+	t.Parallel()
+	env := newTestAgentEnv(t)
+
+	// Primary provider returns a rate-limited error.
+	primaryMock := &llmtest.MockProvider{
+		NameVal: "primary",
+		Errors:  []error{llm.NewRateLimitedError(fmt.Errorf("rate limited"))},
+	}
+	fallbackMock := &llmtest.MockProvider{
+		NameVal: "fallback",
+		Responses: []*llm.ChatResponse{
+			{Content: "fallback after 429"},
+		},
+	}
+
+	providers := map[string]llm.Provider{
+		"primary":  primaryMock,
+		"fallback": fallbackMock,
+	}
+	fallbacks := map[string][]string{
+		"primary": {"fallback"},
+	}
+	env.agent.UpdateProviders(providers, "primary", fallbacks)
+
+	ctx := context.Background()
+	env.agent.HandleMessage(ctx, "#test", "user1", "hello")
+
+	sent := env.getSent()
+	var hasFallbackResponse bool
+	for _, msg := range sent {
+		if msg == "fallback after 429" {
+			hasFallbackResponse = true
+		}
+	}
+	if !hasFallbackResponse {
+		t.Errorf("expected fallback response after 429: %v", sent)
+	}
+}
+
+func TestProviderFailover_NoPermanentFallback(t *testing.T) {
+	t.Parallel()
+	env := newTestAgentEnv(t)
+
+	// Primary provider returns a permanent error (4xx, not 429).
+	primaryMock := &llmtest.MockProvider{
+		NameVal: "primary",
+		Errors:  []error{llm.NewPermanentError(fmt.Errorf("bad request 400"))},
+	}
+	fallbackMock := &llmtest.MockProvider{
+		NameVal: "fallback",
+		Responses: []*llm.ChatResponse{
+			{Content: "should not reach"},
+		},
+	}
+
+	providers := map[string]llm.Provider{
+		"primary":  primaryMock,
+		"fallback": fallbackMock,
+	}
+	fallbacks := map[string][]string{
+		"primary": {"fallback"},
+	}
+	env.agent.UpdateProviders(providers, "primary", fallbacks)
+
+	ctx := context.Background()
+	env.agent.HandleMessage(ctx, "#test", "user1", "hello")
+
+	// Fallback should NOT have been called.
+	if len(fallbackMock.Calls) != 0 {
+		t.Errorf("expected 0 fallback calls for permanent error, got %d", len(fallbackMock.Calls))
+	}
+
+	// Should have an error message sent.
+	sent := env.getSent()
+	var hasError bool
+	for _, msg := range sent {
+		if strings.Contains(msg, "error") || strings.Contains(msg, "Error") {
+			hasError = true
+		}
+	}
+	if !hasError {
+		t.Errorf("expected error message for permanent failure: %v", sent)
+	}
+}
+
+func TestProviderFailover_AllFail(t *testing.T) {
+	t.Parallel()
+	env := newTestAgentEnv(t)
+
+	// Both providers return retryable errors.
+	primaryMock := &llmtest.MockProvider{
+		NameVal: "primary",
+		Errors:  []error{fmt.Errorf("server error 500")},
+	}
+	fallbackMock := &llmtest.MockProvider{
+		NameVal: "fallback",
+		Errors:  []error{fmt.Errorf("server error 502")},
+	}
+
+	providers := map[string]llm.Provider{
+		"primary":  primaryMock,
+		"fallback": fallbackMock,
+	}
+	fallbacks := map[string][]string{
+		"primary": {"fallback"},
+	}
+	env.agent.UpdateProviders(providers, "primary", fallbacks)
+
+	ctx := context.Background()
+	env.agent.HandleMessage(ctx, "#test", "user1", "hello")
+
+	// Both providers should have been called.
+	if len(primaryMock.Calls) != 1 {
+		t.Errorf("expected 1 primary call, got %d", len(primaryMock.Calls))
+	}
+	if len(fallbackMock.Calls) != 1 {
+		t.Errorf("expected 1 fallback call, got %d", len(fallbackMock.Calls))
+	}
+
+	// Should have an error message sent.
+	sent := env.getSent()
+	var hasError bool
+	for _, msg := range sent {
+		if strings.Contains(msg, "error") || strings.Contains(msg, "Error") {
+			hasError = true
+		}
+	}
+	if !hasError {
+		t.Errorf("expected error message when all providers fail: %v", sent)
+	}
+}
+
+func TestProviderFailover_ContextCancelled(t *testing.T) {
+	t.Parallel()
+	env := newTestAgentEnv(t)
+
+	// Primary provider returns an error, but context is already cancelled.
+	primaryMock := &llmtest.MockProvider{
+		NameVal: "primary",
+		Errors:  []error{context.Canceled},
+	}
+	fallbackMock := &llmtest.MockProvider{
+		NameVal: "fallback",
+		Responses: []*llm.ChatResponse{
+			{Content: "should not reach"},
+		},
+	}
+
+	providers := map[string]llm.Provider{
+		"primary":  primaryMock,
+		"fallback": fallbackMock,
+	}
+	fallbacks := map[string][]string{
+		"primary": {"fallback"},
+	}
+	env.agent.UpdateProviders(providers, "primary", fallbacks)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // Cancel immediately.
+	env.agent.HandleMessage(ctx, "#test", "user1", "hello")
+
+	// Fallback should NOT have been called since context was cancelled.
+	if len(fallbackMock.Calls) != 0 {
+		t.Errorf("expected 0 fallback calls on context cancellation, got %d", len(fallbackMock.Calls))
+	}
+}
+
+func TestGetProviderChain_BuildsCorrectChain(t *testing.T) {
+	t.Parallel()
+	env := newTestAgentEnv(t)
+
+	primary := &llmtest.MockProvider{NameVal: "primary"}
+	fb1 := &llmtest.MockProvider{NameVal: "fb1"}
+	fb2 := &llmtest.MockProvider{NameVal: "fb2"}
+
+	providers := map[string]llm.Provider{
+		"primary": primary,
+		"fb1":     fb1,
+		"fb2":     fb2,
+	}
+	fallbacks := map[string][]string{
+		"primary": {"fb1", "fb2"},
+	}
+	env.agent.UpdateProviders(providers, "primary", fallbacks)
+
+	chain := env.agent.getProviderChain(primary, "user1", "#test", nil)
+	if len(chain) != 3 {
+		t.Fatalf("expected chain length 3, got %d", len(chain))
+	}
+	if chain[0].Name() != "primary" {
+		t.Errorf("chain[0] = %q, want primary", chain[0].Name())
+	}
+	if chain[1].Name() != "fb1" {
+		t.Errorf("chain[1] = %q, want fb1", chain[1].Name())
+	}
+	if chain[2].Name() != "fb2" {
+		t.Errorf("chain[2] = %q, want fb2", chain[2].Name())
+	}
+}
+
+func TestGetProviderChain_NoFallbacks(t *testing.T) {
+	t.Parallel()
+	env := newTestAgentEnv(t)
+
+	primary := &llmtest.MockProvider{NameVal: "primary"}
+	providers := map[string]llm.Provider{
+		"primary": primary,
+	}
+	env.agent.UpdateProviders(providers, "primary", nil)
+
+	chain := env.agent.getProviderChain(primary, "user1", "#test", nil)
+	if len(chain) != 1 {
+		t.Fatalf("expected chain length 1, got %d", len(chain))
+	}
+	if chain[0].Name() != "primary" {
+		t.Errorf("chain[0] = %q, want primary", chain[0].Name())
+	}
+}
+
+func TestGetProviderChain_SkipsMissingFallback(t *testing.T) {
+	t.Parallel()
+	env := newTestAgentEnv(t)
+
+	primary := &llmtest.MockProvider{NameVal: "primary"}
+	fb2 := &llmtest.MockProvider{NameVal: "fb2"}
+
+	providers := map[string]llm.Provider{
+		"primary": primary,
+		"fb2":     fb2,
+	}
+	fallbacks := map[string][]string{
+		"primary": {"missing", "fb2"},
+	}
+	env.agent.UpdateProviders(providers, "primary", fallbacks)
+
+	chain := env.agent.getProviderChain(primary, "user1", "#test", nil)
+	if len(chain) != 2 {
+		t.Fatalf("expected chain length 2 (primary + fb2, missing skipped), got %d", len(chain))
+	}
+	if chain[1].Name() != "fb2" {
+		t.Errorf("chain[1] = %q, want fb2", chain[1].Name())
 	}
 }
 

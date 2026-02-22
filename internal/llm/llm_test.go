@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -572,6 +573,79 @@ func TestOpenAICompatProvider_NoUserAgent(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestErrRateLimited(t *testing.T) {
+	t.Parallel()
+
+	t.Run("IsRateLimited returns true for errRateLimited", func(t *testing.T) {
+		t.Parallel()
+		err := &errRateLimited{fmt.Errorf("rate limited")}
+		if !IsRateLimited(err) {
+			t.Error("IsRateLimited should return true for errRateLimited")
+		}
+		if IsPermanent(err) {
+			t.Error("IsPermanent should return false for errRateLimited")
+		}
+	})
+
+	t.Run("IsPermanent returns true for errPermanent", func(t *testing.T) {
+		t.Parallel()
+		err := &errPermanent{fmt.Errorf("bad request")}
+		if !IsPermanent(err) {
+			t.Error("IsPermanent should return true for errPermanent")
+		}
+		if IsRateLimited(err) {
+			t.Error("IsRateLimited should return false for errPermanent")
+		}
+	})
+
+	t.Run("wrapped errors detected", func(t *testing.T) {
+		t.Parallel()
+		inner := &errRateLimited{fmt.Errorf("429")}
+		wrapped := fmt.Errorf("outer: %w", inner)
+		if !IsRateLimited(wrapped) {
+			t.Error("IsRateLimited should detect wrapped errRateLimited")
+		}
+	})
+}
+
+func TestOpenAICompatProvider_429Error_NoRetryWithinProvider(t *testing.T) {
+	t.Parallel()
+
+	callCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		if err := json.NewEncoder(w).Encode(openAIResponse{
+			Error: &struct {
+				Message string `json:"message"`
+				Type    string `json:"type"`
+				Code    any    `json:"code"`
+			}{Message: "rate limit exceeded"},
+		}); err != nil {
+			t.Errorf("writeJSON: %v", err)
+		}
+	}))
+	defer srv.Close()
+
+	p := newTestProvider(t, srv.URL)
+	_, err := p.ChatCompletion(context.Background(), &ChatRequest{
+		Messages: []Message{{Role: RoleUser, Content: "test"}},
+	})
+	if err == nil {
+		t.Fatal("expected error for 429, got nil")
+	}
+	if !IsRateLimited(err) {
+		t.Errorf("expected IsRateLimited=true, got false; error: %v", err)
+	}
+	if IsPermanent(err) {
+		t.Error("429 should NOT be classified as permanent")
+	}
+	if callCount != 1 {
+		t.Errorf("expected 1 call (no retry on 429 within provider), got %d", callCount)
 	}
 }
 
