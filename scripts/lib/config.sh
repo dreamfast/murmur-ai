@@ -504,33 +504,33 @@ TOML
 	if [[ "$CT_MAIL_READ" == "true" ]]; then
 		cat <<'TOML'
 
-# [tools.mail_read]
-# enabled = true
-# thunderbird_profile = "~/.thunderbird/abc123.default-release"
-# mail_dir = "Mail/pop3.example.com"
+[tools.mail_read]
+enabled = true
+thunderbird_profile = "~/.thunderbird/CHANGEME.default-release" # TODO: set your Thunderbird profile path
+mail_dir = "Mail/pop3.example.com" # TODO: set your mail directory
 TOML
 	fi
 
 	if [[ "$CT_MAIL_SEND" == "true" ]]; then
 		cat <<'TOML'
 
-# [tools.mail_send]
-# enabled = true
-# smtp_host = "smtp.example.com"
-# smtp_port = 587
-# smtp_user = "you@example.com"
-# smtp_password = "vault:smtp-password"
-# from_address = "you@example.com"
+[tools.mail_send]
+enabled = true
+smtp_host = "smtp.example.com" # TODO: set your SMTP server
+smtp_port = 587
+smtp_user = "you@example.com" # TODO: set your email address
+smtp_password = "vault:smtp-password" # TODO: store password in vault
+from_address = "you@example.com" # TODO: set your from address
 TOML
 	fi
 
 	if [[ "$CT_WEB_SEARCH" == "true" ]]; then
 		cat <<'TOML'
 
-# [tools.web_search]
-# enabled = true
-# api_key = "vault:brave-search-key"
-# max_results = 5
+[tools.web_search]
+enabled = true
+api_key = "vault:brave-search-key" # TODO: store Brave API key in vault
+max_results = 5
 TOML
 	fi
 
@@ -554,33 +554,33 @@ TOML
 	if [[ "$CT_GIT" == "true" ]]; then
 		cat <<'TOML'
 
-# [tools.git]
-# enabled = true
-# allowed_repos = [
-#     "/home/user/projects/myapp",
-# ]
+[tools.git]
+enabled = true
+allowed_repos = [
+    "/home/user/projects/myapp", # TODO: add your repo paths
+]
 TOML
 	fi
 
 	if [[ "$CT_FILE_OPS" == "true" ]]; then
 		cat <<'TOML'
 
-# [tools.file_ops]
-# enabled = true
-# allowed_paths = [
-#     "/home/user/documents",
-# ]
+[tools.file_ops]
+enabled = true
+allowed_paths = [
+    "/home/user/documents", # TODO: add your allowed paths
+]
 TOML
 	fi
 
 	if [[ "$CT_IMAGE_GEN" == "true" ]]; then
 		cat <<'TOML'
 
-# [tools.image_gen]
-# enabled = true
-# comfyui_host = "http://localhost:8188"
-# output_dir = "/home/user/images/murmur"
-# checkpoint_name = "sd_xl_base_1.0.safetensors"
+[tools.image_gen]
+enabled = true
+comfyui_host = "http://localhost:8188" # TODO: set your ComfyUI URL
+output_dir = "/home/user/images/murmur" # TODO: set output directory
+checkpoint_name = "sd_xl_base_1.0.safetensors"
 TOML
 	fi
 

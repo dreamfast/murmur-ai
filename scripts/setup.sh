@@ -301,8 +301,22 @@ if [[ "$SETUP_MODE" == "client" ]]; then
 	if [[ "$VAULT_ENABLED" == "true" ]]; then
 		echo "  ${BOLD}Vault passphrase:${RESET} ${YELLOW}$VAULT_PASS${RESET}"
 	fi
-	echo ""
-	echo "  ${DIM}Some tools (web_search, mail, git, file_ops, image_gen) need manual config — edit client.toml.${RESET}"
+	# List tools that need manual configuration (have TODO placeholders)
+	needs_config=()
+	[[ "$CT_MAIL_READ" == "true" ]] && needs_config+=("mail_read")
+	[[ "$CT_MAIL_SEND" == "true" ]] && needs_config+=("mail_send")
+	[[ "$CT_WEB_SEARCH" == "true" ]] && needs_config+=("web_search")
+	[[ "$CT_GIT" == "true" ]] && needs_config+=("git")
+	[[ "$CT_FILE_OPS" == "true" ]] && needs_config+=("file_ops")
+	[[ "$CT_IMAGE_GEN" == "true" ]] && needs_config+=("image_gen")
+
+	if ((${#needs_config[@]} > 0)); then
+		echo ""
+		warn "These tools need manual configuration — look for TODO comments in client.toml:"
+		for tool in "${needs_config[@]}"; do
+			echo "    ${DIM}- $tool${RESET}"
+		done
+	fi
 	echo ""
 	exit 0
 fi
