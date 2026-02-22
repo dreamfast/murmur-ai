@@ -18,9 +18,11 @@ import (
 	"murmur/internal/llm"
 )
 
-// maxIterations is the maximum number of LLM call iterations per user message.
-// This prevents runaway tool-calling loops.
-const maxIterations = 10
+// iterationPauseThreshold is the number of LLM call iterations before the
+// agent pauses, asks the LLM to summarize progress, and waits for the user
+// to decide whether to continue. The user's next message triggers a fresh
+// loop with the full conversation history, effectively continuing.
+const iterationPauseThreshold = 10
 
 // crossChannelMaxMsgLen is the maximum length (in runes) of a single message
 // included in the cross-channel context section of the system prompt.
@@ -496,7 +498,7 @@ func (a *Agent) runLoop(ctx context.Context, memoryChannel, ircChannel, nick str
 	// handlers can perform defense-in-depth authorization checks.
 	ctx = context.WithValue(ctx, requestNickKey{}, nick)
 
-	for i := 0; i < maxIterations; i++ {
+	for i := 0; i < iterationPauseThreshold; i++ {
 		// Check context before each iteration.
 		if ctx.Err() != nil {
 			a.logger.Info("agent loop cancelled", "channel", ircChannel, "iteration", i)
@@ -760,8 +762,76 @@ func (a *Agent) runLoop(ctx context.Context, memoryChannel, ircChannel, nick str
 		return
 	}
 
-	// Max iterations reached.
-	a.send(ircChannel, "I've reached the maximum number of tool calls for this message. Please try again.")
+	// Iteration pause threshold reached — ask the LLM to summarize progress.
+	a.logger.Info("iteration pause threshold reached, requesting summary",
+		"channel", ircChannel, "iterations", iterationPauseThreshold)
+
+	continueMsg := fmt.Sprintf(
+		"I've used %d iterations so far. Reply to continue or change your request.",
+		iterationPauseThreshold,
+	)
+
+	// Build messages for one final LLM call (no tools → text-only summary).
+	// Append a system message requesting a summary directly in the message
+	// array rather than persisting it, so it doesn't pollute conversation
+	// history if the summary call fails.
+	cfg := a.loadConfig()
+	history, err := a.memory.GetHistory(memoryChannel, cfg.maxHistory)
+	if err != nil {
+		a.logger.Error("failed to get history for summary", "error", err)
+		a.send(ircChannel, continueMsg)
+		return
+	}
+
+	messages := make([]llm.Message, 0, 2+len(history))
+	messages = append(messages, llm.Message{
+		Role:    llm.RoleSystem,
+		Content: a.buildSystemPrompt(ctx, ircChannel, cfg),
+	})
+	for _, msg := range history {
+		messages = append(messages, reconstructToolCalls(msg))
+	}
+	// Append a system directive asking for a progress summary.
+	messages = append(messages, llm.Message{
+		Role: llm.RoleSystem,
+		Content: fmt.Sprintf(
+			"You have used %d iterations of tool calls. "+
+				"Please provide a brief summary of what you have tried so far "+
+				"and what the current status is. Be concise.",
+			iterationPauseThreshold,
+		),
+	})
+
+	// Snapshot the permission manager for provider resolution (same as the
+	// main loop) so model permission checks are not bypassed.
+	a.mu.RLock()
+	pm := a.permissions
+	a.mu.RUnlock()
+
+	provider, err := a.resolveProvider(ircChannel, nick, pm)
+	if err != nil {
+		a.logger.Error("failed to get provider for summary", "error", err)
+		a.send(ircChannel, continueMsg)
+		return
+	}
+
+	resp, err := provider.ChatCompletion(ctx, &llm.ChatRequest{
+		Messages: messages,
+		// No tools — force a text-only response.
+	})
+	if err != nil {
+		a.logger.Error("summary LLM call failed", "error", err)
+		a.send(ircChannel, continueMsg)
+		return
+	}
+
+	if resp.Content != "" {
+		if err := a.memory.AddMessage(memoryChannel, llm.RoleAssistant, resp.Content, "", ""); err != nil {
+			a.logger.Error("failed to store summary response", "error", err)
+		}
+		a.send(ircChannel, resp.Content)
+	}
+	a.send(ircChannel, continueMsg)
 }
 
 // SetProvider switches the LLM provider for a specific channel. If name is

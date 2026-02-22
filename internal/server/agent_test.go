@@ -340,25 +340,34 @@ func TestAgent_MultipleToolCalls(t *testing.T) {
 	}
 }
 
-func TestAgent_MaxIterationsCap(t *testing.T) {
+func TestAgent_IterationPause_SummaryAndContinuePrompt(t *testing.T) {
 	t.Parallel()
 	env := newTestAgentEnv(t)
 
-	// Mock always returns a tool call — should hit the iteration cap.
-	env.mock.Responses = []*llm.ChatResponse{
-		{
-			ToolCalls: []llm.ToolCall{
-				{
-					ID:   "call-loop",
-					Type: "function",
-					Function: llm.FunctionCall{
-						Name:      "shell",
-						Arguments: `{"cmd":"echo loop"}`,
-					},
+	// Mock always returns a tool call for the first iterationPauseThreshold
+	// calls, then returns a text summary for the final summary call.
+	toolCallResp := &llm.ChatResponse{
+		ToolCalls: []llm.ToolCall{
+			{
+				ID:   "call-loop",
+				Type: "function",
+				Function: llm.FunctionCall{
+					Name:      "shell",
+					Arguments: `{"cmd":"echo loop"}`,
 				},
 			},
 		},
 	}
+
+	// Queue: iterationPauseThreshold tool-call responses + 1 summary response.
+	responses := make([]*llm.ChatResponse, 0, iterationPauseThreshold+1)
+	for range iterationPauseThreshold {
+		responses = append(responses, toolCallResp)
+	}
+	responses = append(responses, &llm.ChatResponse{
+		Content: "I tried running shell commands 10 times. All returned 'loop result'.",
+	})
+	env.mock.Responses = responses
 
 	// Override tool routing to always succeed.
 	env.agent.routeToolFunc = func(_ context.Context, _ string, _ json.RawMessage) (string, error) {
@@ -369,16 +378,37 @@ func TestAgent_MaxIterationsCap(t *testing.T) {
 	env.agent.HandleMessage(ctx, "#test", "user1", "loop forever")
 
 	sent := env.getSent()
-	if len(sent) != 1 {
-		t.Fatalf("expected 1 sent message, got %d: %v", len(sent), sent)
-	}
-	if sent[0] != "I've reached the maximum number of tool calls for this message. Please try again." {
-		t.Errorf("sent = %q", sent[0])
+	// Expect: the LLM summary + the "reply to continue" prompt.
+	if len(sent) < 2 {
+		t.Fatalf("expected at least 2 sent messages, got %d: %v", len(sent), sent)
 	}
 
-	// Verify the mock was called exactly maxIterations times.
-	if len(env.mock.Calls) != maxIterations {
-		t.Errorf("expected %d LLM calls, got %d", maxIterations, len(env.mock.Calls))
+	// The second-to-last message should be the LLM's summary.
+	summary := sent[len(sent)-2]
+	if !strings.Contains(summary, "shell commands") {
+		t.Errorf("expected LLM summary, got: %s", summary)
+	}
+
+	// The last message should be the "reply to continue" prompt.
+	continuePrompt := sent[len(sent)-1]
+	if !strings.Contains(continuePrompt, "Reply to continue") {
+		t.Errorf("expected continue prompt, got: %s", continuePrompt)
+	}
+	if !strings.Contains(continuePrompt, fmt.Sprintf("%d iterations", iterationPauseThreshold)) {
+		t.Errorf("expected iteration count in prompt, got: %s", continuePrompt)
+	}
+
+	// Verify the mock was called iterationPauseThreshold + 1 times
+	// (threshold tool calls + 1 summary call).
+	expectedCalls := iterationPauseThreshold + 1
+	if len(env.mock.Calls) != expectedCalls {
+		t.Errorf("expected %d LLM calls, got %d", expectedCalls, len(env.mock.Calls))
+	}
+
+	// Verify the summary call had no tools (forced text-only).
+	lastCall := env.mock.Calls[len(env.mock.Calls)-1]
+	if len(lastCall.Tools) != 0 {
+		t.Errorf("summary call should have no tools, got %d", len(lastCall.Tools))
 	}
 }
 
