@@ -200,7 +200,8 @@ func (v *Vault) List() ([]string, error) {
 // ResolveVaultRefs walks specific config fields and replaces "vault:keyname"
 // references with the decrypted value from the vault. Fields resolved:
 // LLM.Providers[*].APIKey, Security.BusKey, IRC.Password, IRC.NickServPassword,
-// Tools.WebSearch.APIKey, Tools.MailSend.SMTPPass, Tools.OpenCode.Password.
+// IRC.OperPassword, Dashboard.ServerPassword, Tools.WebSearch.APIKey,
+// Tools.MailSend.SMTPPass, Tools.OpenCode.Password.
 func ResolveVaultRefs(v *Vault, cfg *config.ServerConfig) error {
 	if v == nil {
 		return fmt.Errorf("ResolveVaultRefs: vault is nil")
@@ -255,6 +256,15 @@ func ResolveVaultRefs(v *Vault, cfg *config.ServerConfig) error {
 			return fmt.Errorf("ResolveVaultRefs: irc.oper_password: %w", err)
 		}
 		cfg.IRC.OperPassword = val
+	}
+
+	// Resolve Dashboard.ServerPassword.
+	if ref, ok := parseVaultRef(cfg.Dashboard.ServerPassword); ok {
+		val, err := v.Get(ref)
+		if err != nil {
+			return fmt.Errorf("ResolveVaultRefs: dashboard.server_password: %w", err)
+		}
+		cfg.Dashboard.ServerPassword = val
 	}
 
 	// Resolve tool secrets. With the unified ToolsConfig, the server may

@@ -285,6 +285,9 @@ func TestResolveVaultRefs(t *testing.T) {
 	if err := v.Set("nickserv_pass", "nickserv-password"); err != nil {
 		t.Fatalf("Set nickserv_pass: %v", err)
 	}
+	if err := v.Set("dash_server_pass", "dashboard-irc-pass"); err != nil {
+		t.Fatalf("Set dash_server_pass: %v", err)
+	}
 
 	cfg := &config.ServerConfig{
 		IRC: config.IRCConfig{
@@ -311,6 +314,9 @@ func TestResolveVaultRefs(t *testing.T) {
 		Security: config.SecurityConfig{
 			BusKey: "vault:bus_secret",
 		},
+		Dashboard: config.DashboardConfig{
+			ServerPassword: "vault:dash_server_pass",
+		},
 		Scheduler: config.SchedulerConfig{
 			HeartbeatInterval: "5m",
 			ClientTimeout:     "2m",
@@ -333,6 +339,9 @@ func TestResolveVaultRefs(t *testing.T) {
 	}
 	if cfg.IRC.NickServPassword != "nickserv-password" {
 		t.Errorf("IRC.NickServPassword = %q, want %q", cfg.IRC.NickServPassword, "nickserv-password")
+	}
+	if cfg.Dashboard.ServerPassword != "dashboard-irc-pass" {
+		t.Errorf("Dashboard.ServerPassword = %q, want %q", cfg.Dashboard.ServerPassword, "dashboard-irc-pass")
 	}
 }
 
