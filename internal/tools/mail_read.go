@@ -12,6 +12,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"murmur/internal/pathutil"
 )
 
 // mailMessage represents a parsed email message from an mbox file.
@@ -419,7 +421,7 @@ func validateFolderPath(folder, profilePath, mailDir string) (string, error) {
 		canonResolved = resolved
 	}
 
-	if !strings.HasPrefix(canonResolved, canonBase+string(filepath.Separator)) && canonResolved != canonBase {
+	if !pathutil.IsUnderAny(canonResolved, []string{canonBase}) {
 		return "", fmt.Errorf("invalid folder path: resolved path escapes profile directory")
 	}
 

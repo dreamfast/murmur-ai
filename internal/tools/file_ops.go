@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"murmur/internal/pathutil"
 )
 
 // errMaxSearchResults is a sentinel error used to stop WalkDir when the
@@ -73,14 +75,7 @@ func NewFileOpsTool(cfg FileOpsToolConfig) Tool {
 // newFileOpsHandler returns a handler function closed over the file_ops config.
 func newFileOpsHandler(cfg FileOpsToolConfig) func(ctx context.Context, args map[string]any) (string, error) {
 	// Pre-clean and resolve allowed paths for consistent comparison.
-	cleaned := make([]string, len(cfg.AllowedPaths))
-	for i, p := range cfg.AllowedPaths {
-		c := filepath.Clean(p)
-		if resolved, err := filepath.EvalSymlinks(c); err == nil {
-			c = resolved
-		}
-		cleaned[i] = c
-	}
+	cleaned := pathutil.CleanAndResolveAll(cfg.AllowedPaths)
 
 	return func(ctx context.Context, args map[string]any) (string, error) {
 		action, err := RequireStringArg(args, "action")
@@ -94,7 +89,7 @@ func newFileOpsHandler(cfg FileOpsToolConfig) func(ctx context.Context, args map
 		}
 
 		// Validate and resolve path to its canonical form.
-		resolvedPath, err := resolveAndValidatePath(path, cleaned)
+		resolvedPath, err := pathutil.ValidateContainment(path, cleaned)
 		if err != nil {
 			return "", err
 		}
@@ -117,40 +112,6 @@ func newFileOpsHandler(cfg FileOpsToolConfig) func(ctx context.Context, args map
 			return "", fmt.Errorf("unknown action %q, expected one of: read, list, search, stat", action)
 		}
 	}
-}
-
-// resolveAndValidatePath checks that the given path is under one of the allowed
-// directories after cleaning and symlink resolution. Returns the canonical
-// resolved path for use by callers, preventing TOCTOU races on the original path.
-func resolveAndValidatePath(path string, allowedPaths []string) (string, error) {
-	// Reject relative paths.
-	if !filepath.IsAbs(path) {
-		return "", fmt.Errorf("path must be absolute: %q", path)
-	}
-
-	// Clean the path.
-	cleanPath := filepath.Clean(path)
-
-	// Resolve symlinks to get the real path.
-	resolvedPath, err := filepath.EvalSymlinks(cleanPath)
-	if err != nil {
-		// If the path doesn't exist yet, resolve the parent.
-		parentDir := filepath.Dir(cleanPath)
-		resolvedParent, parentErr := filepath.EvalSymlinks(parentDir)
-		if parentErr != nil {
-			return "", fmt.Errorf("path not accessible: %w", err)
-		}
-		resolvedPath = filepath.Join(resolvedParent, filepath.Base(cleanPath))
-	}
-
-	// Check if the resolved path is under any allowed directory.
-	for _, allowed := range allowedPaths {
-		if resolvedPath == allowed || strings.HasPrefix(resolvedPath, allowed+string(filepath.Separator)) {
-			return resolvedPath, nil
-		}
-	}
-
-	return "", fmt.Errorf("path %q is not under any allowed directory", path)
 }
 
 // isBinaryFile checks if a file appears to be binary by examining its first
@@ -329,14 +290,7 @@ func fileOpsSearch(ctx context.Context, root, query string, allowedPaths []strin
 			skipped++
 			return nil
 		}
-		allowed := false
-		for _, ap := range allowedPaths {
-			if resolvedFile == ap || strings.HasPrefix(resolvedFile, ap+string(filepath.Separator)) {
-				allowed = true
-				break
-			}
-		}
-		if !allowed {
+		if !pathutil.IsUnderAny(resolvedFile, allowedPaths) {
 			skipped++
 			return nil
 		}

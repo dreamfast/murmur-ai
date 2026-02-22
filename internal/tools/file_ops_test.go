@@ -7,6 +7,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"murmur/internal/pathutil"
 )
 
 func TestFileOps_Read(t *testing.T) {
@@ -433,7 +435,7 @@ func TestFileOps_RelativePath(t *testing.T) {
 	}
 }
 
-func TestResolveAndValidatePath(t *testing.T) {
+func TestValidateContainment(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -462,7 +464,7 @@ func TestResolveAndValidatePath(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			_, err := resolveAndValidatePath(tt.path, []string{resolvedDir})
+			_, err := pathutil.ValidateContainment(tt.path, []string{resolvedDir})
 			if tt.wantErr && err == nil {
 				t.Error("expected error, got nil")
 			}

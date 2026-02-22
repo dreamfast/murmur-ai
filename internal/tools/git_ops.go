@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"murmur/internal/pathutil"
 )
 
 // gitCommandTimeout is the maximum time allowed for a single git command.
@@ -114,15 +116,7 @@ func NewGitOpsTool(cfg GitOpsToolConfig) Tool {
 // newGitOpsHandler returns a handler function closed over the git_ops config.
 func newGitOpsHandler(cfg GitOpsToolConfig) func(ctx context.Context, args map[string]any) (string, error) {
 	// Pre-clean and resolve allowed repos for consistent comparison.
-	cleaned := make([]string, len(cfg.AllowedRepos))
-	for i, r := range cfg.AllowedRepos {
-		c := filepath.Clean(r)
-		// Resolve symlinks at init time for performance.
-		if resolved, err := filepath.EvalSymlinks(c); err == nil {
-			c = resolved
-		}
-		cleaned[i] = c
-	}
+	cleaned := pathutil.CleanAndResolveAll(cfg.AllowedRepos)
 
 	return func(ctx context.Context, args map[string]any) (string, error) {
 		action, err := RequireStringArg(args, "action")
@@ -242,27 +236,15 @@ func validateRepoPath(repo string, allowedRepos []string) error {
 		return fmt.Errorf("repo path must not contain '..': %q", repo)
 	}
 
-	// Require absolute path.
 	if !filepath.IsAbs(repo) {
 		return fmt.Errorf("repo path must be absolute: %q", repo)
 	}
 
-	cleanRepo := filepath.Clean(repo)
-
-	// Resolve symlinks to prevent symlink-based escapes.
-	if resolved, err := filepath.EvalSymlinks(cleanRepo); err == nil {
-		cleanRepo = resolved
+	_, err := pathutil.ValidateContainment(repo, allowedRepos)
+	if err != nil {
+		return fmt.Errorf("repo %q is not in the allowed repos list", repo)
 	}
-
-	// Check against allowed repos (exact match or subdirectory).
-	// Allowed repos are pre-resolved at init time.
-	for _, allowed := range allowedRepos {
-		if cleanRepo == allowed || strings.HasPrefix(cleanRepo, allowed+string(filepath.Separator)) {
-			return nil
-		}
-	}
-
-	return fmt.Errorf("repo %q is not in the allowed repos list", repo)
+	return nil
 }
 
 // executeGitAction dispatches to the appropriate git command based on action.
