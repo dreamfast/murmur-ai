@@ -1710,7 +1710,7 @@ func TestAgent_BuildSystemPrompt_ActiveModel(t *testing.T) {
 	env := newTestAgentEnv(t)
 
 	// Default: global default provider, no per-channel override.
-	prompt := env.agent.buildSystemPrompt("#test", env.agent.loadConfig())
+	prompt := env.agent.buildSystemPrompt(context.Background(), "#test", env.agent.loadConfig())
 	if !strings.Contains(prompt, "Active model: test-provider (global default)") {
 		t.Errorf("prompt should show global default model, got %q", prompt)
 	}
@@ -1764,13 +1764,13 @@ func TestAgent_BuildSystemPrompt_ChannelSpecificModel(t *testing.T) {
 	}
 
 	// Channel with override should show "channel-specific".
-	prompt := agent.buildSystemPrompt("#chan1", agent.loadConfig())
+	prompt := agent.buildSystemPrompt(context.Background(), "#chan1", agent.loadConfig())
 	if !strings.Contains(prompt, "Active model: kimi (channel-specific)") {
 		t.Errorf("prompt should show channel-specific model, got %q", prompt)
 	}
 
 	// Channel without override should show "global default".
-	prompt = agent.buildSystemPrompt("#chan2", agent.loadConfig())
+	prompt = agent.buildSystemPrompt(context.Background(), "#chan2", agent.loadConfig())
 	if !strings.Contains(prompt, "Active model: default-provider (global default)") {
 		t.Errorf("prompt should show global default model for #chan2, got %q", prompt)
 	}
@@ -1891,26 +1891,24 @@ func TestAgent_HandleEvent(t *testing.T) {
 		t.Errorf("sent = %q", sent[0])
 	}
 
-	// Verify the event was stored as a system message in memory.
+	// Verify only the assistant response was copied to the real channel
+	// (event uses ephemeral context — the event system message is NOT in
+	// the real channel's history).
 	msgs, err := env.memory.GetHistory("#test", 10)
 	if err != nil {
 		t.Fatalf("GetHistory: %v", err)
 	}
-	if len(msgs) != 2 {
-		t.Fatalf("expected 2 messages in memory, got %d", len(msgs))
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message in real channel memory (copied response), got %d", len(msgs))
 	}
-	if msgs[0].Role != "system" {
-		t.Errorf("msg[0].Role = %q, want system", msgs[0].Role)
+	if msgs[0].Role != "assistant" {
+		t.Errorf("msg[0].Role = %q, want assistant", msgs[0].Role)
 	}
-	wantContent := "[Event from backup-script] backup.completed: Backup finished\n{\"size\":\"1.2GB\"}"
-	if msgs[0].Content != wantContent {
-		t.Errorf("msg[0].Content = %q, want %q", msgs[0].Content, wantContent)
-	}
-	if msgs[1].Role != "assistant" {
-		t.Errorf("msg[1].Role = %q, want assistant", msgs[1].Role)
+	if msgs[0].Content != "I see the backup completed successfully." {
+		t.Errorf("msg[0].Content = %q", msgs[0].Content)
 	}
 
-	// Verify the LLM received the event in context.
+	// Verify the LLM received the event in its ephemeral context.
 	if len(env.mock.Calls) != 1 {
 		t.Fatalf("expected 1 LLM call, got %d", len(env.mock.Calls))
 	}
@@ -1918,6 +1916,17 @@ func TestAgent_HandleEvent(t *testing.T) {
 	// Messages: system prompt, event (system), so at least 2.
 	if len(req.Messages) < 2 {
 		t.Fatalf("expected at least 2 messages in LLM request, got %d", len(req.Messages))
+	}
+	// Verify the event content was in the LLM request.
+	foundEvent := false
+	for _, msg := range req.Messages {
+		if msg.Role == llm.RoleSystem && strings.Contains(msg.Content, "[Event from backup-script]") {
+			foundEvent = true
+			break
+		}
+	}
+	if !foundEvent {
+		t.Error("LLM request should contain the event message")
 	}
 }
 
@@ -1935,17 +1944,33 @@ func TestAgent_HandleEvent_NoData(t *testing.T) {
 		t.Fatalf("HandleEvent error: %v", err)
 	}
 
-	// Verify the event was stored without trailing newline.
+	// Verify the LLM received the event without trailing newline.
+	if len(env.mock.Calls) != 1 {
+		t.Fatalf("expected 1 LLM call, got %d", len(env.mock.Calls))
+	}
+	req := env.mock.Calls[0]
+	wantContent := "[Event from cron] job.done: Cron job finished"
+	foundEvent := false
+	for _, msg := range req.Messages {
+		if msg.Role == llm.RoleSystem && msg.Content == wantContent {
+			foundEvent = true
+			break
+		}
+	}
+	if !foundEvent {
+		t.Errorf("LLM request should contain event message %q", wantContent)
+	}
+
+	// Verify only the assistant response was copied to the real channel.
 	msgs, err := env.memory.GetHistory("#test", 10)
 	if err != nil {
 		t.Fatalf("GetHistory: %v", err)
 	}
-	if len(msgs) < 1 {
-		t.Fatal("expected at least 1 message in memory")
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message in real channel memory, got %d", len(msgs))
 	}
-	wantContent := "[Event from cron] job.done: Cron job finished"
-	if msgs[0].Content != wantContent {
-		t.Errorf("msg[0].Content = %q, want %q", msgs[0].Content, wantContent)
+	if msgs[0].Content != "Noted." {
+		t.Errorf("msg[0].Content = %q, want %q", msgs[0].Content, "Noted.")
 	}
 }
 
@@ -2260,7 +2285,7 @@ func TestAgent_BuildSystemPrompt_DM(t *testing.T) {
 	})
 
 	// Test DM prompt: channel is a nick (no '#' prefix).
-	prompt := agent.buildSystemPrompt("alice", agent.loadConfig())
+	prompt := agent.buildSystemPrompt(context.Background(), "alice", agent.loadConfig())
 	if !strings.Contains(prompt, "private conversation (DM) with alice") {
 		t.Errorf("DM prompt should mention private conversation, got:\n%s", prompt)
 	}
@@ -2272,7 +2297,7 @@ func TestAgent_BuildSystemPrompt_DM(t *testing.T) {
 	}
 
 	// Test channel prompt: channel starts with '#'.
-	prompt = agent.buildSystemPrompt("#general", agent.loadConfig())
+	prompt = agent.buildSystemPrompt(context.Background(), "#general", agent.loadConfig())
 	if !strings.Contains(prompt, "Current channel: #general") {
 		t.Errorf("channel prompt should contain 'Current channel:', got:\n%s", prompt)
 	}
@@ -2424,5 +2449,223 @@ func TestMemory_UpdateConfig(t *testing.T) {
 	}
 	if got := memory.loadSummaryThreshold(); got != 160 {
 		t.Errorf("updated summaryThreshold = %d, want 160", got)
+	}
+}
+
+func TestRunScheduledTask_IsolatedContext(t *testing.T) {
+	t.Parallel()
+	env := newTestAgentEnv(t)
+
+	// Simulate prior channel conversation that should NOT be visible to the task.
+	if err := env.memory.AddMessage("#test", llm.RoleUser, "alice: What's the weather?", "", ""); err != nil {
+		t.Fatalf("AddMessage: %v", err)
+	}
+	if err := env.memory.AddMessage("#test", llm.RoleAssistant, "It's sunny today!", "", ""); err != nil {
+		t.Fatalf("AddMessage: %v", err)
+	}
+
+	// The LLM should only see the task instruction, not the prior conversation.
+	env.mock.Responses = []*llm.ChatResponse{
+		{Content: "Task completed: health check passed."},
+	}
+
+	ctx := context.Background()
+	env.agent.RunScheduledTask(ctx, 42, "#test", "Run health check", "alice")
+
+	// Verify the LLM was called.
+	if len(env.mock.Calls) != 1 {
+		t.Fatalf("expected 1 LLM call, got %d", len(env.mock.Calls))
+	}
+
+	// Verify the LLM request does NOT contain the prior conversation.
+	req := env.mock.Calls[0]
+	for _, msg := range req.Messages {
+		if msg.Role == llm.RoleUser && strings.Contains(msg.Content, "weather") {
+			t.Error("task LLM request should NOT contain prior channel conversation about weather")
+		}
+	}
+
+	// Verify the task instruction IS present.
+	foundTask := false
+	for _, msg := range req.Messages {
+		if msg.Role == llm.RoleSystem && strings.Contains(msg.Content, "[Scheduled Task] Run health check") {
+			foundTask = true
+			break
+		}
+	}
+	if !foundTask {
+		t.Error("task LLM request should contain the scheduled task instruction")
+	}
+
+	// Verify the system prompt contains the task mode instruction.
+	systemPrompt := req.Messages[0].Content
+	if !strings.Contains(systemPrompt, "Task Mode") {
+		t.Error("system prompt should contain Task Mode section for scheduled tasks")
+	}
+
+	// Verify the response was sent to IRC.
+	sent := env.getSent()
+	if len(sent) != 1 {
+		t.Fatalf("expected 1 sent message, got %d: %v", len(sent), sent)
+	}
+	if sent[0] != "Task completed: health check passed." {
+		t.Errorf("sent = %q", sent[0])
+	}
+}
+
+func TestRunScheduledTask_ResponseCopiedToChannel(t *testing.T) {
+	t.Parallel()
+	env := newTestAgentEnv(t)
+
+	env.mock.Responses = []*llm.ChatResponse{
+		{Content: "Health check: all systems operational."},
+	}
+
+	ctx := context.Background()
+	env.agent.RunScheduledTask(ctx, 99, "#test", "Run health check", "alice")
+
+	// Verify the final response was copied to the real channel's history.
+	msgs, err := env.memory.GetHistory("#test", 10)
+	if err != nil {
+		t.Fatalf("GetHistory: %v", err)
+	}
+
+	// Should have exactly 1 message: the copied assistant response.
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message in real channel history, got %d", len(msgs))
+	}
+	if msgs[0].Role != llm.RoleAssistant {
+		t.Errorf("msg[0].Role = %q, want assistant", msgs[0].Role)
+	}
+	if msgs[0].Content != "Health check: all systems operational." {
+		t.Errorf("msg[0].Content = %q, want %q", msgs[0].Content, "Health check: all systems operational.")
+	}
+}
+
+func TestRunScheduledTask_CleanupAfterExecution(t *testing.T) {
+	t.Parallel()
+	env := newTestAgentEnv(t)
+
+	env.mock.Responses = []*llm.ChatResponse{
+		{Content: "Done."},
+	}
+
+	ctx := context.Background()
+	env.agent.RunScheduledTask(ctx, 7, "#test", "Clean up task", "bob")
+
+	// Verify no ephemeral contexts remain by checking all possible keys.
+	// Since the ephemeral key includes a sequence number, we scan the
+	// conversations table for any rows with a channel starting with "__task:7:#test:".
+	var count int
+	err := env.memory.db.QueryRow(
+		`SELECT COUNT(*) FROM conversations WHERE channel LIKE ?`,
+		"__task:7:#test:%",
+	).Scan(&count)
+	if err != nil {
+		t.Fatalf("query ephemeral count: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("expected 0 ephemeral messages after cleanup, got %d", count)
+	}
+}
+
+func TestHandleEvent_IsolatedContext(t *testing.T) {
+	t.Parallel()
+	env := newTestAgentEnv(t)
+
+	// Simulate prior channel conversation.
+	if err := env.memory.AddMessage("#test", llm.RoleUser, "alice: Tell me a joke", "", ""); err != nil {
+		t.Fatalf("AddMessage: %v", err)
+	}
+	if err := env.memory.AddMessage("#test", llm.RoleAssistant, "Why did the chicken cross the road?", "", ""); err != nil {
+		t.Fatalf("AddMessage: %v", err)
+	}
+
+	env.mock.Responses = []*llm.ChatResponse{
+		{Content: "Backup completed successfully."},
+	}
+
+	ctx := context.Background()
+	err := env.agent.HandleEvent(ctx, "#test", "_system", "backup-script", "backup.completed", "Backup finished", `{"size":"1.2GB"}`)
+	if err != nil {
+		t.Fatalf("HandleEvent error: %v", err)
+	}
+
+	// Verify the LLM was called.
+	if len(env.mock.Calls) != 1 {
+		t.Fatalf("expected 1 LLM call, got %d", len(env.mock.Calls))
+	}
+
+	// Verify the LLM request does NOT contain the prior conversation.
+	req := env.mock.Calls[0]
+	for _, msg := range req.Messages {
+		if msg.Role == llm.RoleUser && strings.Contains(msg.Content, "joke") {
+			t.Error("event LLM request should NOT contain prior channel conversation about jokes")
+		}
+	}
+
+	// Verify the event IS present.
+	foundEvent := false
+	for _, msg := range req.Messages {
+		if msg.Role == llm.RoleSystem && strings.Contains(msg.Content, "[Event from backup-script]") {
+			foundEvent = true
+			break
+		}
+	}
+	if !foundEvent {
+		t.Error("event LLM request should contain the event message")
+	}
+
+	// Verify the system prompt contains the task mode instruction.
+	systemPrompt := req.Messages[0].Content
+	if !strings.Contains(systemPrompt, "Task Mode") {
+		t.Error("system prompt should contain Task Mode section for events")
+	}
+
+	// Verify the response was copied to the real channel.
+	msgs, err := env.memory.GetHistory("#test", 10)
+	if err != nil {
+		t.Fatalf("GetHistory: %v", err)
+	}
+
+	// Should have: prior user msg, prior assistant msg, + copied event response.
+	if len(msgs) != 3 {
+		t.Fatalf("expected 3 messages in real channel history, got %d", len(msgs))
+	}
+	if msgs[2].Role != llm.RoleAssistant {
+		t.Errorf("msg[2].Role = %q, want assistant", msgs[2].Role)
+	}
+	if msgs[2].Content != "Backup completed successfully." {
+		t.Errorf("msg[2].Content = %q, want %q", msgs[2].Content, "Backup completed successfully.")
+	}
+
+	// Verify the response was sent to IRC.
+	sent := env.getSent()
+	if len(sent) != 1 {
+		t.Fatalf("expected 1 sent message, got %d: %v", len(sent), sent)
+	}
+	if sent[0] != "Backup completed successfully." {
+		t.Errorf("sent = %q", sent[0])
+	}
+}
+
+func TestBuildSystemPrompt_TaskMode(t *testing.T) {
+	t.Parallel()
+	env := newTestAgentEnv(t)
+
+	// Without task mode — should NOT contain Task Mode section.
+	prompt := env.agent.buildSystemPrompt(context.Background(), "#test", env.agent.loadConfig())
+	if strings.Contains(prompt, "Task Mode") {
+		t.Error("normal prompt should NOT contain Task Mode section")
+	}
+
+	// With task mode — should contain Task Mode section.
+	ctx := context.WithValue(context.Background(), taskModeKey{}, true)
+	prompt = env.agent.buildSystemPrompt(ctx, "#test", env.agent.loadConfig())
+	if !strings.Contains(prompt, "Task Mode") {
+		t.Error("task mode prompt should contain Task Mode section")
+	}
+	if !strings.Contains(prompt, "Focus ONLY on the task instruction") {
+		t.Error("task mode prompt should contain focus instruction")
 	}
 }

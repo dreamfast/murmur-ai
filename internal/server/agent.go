@@ -36,6 +36,12 @@ const crossChannelMaxMsgLen = 300
 // prompt build to a reasonable bound.
 const crossChannelMaxChannels = 5
 
+// maxEphemeralHistoryFetch is the maximum number of messages to retrieve from
+// an ephemeral conversation context when copying the final response back to
+// the real channel. This is intentionally large to handle multi-tool-call
+// conversations without truncation.
+const maxEphemeralHistoryFetch = 1000
+
 // defaultSystemPrompt is used when no system prompt file is configured or the
 // file cannot be read.
 const defaultSystemPrompt = `You are Murmur, a personal AI assistant communicating over IRC. Be helpful and concise.`
@@ -45,6 +51,17 @@ const defaultSystemPrompt = `You are Murmur, a personal AI assistant communicati
 // (e.g., the permissions_manage tool verifying admin status) without changing
 // the tool handler signature.
 type requestNickKey struct{}
+
+// taskModeKey is a context key that signals the agent is executing a scheduled
+// task or event rather than responding to a user message. When set to true,
+// buildSystemPrompt appends a task-focus instruction to prevent the LLM from
+// referencing or continuing prior conversations. Only checked in buildSystemPrompt.
+type taskModeKey struct{}
+
+// ephemeralSeq is an atomic counter used to generate unique ephemeral channel
+// keys for scheduled tasks and events. This prevents key collisions when the
+// same task fires concurrently (e.g., overlapping executions of a recurring task).
+var ephemeralSeq atomic.Int64
 
 // agentConfig holds the mutable configuration fields of the Agent that can be
 // changed at runtime via hot config reload. All fields are protected by Agent.mu
@@ -264,59 +281,150 @@ func (a *Agent) HandleMessage(ctx context.Context, channel, nick, message string
 		return
 	}
 
-	a.runLoop(ctx, channel, nick)
+	a.runLoop(ctx, channel, channel, nick)
 }
 
-// RunScheduledTask executes a scheduled task by storing it as a system message
-// and running the LLM agent loop. This is called by the Scheduler for due tasks.
-// The createdBy parameter is the nick of the user who created the task; their
-// current permissions are used for tool filtering. If empty, no filtering is applied.
-func (a *Agent) RunScheduledTask(ctx context.Context, channel, taskDescription, createdBy string) {
-	// Acquire per-channel lock.
-	chLock := a.getChannelLock(channel)
-	chLock.Lock()
-	defer chLock.Unlock()
+// RunScheduledTask executes a scheduled task using an ephemeral conversation
+// context to prevent context pollution. The task instruction is stored in an
+// ephemeral channel key so the LLM only sees the task instruction, not prior
+// channel conversations. After the loop completes, the final assistant response
+// is copied to the real channel's history and the ephemeral context is cleaned up.
+//
+// The ephemeral key includes a per-execution sequence number to prevent
+// collisions when the same recurring task fires concurrently (overlapping runs).
+//
+// The taskID is included in the ephemeral key for debuggability. The createdBy
+// parameter is the nick of the user who created the task; their current
+// permissions are used for tool filtering. If empty, no filtering is applied.
+func (a *Agent) RunScheduledTask(ctx context.Context, taskID int64, channel, taskDescription, createdBy string) {
+	// Build ephemeral channel key with a unique sequence number to prevent
+	// collisions between overlapping executions of the same recurring task.
+	seq := ephemeralSeq.Add(1)
+	memoryChannel := fmt.Sprintf("__task:%d:%s:%d", taskID, channel, seq)
 
-	// Store the task as a system message with a prefix.
+	// Ensure ephemeral context is always cleaned up, even on panic.
+	defer func() {
+		if err := a.memory.ClearHistory(memoryChannel); err != nil {
+			a.logger.Error("RunScheduledTask: failed to clean up ephemeral context",
+				"error", err, "memoryChannel", memoryChannel)
+		}
+	}()
+
+	// Mark context as task mode so buildSystemPrompt appends focus instruction.
+	ctx = context.WithValue(ctx, taskModeKey{}, true)
+
+	// Store the task instruction in the ephemeral context.
 	content := "[Scheduled Task] " + taskDescription
-	if err := a.memory.AddMessage(channel, llm.RoleSystem, content, "", ""); err != nil {
+	if err := a.memory.AddMessage(memoryChannel, llm.RoleSystem, content, "", ""); err != nil {
 		a.logger.Error("failed to store scheduled task message", "error", err, "channel", channel)
 		return
 	}
 
-	a.runLoop(ctx, channel, createdBy)
+	// Acquire the real channel lock for IRC output serialization.
+	chLock := a.getChannelLock(channel)
+	chLock.Lock()
+	defer chLock.Unlock()
+
+	// Run the agent loop with ephemeral memory but real IRC output.
+	a.runLoop(ctx, memoryChannel, channel, createdBy)
+
+	// Copy the final assistant response to the real channel's history so
+	// users can see what the task did.
+	a.copyFinalResponse(memoryChannel, channel)
 }
 
-// HandleEvent processes an external event through the LLM agent loop. It
-// acquires the per-channel lock, stores the event as a system message, and
-// runs the agent loop. The event is formatted as a system message so the LLM
+// HandleEvent processes an external event through the LLM agent loop using
+// an ephemeral conversation context to prevent context pollution (same pattern
+// as RunScheduledTask). The event is formatted as a system message so the LLM
 // can decide how to respond. The nick parameter identifies the user whose
 // permissions should apply; use "_system" for system-level events that should
 // bypass permission filtering.
 func (a *Agent) HandleEvent(ctx context.Context, channel, nick, source, eventType, summary, data string) error {
-	chLock := a.getChannelLock(channel)
-	chLock.Lock()
-	defer chLock.Unlock()
+	// Build ephemeral channel key with a unique sequence number.
+	seq := ephemeralSeq.Add(1)
+	memoryChannel := fmt.Sprintf("__event:%s:%d", channel, seq)
+
+	// Ensure ephemeral context is always cleaned up, even on panic.
+	defer func() {
+		if err := a.memory.ClearHistory(memoryChannel); err != nil {
+			a.logger.Error("HandleEvent: failed to clean up ephemeral context",
+				"error", err, "memoryChannel", memoryChannel)
+		}
+	}()
+
+	// Mark context as task mode so buildSystemPrompt appends focus instruction.
+	ctx = context.WithValue(ctx, taskModeKey{}, true)
 
 	content := fmt.Sprintf("[Event from %s] %s: %s", source, eventType, summary)
 	if data != "" {
 		content += "\n" + data
 	}
 
-	if err := a.memory.AddMessage(channel, llm.RoleSystem, content, "", ""); err != nil {
+	if err := a.memory.AddMessage(memoryChannel, llm.RoleSystem, content, "", ""); err != nil {
 		return fmt.Errorf("HandleEvent: store message: %w", err)
 	}
 
-	a.runLoop(ctx, channel, nick)
+	// Acquire the real channel lock for IRC output serialization.
+	chLock := a.getChannelLock(channel)
+	chLock.Lock()
+	defer chLock.Unlock()
+
+	// Run the agent loop with ephemeral memory but real IRC output.
+	a.runLoop(ctx, memoryChannel, channel, nick)
+
+	// Copy the final assistant response to the real channel's history.
+	a.copyFinalResponse(memoryChannel, channel)
+
 	return nil
+}
+
+// copyFinalResponse copies the last assistant text response from an ephemeral
+// conversation context to the real channel's history. This allows users to see
+// what a scheduled task or event produced. Tool-call envelopes (JSON with
+// tool_calls) are skipped — only human-readable text responses are copied.
+func (a *Agent) copyFinalResponse(memoryChannel, ircChannel string) {
+	history, err := a.memory.GetHistory(memoryChannel, maxEphemeralHistoryFetch)
+	if err != nil {
+		a.logger.Error("copyFinalResponse: failed to read ephemeral history",
+			"error", err, "channel", ircChannel)
+		return
+	}
+
+	// Walk backwards to find the last assistant text response.
+	for i := len(history) - 1; i >= 0; i-- {
+		msg := history[i]
+		if msg.Role != llm.RoleAssistant || msg.Content == "" {
+			continue
+		}
+		// Use reconstructToolCalls to reliably detect tool-call envelopes
+		// rather than fragile string prefix matching.
+		reconstructed := reconstructToolCalls(msg)
+		if len(reconstructed.ToolCalls) > 0 {
+			continue
+		}
+		if err := a.memory.AddMessage(ircChannel, llm.RoleAssistant, msg.Content, "", ""); err != nil {
+			a.logger.Error("copyFinalResponse: failed to copy response to real channel",
+				"error", err, "channel", ircChannel)
+		}
+		return
+	}
 }
 
 // runLoop is the core LLM iteration loop shared by HandleMessage,
 // RunScheduledTask, and HandleEvent. It assumes the per-channel lock is
 // already held and the initial message (user or system) has been stored in
-// memory. The nick parameter identifies the user for permission filtering;
+// memory.
+//
+// The memoryChannel parameter is used for all conversation storage and
+// retrieval (memory.GetHistory, memory.AddMessage). The ircChannel parameter
+// is used for all IRC output (send, status). For normal user messages these
+// are the same channel. For scheduled tasks and events, memoryChannel is an
+// ephemeral key (e.g., "__task:42:#general:1") while ircChannel is the real
+// IRC channel (e.g., "#general"), providing context isolation.
+//
+// The nick parameter identifies the user for permission filtering;
 // system-initiated actions use "_system" which bypasses filtering.
-func (a *Agent) runLoop(ctx context.Context, channel, nick string) {
+func (a *Agent) runLoop(ctx context.Context, memoryChannel, ircChannel, nick string) {
 	// Inject the requesting user's nick into the context so server-side tool
 	// handlers can perform defense-in-depth authorization checks.
 	ctx = context.WithValue(ctx, requestNickKey{}, nick)
@@ -329,7 +437,7 @@ func (a *Agent) runLoop(ctx context.Context, channel, nick string) {
 	for i := 0; i < maxIterations; i++ {
 		// Check context before each iteration.
 		if ctx.Err() != nil {
-			a.logger.Info("agent loop cancelled", "channel", channel, "iteration", i)
+			a.logger.Info("agent loop cancelled", "channel", ircChannel, "iteration", i)
 			return
 		}
 
@@ -343,17 +451,18 @@ func (a *Agent) runLoop(ctx context.Context, channel, nick string) {
 		a.mu.RUnlock()
 
 		// Build the messages array: system prompt + conversation history.
-		history, err := a.memory.GetHistory(channel, cfg.maxHistory)
+		// History is read from memoryChannel (ephemeral for tasks/events).
+		history, err := a.memory.GetHistory(memoryChannel, cfg.maxHistory)
 		if err != nil {
-			a.logger.Error("failed to get history", "error", err, "channel", channel)
-			a.send(channel, "error: failed to retrieve conversation history")
+			a.logger.Error("failed to get history", "error", err, "channel", ircChannel)
+			a.send(ircChannel, "error: failed to retrieve conversation history")
 			return
 		}
 
 		messages := make([]llm.Message, 0, 1+len(history))
 		messages = append(messages, llm.Message{
 			Role:    llm.RoleSystem,
-			Content: a.buildSystemPrompt(channel, cfg),
+			Content: a.buildSystemPrompt(ctx, ircChannel, cfg),
 		})
 		// Reconstruct structured tool_calls on assistant messages so that
 		// OpenAI-compatible APIs receive the correct message format.
@@ -415,24 +524,26 @@ func (a *Agent) runLoop(ctx context.Context, channel, nick string) {
 
 		// Filter tools based on user permissions. System nicks (starting
 		// with _) and nil PermissionManager bypass filtering.
+		// Use ircChannel for permission resolution (real channel context).
 		if pm != nil {
-			busTools = pm.FilterTools(busTools, nick, channel, a.GetProviderNames())
+			busTools = pm.FilterTools(busTools, nick, ircChannel, a.GetProviderNames())
 		}
 
 		tools := llm.ConvertBusTools(busTools)
 
 		// Get the provider for this channel (per-channel override or global default).
-		provider, err := a.resolveProvider(channel, nick, pm)
+		// Use ircChannel for provider resolution (real channel context).
+		provider, err := a.resolveProvider(ircChannel, nick, pm)
 		if err != nil {
-			a.logger.Error("no active provider", "error", err, "channel", channel)
-			a.send(channel, "error: no LLM provider available")
+			a.logger.Error("no active provider", "error", err, "channel", ircChannel)
+			a.send(ircChannel, "error: no LLM provider available")
 			return
 		}
 
 		if i == 0 {
-			a.status(channel, cfg.verbose, fmt.Sprintf("thinking... [%s, %d tools]", provider.Name(), len(tools)))
+			a.status(ircChannel, cfg.verbose, fmt.Sprintf("thinking... [%s, %d tools]", provider.Name(), len(tools)))
 		} else {
-			a.status(channel, cfg.verbose, fmt.Sprintf("thinking... [%s, iteration %d]", provider.Name(), i+1))
+			a.status(ircChannel, cfg.verbose, fmt.Sprintf("thinking... [%s, iteration %d]", provider.Name(), i+1))
 		}
 
 		// Call the LLM with timing measurement.
@@ -446,17 +557,17 @@ func (a *Agent) runLoop(ctx context.Context, channel, nick string) {
 			a.logger.Error("LLM call failed",
 				"error", err,
 				"provider", provider.Name(),
-				"channel", channel,
+				"channel", ircChannel,
 				"iteration", i,
 				"latency", llmDuration,
 			)
-			a.send(channel, fmt.Sprintf("error: LLM call failed: %v", err))
+			a.send(ircChannel, fmt.Sprintf("error: LLM call failed: %v", err))
 			return
 		}
 		if cfg.debug.LogLLMRequests {
 			a.logger.Info("llm_request",
 				"provider", provider.Name(),
-				"channel", channel,
+				"channel", ircChannel,
 				"iteration", i,
 				"latency", llmDuration,
 				"prompt_tokens", resp.Usage.PromptTokens,
@@ -482,17 +593,17 @@ func (a *Agent) runLoop(ctx context.Context, channel, nick string) {
 			envelopeJSON, err := json.Marshal(envelope)
 			if err != nil {
 				a.logger.Error("failed to marshal tool calls", "error", err)
-				a.send(channel, "error: failed to process tool calls")
+				a.send(ircChannel, "error: failed to process tool calls")
 				return
 			}
 
 			if resp.Content != "" {
 				a.logger.Debug("assistant message had both content and tool_calls, storing tool_calls only",
 					"content_preview", truncate(resp.Content, 100),
-					"channel", channel,
+					"channel", ircChannel,
 				)
 			}
-			if err := a.memory.AddMessage(channel, llm.RoleAssistant, string(envelopeJSON), "", ""); err != nil {
+			if err := a.memory.AddMessage(memoryChannel, llm.RoleAssistant, string(envelopeJSON), "", ""); err != nil {
 				a.logger.Error("failed to store assistant tool call message", "error", err)
 			}
 
@@ -502,26 +613,26 @@ func (a *Agent) runLoop(ctx context.Context, channel, nick string) {
 					a.logger.Info("routing tool call",
 						"tool", tc.Function.Name,
 						"call_id", tc.ID,
-						"channel", channel,
+						"channel", ircChannel,
 					)
 				}
-				a.status(channel, cfg.verbose, fmt.Sprintf("calling %s...", tc.Function.Name))
+				a.status(ircChannel, cfg.verbose, fmt.Sprintf("calling %s...", tc.Function.Name))
 
 				toolStart := time.Now()
-				result, routeErr := a.routeToolCall(ctx, channel, tc.Function.Name, json.RawMessage(tc.Function.Arguments))
+				result, routeErr := a.routeToolCall(ctx, ircChannel, tc.Function.Name, json.RawMessage(tc.Function.Arguments))
 				toolDuration := time.Since(toolStart)
 				if routeErr != nil {
 					if cfg.debug.LogToolCalls {
 						a.logger.Error("tool_call_result",
 							"tool", tc.Function.Name,
 							"call_id", tc.ID,
-							"channel", channel,
+							"channel", ircChannel,
 							"status", "error",
 							"duration", toolDuration,
 							"error", routeErr,
 						)
 					}
-					a.status(channel, cfg.verbose, fmt.Sprintf("%s failed: %s", tc.Function.Name, truncate(routeErr.Error(), 80)))
+					a.status(ircChannel, cfg.verbose, fmt.Sprintf("%s failed: %s", tc.Function.Name, truncate(routeErr.Error(), 80)))
 					// Feed the error back to the LLM as a tool result.
 					result = fmt.Sprintf("error: %v", routeErr)
 
@@ -531,7 +642,7 @@ func (a *Agent) runLoop(ctx context.Context, channel, nick string) {
 						a.logger.Warn("tool hit consecutive failure limit, removing from available tools",
 							"tool", tc.Function.Name,
 							"failures", toolFailCounts[tc.Function.Name],
-							"channel", channel,
+							"channel", ircChannel,
 						)
 						// Append a hint to the error result so the LLM knows
 						// the tool is no longer available.
@@ -545,19 +656,19 @@ func (a *Agent) runLoop(ctx context.Context, channel, nick string) {
 						a.logger.Info("tool_call_result",
 							"tool", tc.Function.Name,
 							"call_id", tc.ID,
-							"channel", channel,
+							"channel", ircChannel,
 							"status", "ok",
 							"duration", toolDuration,
 							"result_bytes", len(result),
 						)
 					}
-					a.status(channel, cfg.verbose, fmt.Sprintf("%s done (%d bytes)", tc.Function.Name, len(result)))
+					a.status(ircChannel, cfg.verbose, fmt.Sprintf("%s done (%d bytes)", tc.Function.Name, len(result)))
 					// Reset failure count on success.
 					delete(toolFailCounts, tc.Function.Name)
 				}
 
-				// Store the tool result in memory.
-				if err := a.memory.AddMessage(channel, llm.RoleTool, result, tc.Function.Name, tc.ID); err != nil {
+				// Store the tool result in memory (ephemeral context).
+				if err := a.memory.AddMessage(memoryChannel, llm.RoleTool, result, tc.Function.Name, tc.ID); err != nil {
 					a.logger.Error("failed to store tool result", "error", err)
 				}
 			}
@@ -566,23 +677,23 @@ func (a *Agent) runLoop(ctx context.Context, channel, nick string) {
 			continue
 		}
 
-		// Text-only response — store and send to IRC.
+		// Text-only response — store in memory and send to IRC.
 		if resp.Content != "" {
-			if err := a.memory.AddMessage(channel, llm.RoleAssistant, resp.Content, "", ""); err != nil {
+			if err := a.memory.AddMessage(memoryChannel, llm.RoleAssistant, resp.Content, "", ""); err != nil {
 				a.logger.Error("failed to store assistant response", "error", err)
 			}
-			a.send(channel, resp.Content)
+			a.send(ircChannel, resp.Content)
 			return
 		}
 
 		// Empty response (no tool calls, no content) — unusual but handle it.
-		a.logger.Warn("LLM returned empty response", "channel", channel, "iteration", i)
-		a.send(channel, "I received an empty response from the LLM. Please try again.")
+		a.logger.Warn("LLM returned empty response", "channel", ircChannel, "iteration", i)
+		a.send(ircChannel, "I received an empty response from the LLM. Please try again.")
 		return
 	}
 
 	// Max iterations reached.
-	a.send(channel, "I've reached the maximum number of tool calls for this message. Please try again.")
+	a.send(ircChannel, "I've reached the maximum number of tool calls for this message. Please try again.")
 }
 
 // SetProvider switches the LLM provider for a specific channel. If name is
@@ -856,9 +967,11 @@ func (a *Agent) GetProviderNames() []string {
 
 // buildSystemPrompt constructs the full system prompt by appending dynamic
 // context (active model, IRC state, cross-channel activity) to the static
-// base prompt loaded from the config file. The cfg parameter is a snapshot
-// of the agent's mutable config taken under RLock by the caller.
-func (a *Agent) buildSystemPrompt(channel string, cfg agentConfig) string {
+// base prompt loaded from the config file. The ctx parameter is checked for
+// taskModeKey to append a task-focus instruction when executing scheduled
+// tasks or events. The cfg parameter is a snapshot of the agent's mutable
+// config taken under RLock by the caller.
+func (a *Agent) buildSystemPrompt(ctx context.Context, channel string, cfg agentConfig) string {
 	var sb strings.Builder
 	sb.WriteString(cfg.systemPrompt)
 
@@ -871,6 +984,13 @@ func (a *Agent) buildSystemPrompt(channel string, cfg agentConfig) string {
 	}
 	fmt.Fprintf(&sb, "\n\n## Active Model\n- Active model: %s (%s)\n",
 		sanitizePromptValue(modelName), scope)
+
+	// Task mode: append a focus instruction when executing scheduled tasks
+	// or events to prevent the LLM from referencing prior conversations.
+	// This is checked before the conn nil guard so it works in tests too.
+	if v, ok := ctx.Value(taskModeKey{}).(bool); ok && v {
+		sb.WriteString("\n\n## Task Mode\nYou are executing a scheduled task or event. Focus ONLY on the task instruction below. Do not reference or continue any prior conversations.\n")
+	}
 
 	if a.conn == nil {
 		return sb.String()

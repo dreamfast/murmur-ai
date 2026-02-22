@@ -20,15 +20,16 @@ type mockTaskRunner struct {
 }
 
 type taskRunCall struct {
+	TaskID      int64
 	Channel     string
 	Description string
 	CreatedBy   string
 }
 
-func (m *mockTaskRunner) RunScheduledTask(_ context.Context, channel, description, createdBy string) {
+func (m *mockTaskRunner) RunScheduledTask(_ context.Context, taskID int64, channel, description, createdBy string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.calls = append(m.calls, taskRunCall{Channel: channel, Description: description, CreatedBy: createdBy})
+	m.calls = append(m.calls, taskRunCall{TaskID: taskID, Channel: channel, Description: description, CreatedBy: createdBy})
 }
 
 func (m *mockTaskRunner) getCalls() []taskRunCall {
@@ -263,7 +264,7 @@ type blockingTaskRunner struct {
 	unblock chan struct{}
 }
 
-func (r *blockingTaskRunner) RunScheduledTask(_ context.Context, _, _, _ string) {
+func (r *blockingTaskRunner) RunScheduledTask(_ context.Context, _ int64, _, _, _ string) {
 	r.started.Add(1)
 	<-r.unblock
 }
@@ -605,7 +606,7 @@ func TestScheduler_OneShotPanicResetsNextRun(t *testing.T) {
 // panickingTaskRunner panics when RunScheduledTask is called.
 type panickingTaskRunner struct{}
 
-func (r *panickingTaskRunner) RunScheduledTask(_ context.Context, _, _, _ string) {
+func (r *panickingTaskRunner) RunScheduledTask(_ context.Context, _ int64, _, _, _ string) {
 	panic("simulated task panic")
 }
 
