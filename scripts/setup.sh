@@ -502,37 +502,26 @@ else
 fi
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Step 7: Search Provider
+# Step 7: Brave Search API Key (optional)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-step 7 "Web Search"
-info "Give Murmur the ability to search the web."
-
-SEARCH_PROVIDER="none"
-ask_choice SEARCH_PROVIDER "Search provider" "SearXNG (self-hosted, Docker)|Brave Search (API key)|None" "None"
+step 7 "Brave Search (optional)"
+info "If you have a Brave Search API key, Murmur can use it for web search."
+info "You can also use SearXNG (self-hosted) — select it in the next step."
 
 BRAVE_KEY=""
-case "$SEARCH_PROVIDER" in
-"SearXNG (self-hosted, Docker)")
-	SEARCH_PROVIDER="searxng"
-	add_docker_profile "search"
-	success "SearXNG will be started alongside Murmur"
-	;;
-"Brave Search (API key)")
-	SEARCH_PROVIDER="brave"
+SEARCH_PROVIDER="none"
+if ask_yesno "Configure Brave Search API key?" "n"; then
 	ask_secret BRAVE_KEY "Brave Search API key"
-	if [[ -z "$BRAVE_KEY" ]]; then
-		warn "No API key provided — Brave Search disabled."
-		SEARCH_PROVIDER="none"
-	else
+	if [[ -n "$BRAVE_KEY" ]]; then
+		SEARCH_PROVIDER="brave"
 		success "Brave Search configured"
+	else
+		warn "No API key provided — skipping Brave Search."
 	fi
-	;;
-*)
-	SEARCH_PROVIDER="none"
-	success "No search provider (add one later)"
-	;;
-esac
+else
+	success "Skipped (use SearXNG or add Brave later)"
+fi
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Step 8: Server Tools
@@ -540,33 +529,64 @@ esac
 
 step 8 "Server Tools"
 info "Select which tools to enable on the server."
+info "Tools marked with * are selected by default."
 
 TOOLS_SELECTED=""
 ask_multi TOOLS_SELECTED "Enable server-side tools" \
-	"shell|code_exec|rss|dns|http|irc_manage|config_manage" \
-	"shell|code_exec|rss|dns|http|irc_manage|config_manage"
+	"shell|code_exec|systeminfo|rss|dns|http|irc_manage|config_manage|searxng|browser|opencode" \
+	"shell|code_exec|systeminfo|rss|dns|http|irc_manage|config_manage"
 
 # Parse selections into flags
 TOOL_SHELL="false"
 TOOL_CODE_EXEC="false"
+TOOL_SYSTEMINFO="false"
 TOOL_RSS="false"
 TOOL_DNS="false"
 TOOL_HTTP="false"
 TOOL_IRC_MANAGE="false"
 TOOL_CONFIG_MANAGE="false"
+TOOL_SEARXNG="false"
+TOOL_BROWSER="false"
+TOOL_OPENCODE="false"
+
+OPENCODE_API_KEY=""
 
 IFS='|' read -ra SELECTED_TOOLS <<<"$TOOLS_SELECTED"
 for tool in "${SELECTED_TOOLS[@]}"; do
 	case "$tool" in
 	shell) TOOL_SHELL="true" ;;
 	code_exec) TOOL_CODE_EXEC="true" ;;
+	systeminfo) TOOL_SYSTEMINFO="true" ;;
 	rss) TOOL_RSS="true" ;;
 	dns) TOOL_DNS="true" ;;
 	http) TOOL_HTTP="true" ;;
 	irc_manage) TOOL_IRC_MANAGE="true" ;;
 	config_manage) TOOL_CONFIG_MANAGE="true" ;;
+	searxng)
+		TOOL_SEARXNG="true"
+		SEARCH_PROVIDER="searxng"
+		add_docker_profile "search"
+		;;
+	browser)
+		TOOL_BROWSER="true"
+		add_docker_profile "browser"
+		;;
+	opencode)
+		TOOL_OPENCODE="true"
+		add_docker_profile "opencode"
+		;;
 	esac
 done
+
+# Prompt for OpenCode API key if selected
+if [[ "$TOOL_OPENCODE" == "true" ]]; then
+	echo ""
+	info "OpenCode requires an OpenRouter API key for its coding agent."
+	ask_secret OPENCODE_API_KEY "OpenRouter API key for OpenCode"
+	if [[ -z "$OPENCODE_API_KEY" ]]; then
+		warn "No API key — OpenCode may not work. Set OPENROUTER_API_KEY in .env later."
+	fi
+fi
 
 success "Tools: ${SELECTED_TOOLS[*]:-none}"
 

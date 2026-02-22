@@ -7,7 +7,8 @@
 #   LLM_PROVIDER_ID, LLM_API_BASE, LLM_MODEL, ADMIN_NICK_TOML, ADMIN_NICK_KEY,
 #   BUS_KEY, VAULT_PASS, DASHBOARD_ENABLED, DASHBOARD_PORT, SEARCH_PROVIDER,
 #   TOOL_SHELL, TOOL_CODE_EXEC, TOOL_RSS, TOOL_DNS, TOOL_HTTP,
-#   TOOL_IRC_MANAGE, TOOL_CONFIG_MANAGE, OPER_PASS (for server config)
+#   TOOL_IRC_MANAGE, TOOL_CONFIG_MANAGE, TOOL_SYSTEMINFO, TOOL_SEARXNG,
+#   TOOL_BROWSER, TOOL_OPENCODE, OPER_PASS, OPENCODE_API_KEY (for server config)
 # Additional for client: CLIENT_ID, CLIENT_HOSTNAME, CLIENT_AUTONOMY,
 #   IRC_PASSWORD_TOML, CLIENT_NICK_SAFE, BUS_KEY_TOML, VAULT_ENABLED,
 #   CT_* flags, API_ENABLED (for standalone client config)
@@ -186,7 +187,15 @@ block_private_ips = true
 TOML
 	fi
 
-	if [[ "$SEARCH_PROVIDER" == "searxng" ]]; then
+	if [[ "${TOOL_SYSTEMINFO:-false}" == "true" ]]; then
+		cat <<'TOML'
+
+[tools.systeminfo]
+enabled = true
+TOML
+	fi
+
+	if [[ "${TOOL_SEARXNG:-false}" == "true" || "$SEARCH_PROVIDER" == "searxng" ]]; then
 		local searxng_url
 		if [[ "$INSTALL_MODE" == "docker" ]]; then
 			searxng_url="http://searxng:8080"
@@ -207,6 +216,36 @@ TOML
 enabled = true
 api_key = "vault:brave-search-key"
 max_results = 5
+TOML
+	fi
+
+	if [[ "${TOOL_BROWSER:-false}" == "true" ]]; then
+		local browser_endpoint
+		if [[ "$INSTALL_MODE" == "docker" ]]; then
+			browser_endpoint="http://browser:3001"
+		else
+			browser_endpoint="http://localhost:3001"
+		fi
+		cat <<TOML
+
+[tools.browser]
+enabled = true
+endpoint = "$browser_endpoint"
+TOML
+	fi
+
+	if [[ "${TOOL_OPENCODE:-false}" == "true" ]]; then
+		local opencode_url
+		if [[ "$INSTALL_MODE" == "docker" ]]; then
+			opencode_url="http://opencode:3000"
+		else
+			opencode_url="http://localhost:3000"
+		fi
+		cat <<TOML
+
+[tools.opencode]
+enabled = true
+url = "$opencode_url"
 TOML
 	fi
 
@@ -567,6 +606,10 @@ generate_env_file() {
 	content+=$'\n'
 	if [[ "$DASHBOARD_ENABLED" == "true" ]]; then
 		content+="MURMUR_DASHBOARD_PORT=$DASHBOARD_PORT"
+		content+=$'\n'
+	fi
+	if [[ -n "${OPENCODE_API_KEY:-}" ]]; then
+		content+="OPENROUTER_API_KEY=$OPENCODE_API_KEY"
 		content+=$'\n'
 	fi
 	printf '%s' "$content"
