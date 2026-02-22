@@ -30,21 +30,28 @@ nickserv_register() {
 			backoff=$((backoff * 2))
 		fi
 
+		# Run the entire IRC conversation inside the container to avoid
+		# host-to-container pipe timing issues. Values are passed via
+		# environment variables (-e flags) to avoid shell injection.
 		local irc_output
-		irc_output="$({
-			if [[ -n "$IRC_SERVER_PASS" ]]; then
-				printf 'PASS %s\r\n' "$IRC_SERVER_PASS"
-			fi
-			printf 'NICK %s\r\n' "$nick"
-			printf 'USER %s 0 * :%s\r\n' "$nick" "$realname"
-			# Wait for MOTD to complete before sending NickServ command
-			sleep 3
-			printf 'PRIVMSG NickServ :REGISTER %s\r\n' "$password"
-			# Wait for NickServ response
-			sleep 5
-			printf 'QUIT :setup\r\n'
-		} | compose_cmd exec -T ircd \
-			sh -c 'timeout -t 15 nc localhost 6667 2>/dev/null' 2>&1)" || true
+		irc_output="$(compose_cmd exec -T \
+			-e "REG_NICK=$nick" \
+			-e "REG_PASS=$password" \
+			-e "REG_REALNAME=$realname" \
+			-e "REG_SERVER_PASS=${IRC_SERVER_PASS:-}" \
+			ircd sh -c '
+				{
+					if [ -n "$REG_SERVER_PASS" ]; then
+						printf "PASS %s\r\n" "$REG_SERVER_PASS"
+					fi
+					printf "NICK %s\r\n" "$REG_NICK"
+					printf "USER %s 0 * :%s\r\n" "$REG_NICK" "$REG_REALNAME"
+					sleep 3
+					printf "PRIVMSG NickServ :REGISTER %s\r\n" "$REG_PASS"
+					sleep 5
+					printf "QUIT :setup\r\n"
+				} | timeout -t 15 nc localhost 6667 2>/dev/null
+			' 2>&1)" || true
 
 		# Check for success indicators
 		if [[ "$irc_output" == *"Account created"* ]] ||
