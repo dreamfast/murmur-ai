@@ -8,7 +8,8 @@
 #   BUS_KEY, VAULT_PASS, DASHBOARD_ENABLED, DASHBOARD_PORT, SEARCH_PROVIDER,
 #   TOOL_SHELL, TOOL_CODE_EXEC, TOOL_RSS, TOOL_DNS, TOOL_HTTP,
 #   TOOL_IRC_MANAGE, TOOL_CONFIG_MANAGE, TOOL_SYSTEMINFO, TOOL_SEARXNG,
-#   TOOL_BROWSER, TOOL_OPENCODE, OPER_PASS, OPENCODE_API_KEY (for server config)
+#   TOOL_BROWSER, TOOL_OPENCODE, OPER_PASS, OPENCODE_API_KEY,
+#   RAG_ENABLED, SUMMARY_MODEL (for server config)
 # Additional for client: CLIENT_ID, CLIENT_HOSTNAME, CLIENT_AUTONOMY,
 #   IRC_PASSWORD_TOML, CLIENT_NICK_SAFE, BUS_KEY_TOML, VAULT_ENABLED,
 #   CT_* flags, API_ENABLED (for standalone client config)
@@ -96,6 +97,26 @@ temperature = 0.7
 [memory]
 db_path = "$memory_db_path"
 max_history = 100
+TOML
+
+	# Summary model (optional)
+	if [[ -n "${SUMMARY_MODEL:-}" ]]; then
+		cat <<TOML
+summary_model = "$(toml_escape "$SUMMARY_MODEL")"
+TOML
+	fi
+
+	# RAG memory search
+	if [[ "${RAG_ENABLED:-false}" == "true" ]]; then
+		cat <<'TOML'
+
+[memory.rag]
+enabled = true
+auto_ingest_summaries = true
+TOML
+	fi
+
+	cat <<TOML
 
 [scheduler]
 enabled = true

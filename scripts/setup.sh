@@ -431,6 +431,34 @@ fi
 success "Provider: ${BOLD}$LLM_PROVIDER${RESET} ($LLM_PROVIDER_ID)"
 success "Model: ${BOLD}$LLM_MODEL${RESET}"
 
+# ─── RAG Memory Search (sub-question within LLM step) ───────────────────────
+
+echo ""
+info "RAG memory search lets Murmur search its conversation history and ingested files."
+info "It uses FTS5 full-text search (no external dependencies)."
+
+RAG_ENABLED="false"
+SUMMARY_MODEL=""
+if ask_yesno "Enable RAG memory search?" "y"; then
+	RAG_ENABLED="true"
+	success "RAG memory search enabled"
+
+	# Optional: summary model for cheaper summarization
+	echo ""
+	info "You can use a separate (cheaper/faster) LLM for conversation summarization."
+	info "Leave empty to use the default provider ($LLM_PROVIDER_ID)."
+	if ask_yesno "Configure a separate summary model?" "n"; then
+		ask SUMMARY_MODEL "Summary model provider ID (must be configured in [llm.providers])" ""
+		if [[ -n "$SUMMARY_MODEL" ]]; then
+			success "Summary model: ${BOLD}$SUMMARY_MODEL${RESET}"
+		else
+			success "Using default provider for summaries"
+		fi
+	fi
+else
+	success "RAG disabled (enable later in config)"
+fi
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Step 4: Admin Account
 # ═══════════════════════════════════════════════════════════════════════════════
