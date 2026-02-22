@@ -78,10 +78,7 @@ type ShellConfig struct {
 // ParseTimeout parses the shell timeout string into a time.Duration.
 // Returns a default of 30s if the timeout is not set.
 func (s *ShellConfig) ParseTimeout() (time.Duration, error) {
-	if s.Timeout == "" {
-		return 30 * time.Second, nil
-	}
-	d, err := time.ParseDuration(s.Timeout)
+	d, err := parseDurationDefault(s.Timeout, 30*time.Second)
 	if err != nil {
 		return 0, fmt.Errorf("ShellConfig.ParseTimeout: %w", err)
 	}
@@ -246,10 +243,7 @@ func (h *HTTPToolConfig) GetBlockPrivateIPs() bool {
 // ParseTimeout parses the HTTP timeout string into a time.Duration.
 // Returns a default of 30s if the timeout is not set.
 func (h *HTTPToolConfig) ParseTimeout() (time.Duration, error) {
-	if h.Timeout == "" {
-		return 30 * time.Second, nil
-	}
-	d, err := time.ParseDuration(h.Timeout)
+	d, err := parseDurationDefault(h.Timeout, 30*time.Second)
 	if err != nil {
 		return 0, fmt.Errorf("HTTPToolConfig.ParseTimeout: %w", err)
 	}
@@ -303,148 +297,219 @@ type IRCManageConfig struct {
 }
 
 // validate checks tool-specific configuration for correctness and applies
-// defaults where appropriate.
+// defaults where appropriate. Each tool type has its own validation method
+// to keep the logic focused and testable.
 func (t *ToolsConfig) validate() error {
-	if t.Shell != nil && t.Shell.Enabled {
-		if t.Shell.DockerImage == "" {
-			t.Shell.DockerImage = "ubuntu:24.04"
-		}
-		if err := validatePositiveDuration(t.Shell.Timeout, "tools.shell.timeout"); err != nil {
+	validators := []func() error{
+		t.validateShell,
+		t.validateMailRead,
+		t.validateMailSend,
+		t.validateCodeExec,
+		t.validateWebSearch,
+		t.validateGit,
+		t.validateRSS,
+		t.validateImageGen,
+		t.validateFileOps,
+		t.validateHTTP,
+		t.validateSearXNG,
+		t.validateOpenCode,
+		t.validateConfigManage,
+	}
+	for _, v := range validators {
+		if err := v(); err != nil {
 			return err
 		}
 	}
-	if t.MailRead != nil && t.MailRead.Enabled {
-		if t.MailRead.ThunderbirdProfile == "" {
-			return fmt.Errorf("tools.mail_read.thunderbird_profile is required when mail_read is enabled")
-		}
-		expanded, err := expandHome(t.MailRead.ThunderbirdProfile)
-		if err != nil {
-			return fmt.Errorf("tools.mail_read.thunderbird_profile: %w", err)
-		}
-		t.MailRead.ThunderbirdProfile = expanded
-		if t.MailRead.MailDir == "" {
-			t.MailRead.MailDir = "Mail/Local Folders"
-		}
-	}
-	if t.MailSend != nil && t.MailSend.Enabled {
-		if t.MailSend.SMTPHost == "" {
-			return fmt.Errorf("tools.mail_send.smtp_host is required when mail_send is enabled")
-		}
-		if t.MailSend.FromAddress == "" {
-			return fmt.Errorf("tools.mail_send.from_address is required when mail_send is enabled")
-		}
-		if t.MailSend.SMTPPort == 0 {
-			t.MailSend.SMTPPort = 587
-		}
-	}
-	if t.CodeExec != nil && t.CodeExec.Enabled {
-		if t.CodeExec.PistonURL == "" {
-			return fmt.Errorf("tools.code_exec.piston_url is required when code_exec is enabled")
-		}
-		// RunTimeout and RunMemoryLimit default to 0 (omitted from the
-		// Piston request), which lets Piston use its own server-side
-		// defaults (PISTON_RUN_TIMEOUT, PISTON_RUN_MEMORY_LIMIT). This
-		// avoids mismatches between the config default and Piston's limit.
-	}
-	if t.WebSearch != nil && t.WebSearch.Enabled {
-		if t.WebSearch.APIKey == "" {
-			return fmt.Errorf("tools.web_search.api_key is required when web_search is enabled")
-		}
-		if t.WebSearch.MaxResults == 0 {
-			t.WebSearch.MaxResults = 5
-		}
-		if t.WebSearch.MaxResults > 20 {
-			t.WebSearch.MaxResults = 20
-		}
-	}
-	if t.Git != nil && t.Git.Enabled {
-		if len(t.Git.AllowedRepos) == 0 {
-			return fmt.Errorf("tools.git.allowed_repos is required when git is enabled")
-		}
-		for i, repo := range t.Git.AllowedRepos {
-			if !filepath.IsAbs(repo) {
-				return fmt.Errorf("tools.git.allowed_repos[%d] must be an absolute path: %q", i, repo)
-			}
-		}
-	}
-	if t.RSS != nil && t.RSS.Enabled {
-		if t.RSS.MaxItems == 0 {
-			t.RSS.MaxItems = 10
-		}
-		if t.RSS.MaxItems > 50 {
-			t.RSS.MaxItems = 50
-		}
-	}
-	if t.ImageGen != nil && t.ImageGen.Enabled {
-		if t.ImageGen.ComfyUIHost == "" {
-			return fmt.Errorf("tools.image_gen.comfyui_host is required when image_gen is enabled")
-		}
-		if t.ImageGen.OutputDir == "" {
-			return fmt.Errorf("tools.image_gen.output_dir is required when image_gen is enabled")
-		}
-	}
-	if t.FileOps != nil && t.FileOps.Enabled {
-		if len(t.FileOps.AllowedPaths) == 0 {
-			return fmt.Errorf("tools.file_ops.allowed_paths is required when file_ops is enabled")
-		}
-		for i, p := range t.FileOps.AllowedPaths {
-			if !filepath.IsAbs(p) {
-				return fmt.Errorf("tools.file_ops.allowed_paths[%d] must be an absolute path: %q", i, p)
-			}
-		}
-	}
+	return nil
+}
 
-	// Validate HTTP tool config.
-	if t.HTTP != nil && t.HTTP.Enabled {
-		if err := validatePositiveDuration(t.HTTP.Timeout, "tools.http.timeout"); err != nil {
-			return err
-		}
-		if t.HTTP.MaxResponseBytes < 0 {
-			return fmt.Errorf("tools.http.max_response_bytes must be non-negative, got %d", t.HTTP.MaxResponseBytes)
-		}
-		if t.HTTP.MaxResponseBytes == 0 {
-			t.HTTP.MaxResponseBytes = 1048576 // 1MB
+func (t *ToolsConfig) validateShell() error {
+	if t.Shell == nil || !t.Shell.Enabled {
+		return nil
+	}
+	if t.Shell.DockerImage == "" {
+		t.Shell.DockerImage = "ubuntu:24.04"
+	}
+	return validatePositiveDuration(t.Shell.Timeout, "tools.shell.timeout")
+}
+
+func (t *ToolsConfig) validateMailRead() error {
+	if t.MailRead == nil || !t.MailRead.Enabled {
+		return nil
+	}
+	if t.MailRead.ThunderbirdProfile == "" {
+		return fmt.Errorf("tools.mail_read.thunderbird_profile is required when mail_read is enabled")
+	}
+	expanded, err := expandHome(t.MailRead.ThunderbirdProfile)
+	if err != nil {
+		return fmt.Errorf("tools.mail_read.thunderbird_profile: %w", err)
+	}
+	t.MailRead.ThunderbirdProfile = expanded
+	if t.MailRead.MailDir == "" {
+		t.MailRead.MailDir = "Mail/Local Folders"
+	}
+	return nil
+}
+
+func (t *ToolsConfig) validateMailSend() error {
+	if t.MailSend == nil || !t.MailSend.Enabled {
+		return nil
+	}
+	if t.MailSend.SMTPHost == "" {
+		return fmt.Errorf("tools.mail_send.smtp_host is required when mail_send is enabled")
+	}
+	if t.MailSend.FromAddress == "" {
+		return fmt.Errorf("tools.mail_send.from_address is required when mail_send is enabled")
+	}
+	if t.MailSend.SMTPPort == 0 {
+		t.MailSend.SMTPPort = 587
+	}
+	return nil
+}
+
+func (t *ToolsConfig) validateCodeExec() error {
+	if t.CodeExec == nil || !t.CodeExec.Enabled {
+		return nil
+	}
+	if t.CodeExec.PistonURL == "" {
+		return fmt.Errorf("tools.code_exec.piston_url is required when code_exec is enabled")
+	}
+	// RunTimeout and RunMemoryLimit default to 0 (omitted from the
+	// Piston request), which lets Piston use its own server-side
+	// defaults (PISTON_RUN_TIMEOUT, PISTON_RUN_MEMORY_LIMIT). This
+	// avoids mismatches between the config default and Piston's limit.
+	return nil
+}
+
+func (t *ToolsConfig) validateWebSearch() error {
+	if t.WebSearch == nil || !t.WebSearch.Enabled {
+		return nil
+	}
+	if t.WebSearch.APIKey == "" {
+		return fmt.Errorf("tools.web_search.api_key is required when web_search is enabled")
+	}
+	if t.WebSearch.MaxResults == 0 {
+		t.WebSearch.MaxResults = 5
+	}
+	if t.WebSearch.MaxResults > 20 {
+		t.WebSearch.MaxResults = 20
+	}
+	return nil
+}
+
+func (t *ToolsConfig) validateGit() error {
+	if t.Git == nil || !t.Git.Enabled {
+		return nil
+	}
+	if len(t.Git.AllowedRepos) == 0 {
+		return fmt.Errorf("tools.git.allowed_repos is required when git is enabled")
+	}
+	for i, repo := range t.Git.AllowedRepos {
+		if !filepath.IsAbs(repo) {
+			return fmt.Errorf("tools.git.allowed_repos[%d] must be an absolute path: %q", i, repo)
 		}
 	}
+	return nil
+}
 
-	// Validate SearXNG config.
-	if t.SearXNG != nil && t.SearXNG.Enabled {
-		if t.SearXNG.URL == "" {
-			return fmt.Errorf("tools.searxng.url is required when searxng is enabled")
-		}
-		if t.SearXNG.MaxResults == 0 {
-			t.SearXNG.MaxResults = 10
-		}
-		if t.SearXNG.MaxResults > 100 {
-			t.SearXNG.MaxResults = 100
+func (t *ToolsConfig) validateRSS() error {
+	if t.RSS == nil || !t.RSS.Enabled {
+		return nil
+	}
+	if t.RSS.MaxItems == 0 {
+		t.RSS.MaxItems = 10
+	}
+	if t.RSS.MaxItems > 50 {
+		t.RSS.MaxItems = 50
+	}
+	return nil
+}
+
+func (t *ToolsConfig) validateImageGen() error {
+	if t.ImageGen == nil || !t.ImageGen.Enabled {
+		return nil
+	}
+	if t.ImageGen.ComfyUIHost == "" {
+		return fmt.Errorf("tools.image_gen.comfyui_host is required when image_gen is enabled")
+	}
+	if t.ImageGen.OutputDir == "" {
+		return fmt.Errorf("tools.image_gen.output_dir is required when image_gen is enabled")
+	}
+	return nil
+}
+
+func (t *ToolsConfig) validateFileOps() error {
+	if t.FileOps == nil || !t.FileOps.Enabled {
+		return nil
+	}
+	if len(t.FileOps.AllowedPaths) == 0 {
+		return fmt.Errorf("tools.file_ops.allowed_paths is required when file_ops is enabled")
+	}
+	for i, p := range t.FileOps.AllowedPaths {
+		if !filepath.IsAbs(p) {
+			return fmt.Errorf("tools.file_ops.allowed_paths[%d] must be an absolute path: %q", i, p)
 		}
 	}
+	return nil
+}
 
-	// Validate OpenCode config.
-	if t.OpenCode != nil && t.OpenCode.Enabled {
-		if t.OpenCode.URL == "" {
-			return fmt.Errorf("tools.opencode.url is required when opencode is enabled")
-		}
-		if t.OpenCode.SessionTimeout == "" {
-			t.OpenCode.SessionTimeout = "5m"
-		}
-		if err := validatePositiveDuration(t.OpenCode.SessionTimeout, "tools.opencode.session_timeout"); err != nil {
-			return err
-		}
+func (t *ToolsConfig) validateHTTP() error {
+	if t.HTTP == nil || !t.HTTP.Enabled {
+		return nil
 	}
-
-	// Validate ConfigManage config.
-	if t.ConfigManage != nil && t.ConfigManage.Enabled {
-		if t.ConfigManage.ConfigPath == "" {
-			return fmt.Errorf("tools.config_manage.config_path is required when config_manage is enabled")
-		}
-		expanded, err := expandHome(t.ConfigManage.ConfigPath)
-		if err != nil {
-			return fmt.Errorf("tools.config_manage.config_path: %w", err)
-		}
-		t.ConfigManage.ConfigPath = expanded
+	if err := validatePositiveDuration(t.HTTP.Timeout, "tools.http.timeout"); err != nil {
+		return err
 	}
+	if t.HTTP.MaxResponseBytes < 0 {
+		return fmt.Errorf("tools.http.max_response_bytes must be non-negative, got %d", t.HTTP.MaxResponseBytes)
+	}
+	if t.HTTP.MaxResponseBytes == 0 {
+		t.HTTP.MaxResponseBytes = 1048576 // 1MB
+	}
+	return nil
+}
 
+func (t *ToolsConfig) validateSearXNG() error {
+	if t.SearXNG == nil || !t.SearXNG.Enabled {
+		return nil
+	}
+	if t.SearXNG.URL == "" {
+		return fmt.Errorf("tools.searxng.url is required when searxng is enabled")
+	}
+	if t.SearXNG.MaxResults == 0 {
+		t.SearXNG.MaxResults = 10
+	}
+	if t.SearXNG.MaxResults > 100 {
+		t.SearXNG.MaxResults = 100
+	}
+	return nil
+}
+
+func (t *ToolsConfig) validateOpenCode() error {
+	if t.OpenCode == nil || !t.OpenCode.Enabled {
+		return nil
+	}
+	if t.OpenCode.URL == "" {
+		return fmt.Errorf("tools.opencode.url is required when opencode is enabled")
+	}
+	if t.OpenCode.SessionTimeout == "" {
+		t.OpenCode.SessionTimeout = "5m"
+	}
+	return validatePositiveDuration(t.OpenCode.SessionTimeout, "tools.opencode.session_timeout")
+}
+
+func (t *ToolsConfig) validateConfigManage() error {
+	if t.ConfigManage == nil || !t.ConfigManage.Enabled {
+		return nil
+	}
+	if t.ConfigManage.ConfigPath == "" {
+		return fmt.Errorf("tools.config_manage.config_path is required when config_manage is enabled")
+	}
+	expanded, err := expandHome(t.ConfigManage.ConfigPath)
+	if err != nil {
+		return fmt.Errorf("tools.config_manage.config_path: %w", err)
+	}
+	t.ConfigManage.ConfigPath = expanded
 	return nil
 }
 

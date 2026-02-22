@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestLoadServerConfig_Valid(t *testing.T) {
@@ -1944,6 +1945,118 @@ func TestDebugConfigParseDebugLevel_AllLevels(t *testing.T) {
 				t.Errorf("ParseDebugLevel(%q) = %v, want %v", tt.level, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestParseDurationDefault(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		s          string
+		defaultVal time.Duration
+		want       time.Duration
+		wantErr    bool
+	}{
+		{"empty returns default", "", 5 * time.Minute, 5 * time.Minute, false},
+		{"valid duration", "30s", time.Minute, 30 * time.Second, false},
+		{"minutes", "2m", time.Second, 2 * time.Minute, false},
+		{"invalid", "bad", time.Second, 0, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := parseDurationDefault(tt.s, tt.defaultVal)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("parseDurationDefault(%q, %v) = %v, want %v", tt.s, tt.defaultVal, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIRCConfig_Validate(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		cfg     IRCConfig
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name:    "valid",
+			cfg:     IRCConfig{Server: "irc.example.com", Nick: "bot", Port: 6667},
+			wantErr: false,
+		},
+		{
+			name:    "missing server",
+			cfg:     IRCConfig{Nick: "bot"},
+			wantErr: true,
+			errMsg:  "irc.server is required",
+		},
+		{
+			name:    "missing nick",
+			cfg:     IRCConfig{Server: "irc.example.com"},
+			wantErr: true,
+			errMsg:  "irc.nick is required",
+		},
+		{
+			name:    "default port",
+			cfg:     IRCConfig{Server: "irc.example.com", Nick: "bot"},
+			wantErr: false,
+		},
+		{
+			name:    "default max_line_len",
+			cfg:     IRCConfig{Server: "irc.example.com", Nick: "bot"},
+			wantErr: false,
+		},
+		{
+			name:    "max_line_len too small",
+			cfg:     IRCConfig{Server: "irc.example.com", Nick: "bot", MaxLineLen: 256},
+			wantErr: true,
+			errMsg:  "irc.max_line_len must be at least 512",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := tt.cfg.Validate()
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				if tt.errMsg != "" && err.Error() != tt.errMsg {
+					t.Errorf("error = %q, want %q", err.Error(), tt.errMsg)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+
+	// Verify defaults are applied.
+	cfg := IRCConfig{Server: "irc.example.com", Nick: "bot"}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Port != 6697 {
+		t.Errorf("Port = %d, want default 6697", cfg.Port)
+	}
+	if cfg.MaxLineLen != 512 {
+		t.Errorf("MaxLineLen = %d, want default 512", cfg.MaxLineLen)
 	}
 }
 

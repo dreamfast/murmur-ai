@@ -218,6 +218,28 @@ type ChannelsConfig struct {
 	Bus string `toml:"bus"`
 }
 
+// Validate checks the shared IRC connection fields (server, nick, port,
+// max_line_len) and applies defaults. This is called by both
+// ServerConfig.Validate and ClientConfig.Validate to avoid duplication.
+func (c *IRCConfig) Validate() error {
+	if c.Server == "" {
+		return fmt.Errorf("irc.server is required")
+	}
+	if c.Nick == "" {
+		return fmt.Errorf("irc.nick is required")
+	}
+	if c.Port == 0 {
+		c.Port = 6697
+	}
+	if c.MaxLineLen == 0 {
+		c.MaxLineLen = 512
+	}
+	if c.MaxLineLen < 512 {
+		return fmt.Errorf("irc.max_line_len must be at least 512")
+	}
+	return nil
+}
+
 // SchedulerConfig holds scheduler and heartbeat settings.
 type SchedulerConfig struct {
 	// Enabled controls whether the scheduler runs.
@@ -411,20 +433,8 @@ func LoadServerConfig(path string) (*ServerConfig, error) {
 // Validate checks that all required server configuration fields are present
 // and valid.
 func (c *ServerConfig) Validate() error {
-	if c.IRC.Server == "" {
-		return fmt.Errorf("irc.server is required")
-	}
-	if c.IRC.Nick == "" {
-		return fmt.Errorf("irc.nick is required")
-	}
-	if c.IRC.Port == 0 {
-		c.IRC.Port = 6697
-	}
-	if c.IRC.MaxLineLen == 0 {
-		c.IRC.MaxLineLen = 512
-	}
-	if c.IRC.MaxLineLen < 512 {
-		return fmt.Errorf("irc.max_line_len must be at least 512")
+	if err := c.IRC.Validate(); err != nil {
+		return err
 	}
 	if c.IRC.Channels.Main == "" {
 		return fmt.Errorf("irc.channels.main is required")
@@ -470,31 +480,19 @@ func (c *ServerConfig) ParseScheduler() (ParsedSchedulerConfig, error) {
 	var parsed ParsedSchedulerConfig
 	var err error
 
-	if c.Scheduler.HeartbeatInterval != "" {
-		parsed.HeartbeatInterval, err = time.ParseDuration(c.Scheduler.HeartbeatInterval)
-		if err != nil {
-			return parsed, fmt.Errorf("ParseScheduler: heartbeat_interval: %w", err)
-		}
-	} else {
-		parsed.HeartbeatInterval = 5 * time.Minute
+	parsed.HeartbeatInterval, err = parseDurationDefault(c.Scheduler.HeartbeatInterval, 5*time.Minute)
+	if err != nil {
+		return parsed, fmt.Errorf("ParseScheduler: heartbeat_interval: %w", err)
 	}
 
-	if c.Scheduler.ClientTimeout != "" {
-		parsed.ClientTimeout, err = time.ParseDuration(c.Scheduler.ClientTimeout)
-		if err != nil {
-			return parsed, fmt.Errorf("ParseScheduler: client_timeout: %w", err)
-		}
-	} else {
-		parsed.ClientTimeout = 2 * time.Minute
+	parsed.ClientTimeout, err = parseDurationDefault(c.Scheduler.ClientTimeout, 2*time.Minute)
+	if err != nil {
+		return parsed, fmt.Errorf("ParseScheduler: client_timeout: %w", err)
 	}
 
-	if c.Scheduler.TickInterval != "" {
-		parsed.TickInterval, err = time.ParseDuration(c.Scheduler.TickInterval)
-		if err != nil {
-			return parsed, fmt.Errorf("ParseScheduler: tick_interval: %w", err)
-		}
-	} else {
-		parsed.TickInterval = 30 * time.Second
+	parsed.TickInterval, err = parseDurationDefault(c.Scheduler.TickInterval, 30*time.Second)
+	if err != nil {
+		return parsed, fmt.Errorf("ParseScheduler: tick_interval: %w", err)
 	}
 
 	parsed.MaxConcurrent = c.Scheduler.MaxConcurrent
@@ -508,10 +506,7 @@ func (c *ServerConfig) ParseScheduler() (ParsedSchedulerConfig, error) {
 // ParseApprovalTimeout parses the approval timeout duration string, applying
 // a default of 2 minutes if not set.
 func (c *ServerConfig) ParseApprovalTimeout() (time.Duration, error) {
-	if c.Approval.Timeout == "" {
-		return 2 * time.Minute, nil
-	}
-	d, err := time.ParseDuration(c.Approval.Timeout)
+	d, err := parseDurationDefault(c.Approval.Timeout, 2*time.Minute)
 	if err != nil {
 		return 0, fmt.Errorf("ParseApprovalTimeout: %w", err)
 	}
@@ -553,6 +548,16 @@ func validatePositiveDuration(s, field string) error {
 		return fmt.Errorf("%s: must be positive, got %s", field, s)
 	}
 	return nil
+}
+
+// parseDurationDefault parses a duration string, returning the given default
+// when the string is empty. This eliminates the repetitive if/else pattern
+// found in ParseScheduler, ParseApprovalTimeout, ParseHeartbeatInterval, etc.
+func parseDurationDefault(s string, defaultVal time.Duration) (time.Duration, error) {
+	if s == "" {
+		return defaultVal, nil
+	}
+	return time.ParseDuration(s)
 }
 
 // expandHome replaces a leading ~ with the user's home directory.

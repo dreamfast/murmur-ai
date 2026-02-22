@@ -123,20 +123,8 @@ func (c *ClientConfig) Validate() error {
 	if c.Client.ID == "" {
 		return fmt.Errorf("client.id is required")
 	}
-	if c.IRC.Server == "" {
-		return fmt.Errorf("irc.server is required")
-	}
-	if c.IRC.Nick == "" {
-		return fmt.Errorf("irc.nick is required")
-	}
-	if c.IRC.Port == 0 {
-		c.IRC.Port = 6697
-	}
-	if c.IRC.MaxLineLen == 0 {
-		c.IRC.MaxLineLen = 512
-	}
-	if c.IRC.MaxLineLen < 512 {
-		return fmt.Errorf("irc.max_line_len must be at least 512")
+	if err := c.IRC.Validate(); err != nil {
+		return err
 	}
 	if c.IRC.BusChannel == "" {
 		return fmt.Errorf("irc.bus_channel is required")
@@ -183,10 +171,7 @@ func (c *ClientConfig) Validate() error {
 // ParseHeartbeatInterval parses the heartbeat interval string into a
 // time.Duration, applying a default of 30s if not set.
 func (c *ClientConfig) ParseHeartbeatInterval() (time.Duration, error) {
-	if c.Heartbeat.Interval == "" {
-		return 30 * time.Second, nil
-	}
-	d, err := time.ParseDuration(c.Heartbeat.Interval)
+	d, err := parseDurationDefault(c.Heartbeat.Interval, 30*time.Second)
 	if err != nil {
 		return 0, fmt.Errorf("ParseHeartbeatInterval: %w", err)
 	}
