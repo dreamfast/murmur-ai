@@ -94,7 +94,19 @@ docker_start_all() {
 		services+=("murmur-client")
 	fi
 
+	# Run piston-setup one-shot to install language runtimes when code_exec is enabled.
+	# This must complete before murmur-server fetches the runtime list.
+	local run_piston_setup="false"
+	if [[ "${TOOL_CODE_EXEC:-false}" == "true" ]]; then
+		run_piston_setup="true"
+	fi
+
 	if [[ "$DRY_RUN" != "true" ]]; then
+		if [[ "$run_piston_setup" == "true" ]]; then
+			info "Installing Piston language runtimes (this may take a few minutes)..."
+			compose_cmd run --rm piston-setup || warn "piston-setup exited with errors — some languages may be unavailable"
+		fi
+
 		compose_cmd up -d "${services[@]}"
 
 		# Wait a moment for services to start
@@ -111,6 +123,9 @@ docker_start_all() {
 		done
 	else
 		info "[dry-run] Would run: docker compose up -d ${services[*]}"
+		if [[ "$run_piston_setup" == "true" ]]; then
+			info "[dry-run] Would run: docker compose run --rm piston-setup"
+		fi
 	fi
 }
 
