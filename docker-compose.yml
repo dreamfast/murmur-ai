@@ -72,6 +72,7 @@ services:
     volumes:
       - ./configs/server.docker.toml:/etc/murmur/server.toml:ro
       - ./configs/system_prompt.md:/data/system_prompt.md:ro
+      - ./configs/permissions.toml:/data/permissions.toml:ro
       - server-data:/data
       - /var/run/docker.sock:/var/run/docker.sock   # shell tool: Docker-out-of-Docker
     restart: unless-stopped
