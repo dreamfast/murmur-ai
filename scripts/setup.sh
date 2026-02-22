@@ -719,9 +719,7 @@ if [[ "$INSTALL_MODE" == "docker" ]]; then
 	fi
 	if [[ -n "$IRC_SERVER_PASS" || -n "${OPER_BCRYPT_HASH:-}" ]]; then
 		echo ""
-		warn "ergo.generated.yaml was created with custom credentials."
-		warn "Update docker-compose.yml to mount it instead of ergo.yaml:"
-		echo "    ${DIM}- ./configs/ergo.generated.yaml:/ircd/ircd.yaml:ro${RESET}"
+		info "ergo.generated.yaml was created with custom credentials and auto-mounted."
 	fi
 	echo ""
 	echo "  ${BOLD}Connect your IRC client:${RESET}"

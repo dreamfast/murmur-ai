@@ -162,6 +162,20 @@ docker_setup_ergo_config() {
 	elif [[ -n "${OPER_BCRYPT_HASH:-}" && "$DRY_RUN" == "true" ]]; then
 		info "[dry-run] Would set OPER credentials in ergo.generated.yaml"
 	fi
+
+	# Update docker-compose.yml to mount ergo.generated.yaml instead of ergo.yaml.
+	# This ensures the IRC server picks up server password and OPER credentials.
+	local compose_file="$PROJECT_DIR/docker-compose.yml"
+	if [[ "$DRY_RUN" != "true" ]]; then
+		if grep -q 'ergo\.yaml:/ircd/ircd\.yaml' "$compose_file" 2>/dev/null; then
+			# Use temp file for portability (BSD sed -i requires different syntax)
+			sed 's|ergo\.yaml:/ircd/ircd\.yaml|ergo.generated.yaml:/ircd/ircd.yaml|' \
+				"$compose_file" >"$compose_file.tmp" && mv "$compose_file.tmp" "$compose_file"
+			success "docker-compose.yml updated to mount ergo.generated.yaml"
+		fi
+	else
+		info "[dry-run] Would update docker-compose.yml to mount ergo.generated.yaml"
+	fi
 }
 
 # ─── NickServ registration ───────────────────────────────────────────────────

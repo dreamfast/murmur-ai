@@ -43,6 +43,8 @@ Thumbs.db
 # Live configs (contain personal settings — use .example files as templates)
 configs/server.docker.toml
 configs/client.docker.toml
+configs/ergo.generated.yaml
+configs/permissions.toml
 
 # Frontend build output and dependencies (keep .gitkeep for go:embed)
 web/dist/*
