@@ -22,11 +22,6 @@ import (
 // This prevents runaway tool-calling loops.
 const maxIterations = 10
 
-// maxConsecutiveToolFailures is the number of consecutive failures for the
-// same tool before the agent injects a system message telling the LLM to
-// stop using that tool and respond with what it has.
-const maxConsecutiveToolFailures = 2
-
 // crossChannelMaxMsgLen is the maximum length (in runes) of a single message
 // included in the cross-channel context section of the system prompt.
 const crossChannelMaxMsgLen = 300
@@ -501,11 +496,6 @@ func (a *Agent) runLoop(ctx context.Context, memoryChannel, ircChannel, nick str
 	// handlers can perform defense-in-depth authorization checks.
 	ctx = context.WithValue(ctx, requestNickKey{}, nick)
 
-	// Track consecutive failures per tool to detect retry loops. When a tool
-	// fails maxConsecutiveToolFailures times in a row, we inject a system
-	// message telling the LLM to stop using it.
-	toolFailCounts := make(map[string]int)
-
 	for i := 0; i < maxIterations; i++ {
 		// Check context before each iteration.
 		if ctx.Err() != nil {
@@ -579,19 +569,6 @@ func (a *Agent) runLoop(ctx context.Context, memoryChannel, ircChannel, nick str
 					break
 				}
 			}
-		}
-
-		// Remove tools that have hit the consecutive failure threshold so
-		// the LLM cannot call them again.
-		if len(toolFailCounts) > 0 {
-			filtered := busTools[:0]
-			for _, td := range busTools {
-				if toolFailCounts[td.Name] >= maxConsecutiveToolFailures {
-					continue
-				}
-				filtered = append(filtered, td)
-			}
-			busTools = filtered
 		}
 
 		// Filter tools based on user permissions. System nicks (starting
@@ -744,22 +721,6 @@ func (a *Agent) runLoop(ctx context.Context, memoryChannel, ircChannel, nick str
 					a.status(ircChannel, cfg.verbose, fmt.Sprintf("%s failed: %s", tc.Function.Name, truncate(routeErr.Error(), 80)))
 					// Feed the error back to the LLM as a tool result.
 					result = fmt.Sprintf("error: %v", routeErr)
-
-					// Track consecutive failures for circuit breaker.
-					toolFailCounts[tc.Function.Name]++
-					if toolFailCounts[tc.Function.Name] >= maxConsecutiveToolFailures {
-						a.logger.Warn("tool hit consecutive failure limit, removing from available tools",
-							"tool", tc.Function.Name,
-							"failures", toolFailCounts[tc.Function.Name],
-							"channel", ircChannel,
-						)
-						// Append a hint to the error result so the LLM knows
-						// the tool is no longer available.
-						result += fmt.Sprintf(
-							" [SYSTEM: %s has failed %d times consecutively and is now unavailable. Do NOT call it again. Respond to the user with what you know.]",
-							tc.Function.Name, toolFailCounts[tc.Function.Name],
-						)
-					}
 				} else {
 					if cfg.debug.LogToolCalls {
 						a.logger.Info("tool_call_result",
@@ -772,8 +733,6 @@ func (a *Agent) runLoop(ctx context.Context, memoryChannel, ircChannel, nick str
 						)
 					}
 					a.status(ircChannel, cfg.verbose, fmt.Sprintf("%s done (%d bytes)", tc.Function.Name, len(result)))
-					// Reset failure count on success.
-					delete(toolFailCounts, tc.Function.Name)
 				}
 
 				// Store the tool result in memory (ephemeral context).

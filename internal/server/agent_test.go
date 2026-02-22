@@ -2094,35 +2094,27 @@ func TestAgent_ExecuteTool_ImplementsInterface(t *testing.T) {
 	var _ ToolExecutor = env.agent
 }
 
-func TestAgent_ToolFailureCircuitBreaker(t *testing.T) {
+func TestAgent_ToolFailure_ErrorPassedToLLM(t *testing.T) {
 	t.Parallel()
 	env := newTestAgentEnv(t)
 
-	// LLM keeps calling the same failing tool. After maxConsecutiveToolFailures
-	// (2), the tool should be removed from the available tools list and the
-	// LLM should receive a text-only response on the next iteration.
-	failingToolCall := &llm.ChatResponse{
-		ToolCalls: []llm.ToolCall{
-			{
-				ID:   "call-fail",
-				Type: "function",
-				Function: llm.FunctionCall{
-					Name:      "broken_tool",
-					Arguments: `{}`,
+	// Tool fails, error is passed back to LLM, LLM responds with text.
+	env.mock.Responses = []*llm.ChatResponse{
+		{
+			ToolCalls: []llm.ToolCall{
+				{
+					ID:   "call-fail",
+					Type: "function",
+					Function: llm.FunctionCall{
+						Name:      "broken_tool",
+						Arguments: `{}`,
+					},
 				},
 			},
 		},
+		{Content: "That tool failed, but here's what I know."},
 	}
 
-	// Queue: 2 failing tool calls, then a text response (the LLM should
-	// stop calling the tool after seeing the circuit breaker message).
-	env.mock.Responses = []*llm.ChatResponse{
-		failingToolCall,
-		failingToolCall,
-		{Content: "I was unable to use that tool. Here's what I know instead."},
-	}
-
-	// Override tool routing to always fail.
 	env.agent.routeToolFunc = func(_ context.Context, toolName string, _ json.RawMessage) (string, error) {
 		return "", fmt.Errorf("tool %q: connection refused", toolName)
 	}
@@ -2134,105 +2126,31 @@ func TestAgent_ToolFailureCircuitBreaker(t *testing.T) {
 	if len(sent) != 1 {
 		t.Fatalf("expected 1 sent message, got %d: %v", len(sent), sent)
 	}
-	if sent[0] != "I was unable to use that tool. Here's what I know instead." {
+	if sent[0] != "That tool failed, but here's what I know." {
 		t.Errorf("sent = %q", sent[0])
 	}
 
-	// Verify the LLM was called 3 times: 2 with the failing tool, 1 without.
-	if len(env.mock.Calls) != 3 {
-		t.Fatalf("expected 3 LLM calls, got %d", len(env.mock.Calls))
-	}
-
-	// Verify the 3rd LLM call does NOT include "broken_tool" in its tools.
-	thirdCall := env.mock.Calls[2]
-	for _, tool := range thirdCall.Tools {
-		if tool.Function.Name == "broken_tool" {
-			t.Error("broken_tool should have been removed from tools after circuit breaker triggered")
-		}
-	}
-
-	// Verify the circuit breaker message was appended to the tool result.
+	// Verify the error was stored as a tool result in memory.
 	msgs, err := env.memory.GetHistory("#test", 20)
 	if err != nil {
 		t.Fatalf("GetHistory: %v", err)
 	}
-	// Find the second tool error result (the one with the circuit breaker hint).
-	var foundCircuitBreaker bool
+	var foundError bool
 	for _, msg := range msgs {
-		if msg.Role == "tool" && strings.Contains(msg.Content, "[SYSTEM:") && strings.Contains(msg.Content, "unavailable") {
-			foundCircuitBreaker = true
+		if msg.Role == "tool" && strings.Contains(msg.Content, "connection refused") {
+			foundError = true
 			break
 		}
 	}
-	if !foundCircuitBreaker {
-		t.Error("expected circuit breaker hint in tool result message")
-	}
-}
-
-func TestAgent_ToolFailureCircuitBreaker_ResetOnSuccess(t *testing.T) {
-	t.Parallel()
-	env := newTestAgentEnv(t)
-
-	// Tool fails once, then succeeds. The failure counter should reset.
-	callCount := 0
-	env.mock.Responses = []*llm.ChatResponse{
-		// First call: tool fails.
-		{
-			ToolCalls: []llm.ToolCall{
-				{
-					ID:   "call-1",
-					Type: "function",
-					Function: llm.FunctionCall{
-						Name:      "flaky_tool",
-						Arguments: `{}`,
-					},
-				},
-			},
-		},
-		// Second call: tool succeeds.
-		{
-			ToolCalls: []llm.ToolCall{
-				{
-					ID:   "call-2",
-					Type: "function",
-					Function: llm.FunctionCall{
-						Name:      "flaky_tool",
-						Arguments: `{}`,
-					},
-				},
-			},
-		},
-		{Content: "Got it."},
+	if !foundError {
+		t.Error("expected tool error result in memory")
 	}
 
-	env.agent.routeToolFunc = func(_ context.Context, toolName string, _ json.RawMessage) (string, error) {
-		callCount++
-		if callCount == 1 {
-			return "", fmt.Errorf("temporary failure")
+	// Verify no circuit breaker message was injected.
+	for _, msg := range msgs {
+		if msg.Role == "tool" && strings.Contains(msg.Content, "[SYSTEM:") {
+			t.Error("circuit breaker messages should not be injected")
 		}
-		return "success", nil
-	}
-
-	ctx := context.Background()
-	env.agent.HandleMessage(ctx, "#test", "user1", "use flaky tool")
-
-	sent := env.getSent()
-	if len(sent) != 1 {
-		t.Fatalf("expected 1 sent message, got %d: %v", len(sent), sent)
-	}
-	if sent[0] != "Got it." {
-		t.Errorf("sent = %q", sent[0])
-	}
-
-	// Verify the tool was called twice (not circuit-broken).
-	if callCount != 2 {
-		t.Errorf("expected 2 tool calls, got %d", callCount)
-	}
-
-	// Verify the LLM was called 3 times and the tool was still available
-	// in the 2nd call (failure count reset after success).
-	if len(env.mock.Calls) != 3 {
-		t.Fatalf("expected 3 LLM calls, got %d", len(env.mock.Calls))
 	}
 }
 
