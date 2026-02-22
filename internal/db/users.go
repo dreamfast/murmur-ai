@@ -9,6 +9,12 @@ import (
 	"time"
 )
 
+// ErrUserNotFound is returned when a user nick does not exist.
+var ErrUserNotFound = errors.New("user not found")
+
+// ErrChannelNotFound is returned when a channel permission entry does not exist.
+var ErrChannelNotFound = errors.New("channel not found")
+
 // StringSlice is a []string that marshals to/from a JSON array TEXT column
 // in SQLite. An empty slice is stored as "[]".
 type StringSlice []string
@@ -280,7 +286,7 @@ func (db *DB) UpdateUser(u *UserRow) error {
 		return fmt.Errorf("UpdateUser: rows affected: %w", err)
 	}
 	if n == 0 {
-		return fmt.Errorf("UpdateUser: user %q not found", u.Nick)
+		return fmt.Errorf("UpdateUser: %w: %q", ErrUserNotFound, u.Nick)
 	}
 	return nil
 }
@@ -297,7 +303,7 @@ func (db *DB) DeleteUser(nick string) error {
 		return fmt.Errorf("DeleteUser: rows affected: %w", err)
 	}
 	if n == 0 {
-		return fmt.Errorf("DeleteUser: user %q not found", nick)
+		return fmt.Errorf("DeleteUser: %w: %q", ErrUserNotFound, nick)
 	}
 	return nil
 }
@@ -415,7 +421,7 @@ func (db *DB) DeleteChannelPermission(channel string) error {
 		return fmt.Errorf("DeleteChannelPermission: rows affected: %w", err)
 	}
 	if n == 0 {
-		return fmt.Errorf("DeleteChannelPermission: channel %q not found", channel)
+		return fmt.Errorf("DeleteChannelPermission: %w: %q", ErrChannelNotFound, channel)
 	}
 	return nil
 }

@@ -103,9 +103,9 @@ func (h *CommandHandler) loadPermissions() *PermissionManager {
 	return h.permissions.Load()
 }
 
-// loadPermWriter returns the current PermissionsWriter, or nil.
-func (h *CommandHandler) loadPermWriter() *PermissionsWriter {
-	return h.permWriter.Load()
+// loadPermStore returns the current PermissionsStore, or nil.
+func (h *CommandHandler) loadPermStore() *PermissionsStore {
+	return h.permStore.Load()
 }
 
 // cmdUserList lists all configured users.
@@ -141,53 +141,53 @@ func (h *CommandHandler) cmdUserInfo(channel, target string) {
 
 // cmdUserAdd adds a new user with the given role.
 func (h *CommandHandler) cmdUserAdd(channel, target, role string) {
-	pw := h.loadPermWriter()
-	if pw == nil {
-		h.send(channel, "permissions file not configured")
+	ps := h.loadPermStore()
+	if ps == nil {
+		h.send(channel, "permissions store not configured")
 		return
 	}
 
 	// Check if user already exists.
-	cfg := h.loadPermissions().Config()
-	for k := range cfg.Users {
-		if strings.EqualFold(k, target) {
-			h.send(channel, fmt.Sprintf("user %q already exists", k))
-			return
-		}
+	exists, err := ps.UserExists(target)
+	if err != nil {
+		h.send(channel, fmt.Sprintf("error: %v", err))
+		return
+	}
+	if exists {
+		h.send(channel, fmt.Sprintf("user %q already exists", target))
+		return
 	}
 
 	user := config.UserPermissions{Role: role}
-	if err := pw.WriteUser(target, user); err != nil {
+	if err := ps.WriteUser(target, user); err != nil {
 		h.send(channel, fmt.Sprintf("error: %v", err))
 		return
 	}
 
-	h.reloadPermissions(channel)
 	h.send(channel, fmt.Sprintf("user %q added with role %q", target, role))
 }
 
 // cmdUserRemove removes a user.
 func (h *CommandHandler) cmdUserRemove(channel, target string) {
-	pw := h.loadPermWriter()
-	if pw == nil {
-		h.send(channel, "permissions file not configured")
+	ps := h.loadPermStore()
+	if ps == nil {
+		h.send(channel, "permissions store not configured")
 		return
 	}
 
-	if err := pw.RemoveUser(target); err != nil {
+	if err := ps.RemoveUser(target); err != nil {
 		h.send(channel, fmt.Sprintf("error: %v", err))
 		return
 	}
 
-	h.reloadPermissions(channel)
 	h.send(channel, fmt.Sprintf("user %q removed", target))
 }
 
 // cmdUserSet modifies a single field on a user.
 func (h *CommandHandler) cmdUserSet(channel, target, field string, values []string) {
-	pw := h.loadPermWriter()
-	if pw == nil {
-		h.send(channel, "permissions file not configured")
+	ps := h.loadPermStore()
+	if ps == nil {
+		h.send(channel, "permissions store not configured")
 		return
 	}
 
@@ -226,18 +226,21 @@ func (h *CommandHandler) cmdUserSet(channel, target, field string, values []stri
 			h.send(channel, "ratelimit must be a number (-1 for unlimited)")
 			return
 		}
+		if n < -1 {
+			h.send(channel, "ratelimit must be >= -1 (-1 for unlimited, 0 for default)")
+			return
+		}
 		user.MaxMessagesPerHour = n
 	default:
 		h.send(channel, fmt.Sprintf("unknown field %q (use role, tools, deny, autonomy, model, ratelimit)", field))
 		return
 	}
 
-	if err := pw.WriteUser(target, user); err != nil {
+	if err := ps.WriteUser(target, user); err != nil {
 		h.send(channel, fmt.Sprintf("error: %v", err))
 		return
 	}
 
-	h.reloadPermissions(channel)
 	h.send(channel, fmt.Sprintf("user %q: %s updated", target, field))
 }
 
@@ -274,9 +277,9 @@ func (h *CommandHandler) cmdChannelInfo(channel, target string) {
 
 // cmdChannelSet modifies a single field on a channel.
 func (h *CommandHandler) cmdChannelSet(channel, target, field string, values []string) {
-	pw := h.loadPermWriter()
-	if pw == nil {
-		h.send(channel, "permissions file not configured")
+	ps := h.loadPermStore()
+	if ps == nil {
+		h.send(channel, "permissions store not configured")
 		return
 	}
 
@@ -306,23 +309,10 @@ func (h *CommandHandler) cmdChannelSet(channel, target, field string, values []s
 		return
 	}
 
-	if err := pw.WriteChannel(canonicalTarget, ch); err != nil {
+	if err := ps.WriteChannel(canonicalTarget, ch); err != nil {
 		h.send(channel, fmt.Sprintf("error: %v", err))
 		return
 	}
 
-	h.reloadPermissions(channel)
 	h.send(channel, fmt.Sprintf("channel %q: %s updated", canonicalTarget, field))
-}
-
-// reloadPermissions triggers a config reload after a permissions change.
-// Errors are logged but not fatal — the change was already persisted.
-func (h *CommandHandler) reloadPermissions(channel string) {
-	if h.reloader == nil {
-		return
-	}
-	if err := h.reloader.Reload(); err != nil {
-		h.logger.Error("failed to reload after permissions change", "error", err)
-		h.send(channel, fmt.Sprintf("warning: change saved but reload failed: %v", err))
-	}
 }

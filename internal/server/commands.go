@@ -75,7 +75,7 @@ type CommandHandler struct {
 	debug        DebugToggler
 	reloader     Reloader
 	permissions  atomic.Pointer[PermissionManager] // nil when permissions are not configured
-	permWriter   atomic.Pointer[PermissionsWriter] // nil when permissions file is not configured
+	permStore    atomic.Pointer[PermissionsStore]  // nil when permissions store is not configured
 	allowedUsers atomic.Pointer[[]string]
 	startTime    time.Time
 	logger       *slog.Logger

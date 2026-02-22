@@ -3,79 +3,64 @@ package server
 import (
 	"io"
 	"log/slog"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"murmur/internal/config"
+	"murmur/internal/db"
 )
 
 // testAdminEnv holds all the components needed for admin command tests.
 type testAdminEnv struct {
-	handler  *CommandHandler
-	pm       *PermissionManager
-	pw       *PermissionsWriter
-	reloader *pmReloader
-	sent     []string
-}
-
-// pmReloader is a mock Reloader that actually updates the PermissionManager
-// from the permissions file, simulating what Server.Reload() does.
-type pmReloader struct {
-	pm     *PermissionManager
-	pw     *PermissionsWriter
-	called bool
-	err    error
-}
-
-func (r *pmReloader) Reload() error {
-	r.called = true
-	if r.err != nil {
-		return r.err
-	}
-	cfg, err := r.pw.Read()
-	if err != nil {
-		return err
-	}
-	r.pm.Update(cfg)
-	return nil
+	handler *CommandHandler
+	pm      *PermissionManager
+	ps      *PermissionsStore
+	sent    []string
 }
 
 // newTestAdminEnv creates a test environment with a permission manager,
-// permissions writer, and a command handler that captures sent messages.
-// The admin nick is always "admin" with role "admin".
+// permissions store (DB-backed), and a command handler that captures sent
+// messages. The admin nick is always "admin" with role "admin".
 func newTestAdminEnv(t *testing.T) *testAdminEnv {
 	t.Helper()
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	dir := t.TempDir()
-	path := filepath.Join(dir, "permissions.toml")
 
-	permCfg := &config.PermissionsConfig{
-		Users: map[string]config.UserPermissions{
-			"admin": {Role: "admin", Tools: []string{"*"}, Autonomy: "auto"},
-		},
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
 	}
+	if err := database.Migrate(); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	t.Cleanup(func() { database.Close() })
 
-	pm := NewPermissionManager(permCfg, logger)
-	pw := NewPermissionsWriter(path, logger)
-
-	// Seed the file with the initial config so reads work.
-	if err := pw.WriteUser("admin", config.UserPermissions{Role: "admin", Tools: []string{"*"}, Autonomy: "auto"}); err != nil {
+	// Seed the admin user in the DB.
+	if err := database.CreateUser(&db.UserRow{
+		Nick:      "admin",
+		Role:      "admin",
+		Tools:     db.StringSlice{"*"},
+		DenyTools: db.StringSlice{},
+		Autonomy:  "auto",
+	}); err != nil {
 		t.Fatalf("seed admin user: %v", err)
 	}
 
-	reloader := &pmReloader{pm: pm, pw: pw}
+	permCfg, err := config.LoadPermissionsFromDB(database)
+	if err != nil {
+		t.Fatalf("LoadPermissionsFromDB: %v", err)
+	}
+
+	pm := NewPermissionManager(permCfg, logger)
+	ps := NewPermissionsStore(database, pm, logger)
 
 	env := &testAdminEnv{
-		pm:       pm,
-		pw:       pw,
-		reloader: reloader,
+		pm: pm,
+		ps: ps,
 	}
 
 	handler := &CommandHandler{
-		reloader:  reloader,
 		startTime: time.Now(),
 		logger:    logger,
 		sendFunc: func(channel, message string) {
@@ -83,7 +68,7 @@ func newTestAdminEnv(t *testing.T) *testAdminEnv {
 		},
 	}
 	handler.permissions.Store(pm)
-	handler.permWriter.Store(pw)
+	handler.permStore.Store(ps)
 	env.handler = handler
 
 	return env
@@ -158,7 +143,7 @@ func TestCmdUser_Add(t *testing.T) {
 	}
 
 	// Verify the user was written.
-	cfg, err := env.pw.Read()
+	cfg, err := env.ps.Read()
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
@@ -168,11 +153,6 @@ func TestCmdUser_Add(t *testing.T) {
 	}
 	if bob.Role != "user" {
 		t.Errorf("expected role user, got %q", bob.Role)
-	}
-
-	// Verify reload was called.
-	if !env.reloader.called {
-		t.Error("expected reload to be called")
 	}
 }
 
@@ -186,7 +166,7 @@ func TestCmdUser_AddDefaultRole(t *testing.T) {
 		t.Errorf("expected 'added', got: %s", msg)
 	}
 
-	cfg, err := env.pw.Read()
+	cfg, err := env.ps.Read()
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
@@ -224,7 +204,7 @@ func TestCmdUser_Remove(t *testing.T) {
 		t.Errorf("expected 'removed', got: %s", msg)
 	}
 
-	cfg, err := env.pw.Read()
+	cfg, err := env.ps.Read()
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
@@ -257,7 +237,7 @@ func TestCmdUser_SetRole(t *testing.T) {
 		t.Errorf("expected 'role updated', got: %s", msg)
 	}
 
-	cfg, err := env.pw.Read()
+	cfg, err := env.ps.Read()
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
@@ -279,7 +259,7 @@ func TestCmdUser_SetTools(t *testing.T) {
 		t.Errorf("expected 'tools updated', got: %s", msg)
 	}
 
-	cfg, err := env.pw.Read()
+	cfg, err := env.ps.Read()
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
@@ -302,7 +282,7 @@ func TestCmdUser_SetToolsSpaceSeparated(t *testing.T) {
 		t.Errorf("expected 'tools updated', got: %s", msg)
 	}
 
-	cfg, err := env.pw.Read()
+	cfg, err := env.ps.Read()
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
@@ -325,7 +305,7 @@ func TestCmdUser_SetDeny(t *testing.T) {
 		t.Errorf("expected 'deny updated', got: %s", msg)
 	}
 
-	cfg, err := env.pw.Read()
+	cfg, err := env.ps.Read()
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
@@ -348,7 +328,7 @@ func TestCmdUser_SetAutonomy(t *testing.T) {
 		t.Errorf("expected 'autonomy updated', got: %s", msg)
 	}
 
-	cfg, err := env.pw.Read()
+	cfg, err := env.ps.Read()
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
@@ -370,7 +350,7 @@ func TestCmdUser_SetModel(t *testing.T) {
 		t.Errorf("expected 'model updated', got: %s", msg)
 	}
 
-	cfg, err := env.pw.Read()
+	cfg, err := env.ps.Read()
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
@@ -393,7 +373,7 @@ func TestCmdUser_SetRatelimit(t *testing.T) {
 		t.Errorf("expected 'ratelimit updated', got: %s", msg)
 	}
 
-	cfg, err := env.pw.Read()
+	cfg, err := env.ps.Read()
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
@@ -467,13 +447,10 @@ func TestCmdChannel_List(t *testing.T) {
 	t.Parallel()
 	env := newTestAdminEnv(t)
 
-	// Add a channel first.
-	if err := env.pw.WriteChannel("#general", config.ChannelPermissions{Autonomy: "approve"}); err != nil {
+	// Add a channel first via the store.
+	if err := env.ps.WriteChannel("#general", config.ChannelPermissions{Autonomy: "approve"}); err != nil {
 		t.Fatalf("WriteChannel: %v", err)
 	}
-	// Update PM so it sees the new channel.
-	cfg, _ := env.pw.Read()
-	env.pm.Update(cfg)
 
 	env.handler.HandleCommand("#test", "admin", "!channel list")
 	msg := env.lastSent()
@@ -497,14 +474,12 @@ func TestCmdChannel_Info(t *testing.T) {
 	t.Parallel()
 	env := newTestAdminEnv(t)
 
-	if err := env.pw.WriteChannel("#general", config.ChannelPermissions{
+	if err := env.ps.WriteChannel("#general", config.ChannelPermissions{
 		Tools:    []string{"shell"},
 		Autonomy: "approve",
 	}); err != nil {
 		t.Fatalf("WriteChannel: %v", err)
 	}
-	cfg, _ := env.pw.Read()
-	env.pm.Update(cfg)
 
 	env.handler.HandleCommand("#test", "admin", "!channel info #general")
 	msg := env.lastSent()
@@ -537,7 +512,7 @@ func TestCmdChannel_SetTools(t *testing.T) {
 		t.Errorf("expected 'tools updated', got: %s", msg)
 	}
 
-	cfg, err := env.pw.Read()
+	cfg, err := env.ps.Read()
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
@@ -560,7 +535,7 @@ func TestCmdChannel_SetDeny(t *testing.T) {
 		t.Errorf("expected 'deny updated', got: %s", msg)
 	}
 
-	cfg, err := env.pw.Read()
+	cfg, err := env.ps.Read()
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
@@ -579,7 +554,7 @@ func TestCmdChannel_SetAutonomy(t *testing.T) {
 		t.Errorf("expected 'autonomy updated', got: %s", msg)
 	}
 
-	cfg, err := env.pw.Read()
+	cfg, err := env.ps.Read()
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
@@ -598,7 +573,7 @@ func TestCmdChannel_SetModel(t *testing.T) {
 		t.Errorf("expected 'model updated', got: %s", msg)
 	}
 
-	cfg, err := env.pw.Read()
+	cfg, err := env.ps.Read()
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}

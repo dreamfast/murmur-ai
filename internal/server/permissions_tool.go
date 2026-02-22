@@ -17,7 +17,7 @@ import (
 // user and channel permission management via the LLM. It is only visible to
 // admin users because PermissionManager.FilterTools removes it for non-admins.
 // As defense-in-depth, the handler also verifies admin status via the context.
-func RegisterPermissionsTool(registry *ToolRegistry, pw *PermissionsWriter, pm *PermissionManager, reloader Reloader, logger *slog.Logger) error {
+func RegisterPermissionsTool(registry *ToolRegistry, ps *PermissionsStore, pm *PermissionManager, logger *slog.Logger) error {
 	t := tools.Tool{
 		Name:        "permissions_manage",
 		Description: "Manage user and channel permissions. Admin only. Use this tool to list, inspect, add, remove, or modify user/channel permission settings.",
@@ -56,7 +56,7 @@ func RegisterPermissionsTool(registry *ToolRegistry, pw *PermissionsWriter, pm *
 			"required": ["action"]
 		}`),
 		Handler: func(ctx context.Context, args map[string]any) (string, error) {
-			return handlePermissionsManage(ctx, args, pw, pm, reloader, logger)
+			return handlePermissionsManage(ctx, args, ps, pm)
 		},
 	}
 
@@ -70,7 +70,7 @@ func RegisterPermissionsTool(registry *ToolRegistry, pw *PermissionsWriter, pm *
 // handlePermissionsManage dispatches the permissions_manage tool call to the
 // appropriate action handler. It performs defense-in-depth admin verification
 // by extracting the requesting nick from the context.
-func handlePermissionsManage(ctx context.Context, args map[string]any, pw *PermissionsWriter, pm *PermissionManager, reloader Reloader, logger *slog.Logger) (string, error) {
+func handlePermissionsManage(ctx context.Context, args map[string]any, ps *PermissionsStore, pm *PermissionManager) (string, error) {
 	// Defense-in-depth: verify the requesting user is an admin.
 	// The tool should only be visible to admins (FilterTools removes it for
 	// non-admins), but we check again here in case of a bug in filtering.
@@ -91,21 +91,21 @@ func handlePermissionsManage(ctx context.Context, args map[string]any, pw *Permi
 	case "get_user":
 		return permGetUser(args, pm)
 	case "add_user":
-		return permAddUser(args, pw, pm, reloader, logger)
+		return permAddUser(args, ps, pm)
 	case "remove_user":
-		return permRemoveUser(args, pw, reloader, logger)
+		return permRemoveUser(args, ps)
 	case "set_user_role":
-		return permSetUserField(args, pw, pm, reloader, logger, "role")
+		return permSetUserField(args, ps, pm, "role")
 	case "set_user_tools":
-		return permSetUserField(args, pw, pm, reloader, logger, "tools")
+		return permSetUserField(args, ps, pm, "tools")
 	case "set_user_deny":
-		return permSetUserField(args, pw, pm, reloader, logger, "deny")
+		return permSetUserField(args, ps, pm, "deny")
 	case "set_user_autonomy":
-		return permSetUserField(args, pw, pm, reloader, logger, "autonomy")
+		return permSetUserField(args, ps, pm, "autonomy")
 	case "set_user_model":
-		return permSetUserField(args, pw, pm, reloader, logger, "model")
+		return permSetUserField(args, ps, pm, "model")
 	case "set_user_ratelimit":
-		return permSetUserField(args, pw, pm, reloader, logger, "ratelimit")
+		return permSetUserField(args, ps, pm, "ratelimit")
 
 	// Channel actions.
 	case "list_channels":
@@ -113,13 +113,13 @@ func handlePermissionsManage(ctx context.Context, args map[string]any, pw *Permi
 	case "get_channel":
 		return permGetChannel(args, pm)
 	case "set_channel_tools":
-		return permSetChannelField(args, pw, pm, reloader, logger, "tools")
+		return permSetChannelField(args, ps, pm, "tools")
 	case "set_channel_deny":
-		return permSetChannelField(args, pw, pm, reloader, logger, "deny")
+		return permSetChannelField(args, ps, pm, "deny")
 	case "set_channel_autonomy":
-		return permSetChannelField(args, pw, pm, reloader, logger, "autonomy")
+		return permSetChannelField(args, ps, pm, "autonomy")
 	case "set_channel_model":
-		return permSetChannelField(args, pw, pm, reloader, logger, "model")
+		return permSetChannelField(args, ps, pm, "model")
 
 	default:
 		return "", fmt.Errorf("unknown action %q", action)
@@ -161,7 +161,7 @@ func permGetUser(args map[string]any, pm *PermissionManager) (string, error) {
 }
 
 // permAddUser adds a new user with the given role.
-func permAddUser(args map[string]any, pw *PermissionsWriter, pm *PermissionManager, reloader Reloader, logger *slog.Logger) (string, error) {
+func permAddUser(args map[string]any, ps *PermissionsStore, pm *PermissionManager) (string, error) {
 	target, err := tools.RequireStringArg(args, "nick")
 	if err != nil {
 		return "", err
@@ -178,35 +178,29 @@ func permAddUser(args map[string]any, pw *PermissionsWriter, pm *PermissionManag
 	}
 
 	user := config.UserPermissions{Role: role}
-	if err := pw.WriteUser(target, user); err != nil {
+	if err := ps.WriteUser(target, user); err != nil {
 		return "", fmt.Errorf("permAddUser: %w", err)
 	}
 
-	if err := reloadPermissions(reloader, logger); err != nil {
-		return fmt.Sprintf("User %q added with role %q, but reload failed: %v", target, role, err), nil
-	}
 	return fmt.Sprintf("User %q added with role %q.", target, role), nil
 }
 
 // permRemoveUser removes a user.
-func permRemoveUser(args map[string]any, pw *PermissionsWriter, reloader Reloader, logger *slog.Logger) (string, error) {
+func permRemoveUser(args map[string]any, ps *PermissionsStore) (string, error) {
 	target, err := tools.RequireStringArg(args, "nick")
 	if err != nil {
 		return "", err
 	}
 
-	if err := pw.RemoveUser(target); err != nil {
+	if err := ps.RemoveUser(target); err != nil {
 		return "", fmt.Errorf("permRemoveUser: %w", err)
 	}
 
-	if err := reloadPermissions(reloader, logger); err != nil {
-		return fmt.Sprintf("User %q removed, but reload failed: %v", target, err), nil
-	}
 	return fmt.Sprintf("User %q removed.", target), nil
 }
 
 // permSetUserField modifies a single field on a user.
-func permSetUserField(args map[string]any, pw *PermissionsWriter, pm *PermissionManager, reloader Reloader, logger *slog.Logger, field string) (string, error) {
+func permSetUserField(args map[string]any, ps *PermissionsStore, pm *PermissionManager, field string) (string, error) {
 	target, err := tools.RequireStringArg(args, "nick")
 	if err != nil {
 		return "", err
@@ -254,16 +248,16 @@ func permSetUserField(args map[string]any, pw *PermissionsWriter, pm *Permission
 		if err != nil {
 			return "Rate limit must be a number (-1 for unlimited).", nil
 		}
+		if n < -1 {
+			return "Rate limit must be >= -1 (-1 for unlimited, 0 for default).", nil
+		}
 		user.MaxMessagesPerHour = n
 	}
 
-	if err := pw.WriteUser(canonicalTarget, user); err != nil {
+	if err := ps.WriteUser(canonicalTarget, user); err != nil {
 		return "", fmt.Errorf("permSetUserField: %w", err)
 	}
 
-	if err := reloadPermissions(reloader, logger); err != nil {
-		return fmt.Sprintf("User %q: %s updated, but reload failed: %v", canonicalTarget, field, err), nil
-	}
 	return fmt.Sprintf("User %q: %s updated.", canonicalTarget, field), nil
 }
 
@@ -303,7 +297,7 @@ func permGetChannel(args map[string]any, pm *PermissionManager) (string, error) 
 }
 
 // permSetChannelField modifies a single field on a channel.
-func permSetChannelField(args map[string]any, pw *PermissionsWriter, pm *PermissionManager, reloader Reloader, logger *slog.Logger, field string) (string, error) {
+func permSetChannelField(args map[string]any, ps *PermissionsStore, pm *PermissionManager, field string) (string, error) {
 	target, err := tools.RequireStringArg(args, "channel")
 	if err != nil {
 		return "", err
@@ -337,25 +331,9 @@ func permSetChannelField(args map[string]any, pw *PermissionsWriter, pm *Permiss
 		ch.AllowedModels = SplitCSV(value)
 	}
 
-	if err := pw.WriteChannel(canonicalTarget, ch); err != nil {
+	if err := ps.WriteChannel(canonicalTarget, ch); err != nil {
 		return "", fmt.Errorf("permSetChannelField: %w", err)
 	}
 
-	if err := reloadPermissions(reloader, logger); err != nil {
-		return fmt.Sprintf("Channel %q: %s updated, but reload failed: %v", canonicalTarget, field, err), nil
-	}
 	return fmt.Sprintf("Channel %q: %s updated.", canonicalTarget, field), nil
-}
-
-// reloadPermissions triggers a config reload after a permissions change.
-// Returns an error if the reload fails; the caller decides how to report it.
-func reloadPermissions(reloader Reloader, logger *slog.Logger) error {
-	if reloader == nil {
-		return nil
-	}
-	if err := reloader.Reload(); err != nil {
-		logger.Error("failed to reload after permissions change", "error", err)
-		return err
-	}
-	return nil
 }

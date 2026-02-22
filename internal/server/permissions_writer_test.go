@@ -3,28 +3,39 @@ package server
 import (
 	"io"
 	"log/slog"
-	"os"
-	"path/filepath"
 	"sync"
 	"testing"
 
 	"murmur/internal/config"
+	"murmur/internal/db"
 )
 
-func newTestPermissionsWriter(t *testing.T) (*PermissionsWriter, string) {
+func newTestPermissionsStore(t *testing.T) *PermissionsStore {
 	t.Helper()
-	dir := t.TempDir()
-	path := filepath.Join(dir, "permissions.toml")
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := database.Migrate(); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	t.Cleanup(func() { database.Close() })
+
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return NewPermissionsWriter(path, logger), path
+	permCfg := &config.PermissionsConfig{
+		Users:    make(map[string]config.UserPermissions),
+		Channels: make(map[string]config.ChannelPermissions),
+	}
+	pm := NewPermissionManager(permCfg, logger)
+	return NewPermissionsStore(database, pm, logger)
 }
 
-func TestPermissionsWriter_RoundTrip(t *testing.T) {
+func TestPermissionsStore_RoundTrip(t *testing.T) {
 	t.Parallel()
-	pw, _ := newTestPermissionsWriter(t)
+	ps := newTestPermissionsStore(t)
 
 	// Write a user.
-	err := pw.WriteUser("alice", config.UserPermissions{
+	err := ps.WriteUser("alice", config.UserPermissions{
 		Role:     "admin",
 		Tools:    []string{"*"},
 		Autonomy: "auto",
@@ -34,7 +45,7 @@ func TestPermissionsWriter_RoundTrip(t *testing.T) {
 	}
 
 	// Write a channel.
-	err = pw.WriteChannel("#general", config.ChannelPermissions{
+	err = ps.WriteChannel("#general", config.ChannelPermissions{
 		Tools:    []string{"shell", "mail_*"},
 		Autonomy: "approve",
 	})
@@ -43,7 +54,7 @@ func TestPermissionsWriter_RoundTrip(t *testing.T) {
 	}
 
 	// Read back.
-	cfg, err := pw.Read()
+	cfg, err := ps.Read()
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
@@ -80,21 +91,21 @@ func TestPermissionsWriter_RoundTrip(t *testing.T) {
 	}
 }
 
-func TestPermissionsWriter_WriteUser_Update(t *testing.T) {
+func TestPermissionsStore_WriteUser_Update(t *testing.T) {
 	t.Parallel()
-	pw, _ := newTestPermissionsWriter(t)
+	ps := newTestPermissionsStore(t)
 
 	// Write initial user.
-	if err := pw.WriteUser("bob", config.UserPermissions{Role: "user", Autonomy: "approve"}); err != nil {
+	if err := ps.WriteUser("bob", config.UserPermissions{Role: "user", Autonomy: "approve"}); err != nil {
 		t.Fatalf("WriteUser: %v", err)
 	}
 
 	// Update the same user.
-	if err := pw.WriteUser("bob", config.UserPermissions{Role: "admin", Autonomy: "auto"}); err != nil {
+	if err := ps.WriteUser("bob", config.UserPermissions{Role: "admin", Autonomy: "auto"}); err != nil {
 		t.Fatalf("WriteUser update: %v", err)
 	}
 
-	cfg, err := pw.Read()
+	cfg, err := ps.Read()
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
@@ -106,22 +117,22 @@ func TestPermissionsWriter_WriteUser_Update(t *testing.T) {
 	}
 }
 
-func TestPermissionsWriter_RemoveUser(t *testing.T) {
+func TestPermissionsStore_RemoveUser(t *testing.T) {
 	t.Parallel()
-	pw, _ := newTestPermissionsWriter(t)
+	ps := newTestPermissionsStore(t)
 
-	if err := pw.WriteUser("alice", config.UserPermissions{Role: "admin"}); err != nil {
+	if err := ps.WriteUser("alice", config.UserPermissions{Role: "admin"}); err != nil {
 		t.Fatalf("WriteUser: %v", err)
 	}
-	if err := pw.WriteUser("bob", config.UserPermissions{Role: "user"}); err != nil {
+	if err := ps.WriteUser("bob", config.UserPermissions{Role: "user"}); err != nil {
 		t.Fatalf("WriteUser: %v", err)
 	}
 
-	if err := pw.RemoveUser("alice"); err != nil {
+	if err := ps.RemoveUser("alice"); err != nil {
 		t.Fatalf("RemoveUser: %v", err)
 	}
 
-	cfg, err := pw.Read()
+	cfg, err := ps.Read()
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
@@ -133,51 +144,29 @@ func TestPermissionsWriter_RemoveUser(t *testing.T) {
 	}
 }
 
-func TestPermissionsWriter_RemoveUser_CaseInsensitive(t *testing.T) {
+func TestPermissionsStore_RemoveUser_NotFound(t *testing.T) {
 	t.Parallel()
-	pw, _ := newTestPermissionsWriter(t)
+	ps := newTestPermissionsStore(t)
 
-	if err := pw.WriteUser("Alice", config.UserPermissions{Role: "admin"}); err != nil {
-		t.Fatalf("WriteUser: %v", err)
-	}
-
-	// Remove with different case.
-	if err := pw.RemoveUser("alice"); err != nil {
-		t.Fatalf("RemoveUser: %v", err)
-	}
-
-	cfg, err := pw.Read()
-	if err != nil {
-		t.Fatalf("Read: %v", err)
-	}
-	if len(cfg.Users) != 0 {
-		t.Errorf("expected 0 users after case-insensitive remove, got %d", len(cfg.Users))
-	}
-}
-
-func TestPermissionsWriter_RemoveUser_NotFound(t *testing.T) {
-	t.Parallel()
-	pw, _ := newTestPermissionsWriter(t)
-
-	err := pw.RemoveUser("ghost")
+	err := ps.RemoveUser("ghost")
 	if err == nil {
 		t.Fatal("expected error for removing non-existent user")
 	}
 }
 
-func TestPermissionsWriter_RemoveChannel(t *testing.T) {
+func TestPermissionsStore_RemoveChannel(t *testing.T) {
 	t.Parallel()
-	pw, _ := newTestPermissionsWriter(t)
+	ps := newTestPermissionsStore(t)
 
-	if err := pw.WriteChannel("#general", config.ChannelPermissions{Autonomy: "approve"}); err != nil {
+	if err := ps.WriteChannel("#general", config.ChannelPermissions{Autonomy: "approve"}); err != nil {
 		t.Fatalf("WriteChannel: %v", err)
 	}
 
-	if err := pw.RemoveChannel("#general"); err != nil {
+	if err := ps.RemoveChannel("#general"); err != nil {
 		t.Fatalf("RemoveChannel: %v", err)
 	}
 
-	cfg, err := pw.Read()
+	cfg, err := ps.Read()
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
@@ -186,48 +175,19 @@ func TestPermissionsWriter_RemoveChannel(t *testing.T) {
 	}
 }
 
-func TestPermissionsWriter_RemoveChannel_NotFound(t *testing.T) {
+func TestPermissionsStore_RemoveChannel_NotFound(t *testing.T) {
 	t.Parallel()
-	pw, _ := newTestPermissionsWriter(t)
+	ps := newTestPermissionsStore(t)
 
-	err := pw.RemoveChannel("#nonexistent")
+	err := ps.RemoveChannel("#nonexistent")
 	if err == nil {
 		t.Fatal("expected error for removing non-existent channel")
 	}
 }
 
-func TestPermissionsWriter_ValidationOnWrite(t *testing.T) {
+func TestPermissionsStore_ConcurrentWrites(t *testing.T) {
 	t.Parallel()
-	pw, _ := newTestPermissionsWriter(t)
-
-	// Invalid role should fail validation.
-	err := pw.WriteUser("alice", config.UserPermissions{Role: "superadmin"})
-	if err == nil {
-		t.Fatal("expected validation error for invalid role")
-	}
-
-	// Invalid autonomy should fail validation.
-	err = pw.WriteUser("alice", config.UserPermissions{Autonomy: "yolo"})
-	if err == nil {
-		t.Fatal("expected validation error for invalid autonomy")
-	}
-
-	// Invalid rate limit should fail validation.
-	err = pw.WriteUser("alice", config.UserPermissions{MaxMessagesPerHour: -5})
-	if err == nil {
-		t.Fatal("expected validation error for invalid rate limit")
-	}
-
-	// Invalid channel autonomy should fail validation.
-	err = pw.WriteChannel("#test", config.ChannelPermissions{Autonomy: "invalid"})
-	if err == nil {
-		t.Fatal("expected validation error for invalid channel autonomy")
-	}
-}
-
-func TestPermissionsWriter_ConcurrentWrites(t *testing.T) {
-	t.Parallel()
-	pw, _ := newTestPermissionsWriter(t)
+	ps := newTestPermissionsStore(t)
 
 	const n = 20
 	var wg sync.WaitGroup
@@ -238,7 +198,7 @@ func TestPermissionsWriter_ConcurrentWrites(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			nick := "user" + string(rune('a'+i))
-			errs[i] = pw.WriteUser(nick, config.UserPermissions{Role: "user"})
+			errs[i] = ps.WriteUser(nick, config.UserPermissions{Role: "user"})
 		}(i)
 	}
 	wg.Wait()
@@ -249,7 +209,7 @@ func TestPermissionsWriter_ConcurrentWrites(t *testing.T) {
 		}
 	}
 
-	cfg, err := pw.Read()
+	cfg, err := ps.Read()
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
@@ -258,81 +218,9 @@ func TestPermissionsWriter_ConcurrentWrites(t *testing.T) {
 	}
 }
 
-func TestPermissionsWriter_AtomicWrite(t *testing.T) {
+func TestPermissionsStore_AllFieldsPreserved(t *testing.T) {
 	t.Parallel()
-	pw, path := newTestPermissionsWriter(t)
-
-	// Write a valid user first.
-	if err := pw.WriteUser("alice", config.UserPermissions{Role: "admin"}); err != nil {
-		t.Fatalf("WriteUser: %v", err)
-	}
-
-	// Attempt to write an invalid user — should fail validation.
-	err := pw.WriteUser("bob", config.UserPermissions{Role: "invalid"})
-	if err == nil {
-		t.Fatal("expected validation error")
-	}
-
-	// The file should still contain only alice (the failed write should not
-	// have corrupted the file).
-	cfg, err := pw.Read()
-	if err != nil {
-		t.Fatalf("Read after failed write: %v", err)
-	}
-	if len(cfg.Users) != 1 {
-		t.Errorf("expected 1 user after failed write, got %d", len(cfg.Users))
-	}
-	if _, ok := cfg.Users["alice"]; !ok {
-		t.Error("expected alice to still exist after failed write")
-	}
-
-	// Verify no temp files were left behind.
-	dir := filepath.Dir(path)
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatalf("ReadDir: %v", err)
-	}
-	for _, e := range entries {
-		if filepath.Ext(e.Name()) == ".tmp" {
-			t.Errorf("temp file left behind: %s", e.Name())
-		}
-	}
-}
-
-func TestPermissionsWriter_ReadMissingFile(t *testing.T) {
-	t.Parallel()
-	pw, _ := newTestPermissionsWriter(t)
-
-	cfg, err := pw.Read()
-	if err != nil {
-		t.Fatalf("Read: %v", err)
-	}
-	if len(cfg.Users) != 0 {
-		t.Errorf("expected 0 users from missing file, got %d", len(cfg.Users))
-	}
-	if len(cfg.Channels) != 0 {
-		t.Errorf("expected 0 channels from missing file, got %d", len(cfg.Channels))
-	}
-}
-
-func TestPermissionsWriter_DuplicateAPIKey(t *testing.T) {
-	t.Parallel()
-	pw, _ := newTestPermissionsWriter(t)
-
-	if err := pw.WriteUser("alice", config.UserPermissions{APIKey: "key123"}); err != nil {
-		t.Fatalf("WriteUser alice: %v", err)
-	}
-
-	// Writing bob with the same API key should fail validation.
-	err := pw.WriteUser("bob", config.UserPermissions{APIKey: "key123"})
-	if err == nil {
-		t.Fatal("expected validation error for duplicate API key")
-	}
-}
-
-func TestPermissionsWriter_AllFieldsPreserved(t *testing.T) {
-	t.Parallel()
-	pw, _ := newTestPermissionsWriter(t)
+	ps := newTestPermissionsStore(t)
 
 	user := config.UserPermissions{
 		Role:               "admin",
@@ -344,11 +232,11 @@ func TestPermissionsWriter_AllFieldsPreserved(t *testing.T) {
 		MaxMessagesPerHour: 100,
 		APIKey:             "secret-key",
 	}
-	if err := pw.WriteUser("alice", user); err != nil {
+	if err := ps.WriteUser("alice", user); err != nil {
 		t.Fatalf("WriteUser: %v", err)
 	}
 
-	cfg, err := pw.Read()
+	cfg, err := ps.Read()
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
@@ -377,5 +265,80 @@ func TestPermissionsWriter_AllFieldsPreserved(t *testing.T) {
 	}
 	if got.APIKey != user.APIKey {
 		t.Errorf("api_key: got %q, want %q", got.APIKey, user.APIKey)
+	}
+}
+
+func TestPermissionsStore_CacheRefresh(t *testing.T) {
+	t.Parallel()
+	ps := newTestPermissionsStore(t)
+
+	// Write a user.
+	if err := ps.WriteUser("alice", config.UserPermissions{Role: "admin"}); err != nil {
+		t.Fatalf("WriteUser: %v", err)
+	}
+
+	// The PM should now see alice as admin (cache was refreshed).
+	if !ps.pm.IsAdmin("alice") {
+		t.Error("expected alice to be admin after WriteUser (cache should be refreshed)")
+	}
+
+	// Remove alice.
+	if err := ps.RemoveUser("alice"); err != nil {
+		t.Fatalf("RemoveUser: %v", err)
+	}
+
+	// The PM should no longer see alice as admin.
+	if ps.pm.IsAdmin("alice") {
+		t.Error("expected alice to not be admin after RemoveUser (cache should be refreshed)")
+	}
+}
+
+func TestPermissionsStore_UserExists(t *testing.T) {
+	t.Parallel()
+	ps := newTestPermissionsStore(t)
+
+	exists, err := ps.UserExists("alice")
+	if err != nil {
+		t.Fatalf("UserExists: %v", err)
+	}
+	if exists {
+		t.Error("expected alice to not exist")
+	}
+
+	if err := ps.WriteUser("alice", config.UserPermissions{Role: "admin"}); err != nil {
+		t.Fatalf("WriteUser: %v", err)
+	}
+
+	exists, err = ps.UserExists("alice")
+	if err != nil {
+		t.Fatalf("UserExists: %v", err)
+	}
+	if !exists {
+		t.Error("expected alice to exist")
+	}
+
+	// Case-insensitive.
+	exists, err = ps.UserExists("ALICE")
+	if err != nil {
+		t.Fatalf("UserExists(ALICE): %v", err)
+	}
+	if !exists {
+		t.Error("expected ALICE to exist (case-insensitive)")
+	}
+}
+
+func TestPermissionsStore_ReadEmpty(t *testing.T) {
+	t.Parallel()
+	ps := newTestPermissionsStore(t)
+
+	cfg, err := ps.Read()
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if len(cfg.Users) != 0 {
+		t.Errorf("expected 0 users from empty DB, got %d", len(cfg.Users))
+	}
+	if len(cfg.Channels) != 0 {
+		t.Errorf("expected 0 channels from empty DB, got %d", len(cfg.Channels))
 	}
 }

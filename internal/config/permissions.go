@@ -1,12 +1,16 @@
 package config
 
 import (
+	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"sort"
 	"strings"
 
 	"github.com/BurntSushi/toml"
+
+	"murmur/internal/db"
 )
 
 // PermissionsConfig is the top-level structure of permissions.toml.
@@ -286,6 +290,99 @@ func MostRestrictiveAutonomy(a, b string) string {
 		return a
 	}
 	return b
+}
+
+// LoadPermissionsFromDB queries the users and channel_permissions tables and
+// builds a PermissionsConfig. This is the DB-backed replacement for
+// LoadPermissionsConfig (which reads from a TOML file). The returned config
+// is compatible with all downstream code (PermissionManager, FilterTools, etc.).
+func LoadPermissionsFromDB(database *db.DB) (*PermissionsConfig, error) {
+	users, err := database.ListUsers()
+	if err != nil {
+		return nil, fmt.Errorf("LoadPermissionsFromDB: list users: %w", err)
+	}
+
+	cfg := &PermissionsConfig{
+		Users:    make(map[string]UserPermissions, len(users)),
+		Channels: make(map[string]ChannelPermissions),
+	}
+
+	for _, u := range users {
+		cfg.Users[u.Nick] = UserPermissions{
+			Role:               u.Role,
+			Tools:              []string(u.Tools),
+			DenyTools:          []string(u.DenyTools),
+			Autonomy:           u.Autonomy,
+			AllowedModels:      []string(u.AllowedModels),
+			DenyModels:         []string(u.DenyModels),
+			MaxMessagesPerHour: u.MaxMessagesPerHour,
+			APIKey:             u.APIKey,
+		}
+	}
+
+	channels, err := database.ListChannelPermissions()
+	if err != nil {
+		return nil, fmt.Errorf("LoadPermissionsFromDB: list channels: %w", err)
+	}
+
+	for _, cp := range channels {
+		cfg.Channels[cp.Channel] = ChannelPermissions{
+			Tools:         []string(cp.Tools),
+			DenyTools:     []string(cp.DenyTools),
+			Autonomy:      cp.Autonomy,
+			AllowedModels: []string(cp.AllowedModels),
+		}
+	}
+
+	return cfg, nil
+}
+
+// ImportPermissionsToDB imports a PermissionsConfig (typically loaded from TOML)
+// into the database. This is used for the one-time migration from
+// permissions.toml to SQLite. Existing users in the DB are skipped (no
+// overwrite). Channels are upserted (created or updated). Returns the number
+// of users and channels imported.
+func ImportPermissionsToDB(database *db.DB, cfg *PermissionsConfig) (usersImported, channelsImported int, err error) {
+	for nick, u := range cfg.Users {
+		// Skip users that already exist in the DB.
+		if _, err := database.GetUser(nick); err == nil {
+			continue
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return usersImported, channelsImported, fmt.Errorf("ImportPermissionsToDB: check user %q: %w", nick, err)
+		}
+
+		row := &db.UserRow{
+			Nick:               nick,
+			Role:               u.Role,
+			Tools:              db.StringSlice(u.Tools),
+			DenyTools:          db.StringSlice(u.DenyTools),
+			Autonomy:           u.Autonomy,
+			AllowedModels:      db.StringSlice(u.AllowedModels),
+			DenyModels:         db.StringSlice(u.DenyModels),
+			MaxMessagesPerHour: u.MaxMessagesPerHour,
+			APIKey:             u.APIKey,
+		}
+		if err := database.CreateUser(row); err != nil {
+			return usersImported, channelsImported, fmt.Errorf("ImportPermissionsToDB: create user %q: %w", nick, err)
+		}
+		usersImported++
+	}
+
+	for channel, cp := range cfg.Channels {
+		row := &db.ChannelPermissionRow{
+			Channel:       channel,
+			Tools:         db.StringSlice(cp.Tools),
+			DenyTools:     db.StringSlice(cp.DenyTools),
+			Autonomy:      cp.Autonomy,
+			AllowedModels: db.StringSlice(cp.AllowedModels),
+		}
+		if err := database.SetChannelPermission(row); err != nil {
+			return usersImported, channelsImported, fmt.Errorf("ImportPermissionsToDB: set channel %q: %w", channel, err)
+		}
+		channelsImported++
+	}
+
+	return usersImported, channelsImported, nil
 }
 
 // isValidAutonomy checks if a string is a valid autonomy level.

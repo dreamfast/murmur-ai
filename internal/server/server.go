@@ -278,17 +278,55 @@ func New(cfg *config.ServerConfig, configPath string, logger *slog.Logger) (*Ser
 	// Create the approval manager for the tool call approval flow.
 	approvals := NewApprovalManager(logger)
 
-	// Load permissions config and create the permission manager.
-	permCfg, err := config.LoadPermissionsConfig(cfg.Security.PermissionsFile)
+	// Auto-import permissions from TOML if this is the first run with the DB.
+	// Check: metadata marker "permissions_imported" doesn't exist AND
+	// permissions.toml file exists AND users table is empty.
+	userCount, err := database.UserCount()
 	if err != nil {
 		database.Close()
-		return nil, fmt.Errorf("server.New: load permissions config: %w", err)
+		return nil, fmt.Errorf("server.New: count users: %w", err)
+	}
+	importedMarker, _ := database.GetMetadata("permissions_imported")
+	if importedMarker == "" && userCount == 0 && cfg.Security.PermissionsFile != "" {
+		tomlCfg, err := config.LoadPermissionsConfig(cfg.Security.PermissionsFile)
+		if err != nil {
+			logger.Warn("failed to load permissions.toml for import", "error", err)
+		} else if len(tomlCfg.Users) > 0 || len(tomlCfg.Channels) > 0 {
+			usersN, channelsN, err := config.ImportPermissionsToDB(database, tomlCfg)
+			if err != nil {
+				database.Close()
+				return nil, fmt.Errorf("server.New: import permissions from TOML: %w", err)
+			}
+			if err := database.SetMetadata("permissions_imported", "true"); err != nil {
+				database.Close()
+				return nil, fmt.Errorf("server.New: set import marker: %w", err)
+			}
+			logger.Info("imported permissions from TOML to SQLite",
+				"users", usersN,
+				"channels", channelsN,
+				"file", cfg.Security.PermissionsFile,
+			)
+		}
+	} else if importedMarker != "" && cfg.Security.PermissionsFile != "" {
+		// Already imported — warn if the TOML file still exists.
+		if _, statErr := os.Stat(cfg.Security.PermissionsFile); statErr == nil {
+			logger.Warn("permissions.toml exists but has already been imported to SQLite; the file is no longer used",
+				"file", cfg.Security.PermissionsFile,
+			)
+		}
+	}
+
+	// Load permissions from DB and create the permission manager.
+	permCfg, err := config.LoadPermissionsFromDB(database)
+	if err != nil {
+		database.Close()
+		return nil, fmt.Errorf("server.New: load permissions from DB: %w", err)
 	}
 	var pm *PermissionManager
 	if len(permCfg.Users) > 0 || len(permCfg.Channels) > 0 {
 		pm = NewPermissionManager(permCfg, logger)
 		pm.SetLogPermissions(cfg.Debug.LogPermissions)
-		logger.Info("permissions loaded",
+		logger.Info("permissions loaded from DB",
 			"users", len(permCfg.Users),
 			"channels", len(permCfg.Channels),
 		)
@@ -321,9 +359,15 @@ func New(cfg *config.ServerConfig, configPath string, logger *slog.Logger) (*Ser
 	agent.SetPermissions(pm)
 
 	// Create NickServ verifier if permissions require identity verification.
-	// Default: enabled when permissions.toml has [users] entries.
+	// Default: enabled when users exist in the DB. Re-query the count because
+	// the TOML import above may have added users since the initial check.
 	var nickserv *NickServVerifier
-	requireNickServ := cfg.Security.RequireNickServ || len(permCfg.Users) > 0
+	currentUserCount, err := database.UserCount()
+	if err != nil {
+		database.Close()
+		return nil, fmt.Errorf("server.New: recount users: %w", err)
+	}
+	requireNickServ := cfg.Security.RequireNickServ || currentUserCount > 0
 	if requireNickServ {
 		cacheTTL := defaultNickServCacheTTL
 		if cfg.Security.NickServCacheTTL != "" {
@@ -427,17 +471,14 @@ func New(cfg *config.ServerConfig, configPath string, logger *slog.Logger) (*Ser
 	commands.reloader = s
 
 	// Wire permissions into the command handler for admin commands (!user, !channel).
-	// Also register the permissions_manage LLM tool when a PermissionsWriter
-	// can be created (requires both PM and a permissions file path).
+	// Also register the permissions_manage LLM tool with the DB-backed store.
 	if pm != nil {
 		commands.permissions.Store(pm)
-		if cfg.Security.PermissionsFile != "" {
-			pw := NewPermissionsWriter(cfg.Security.PermissionsFile, logger)
-			commands.permWriter.Store(pw)
-			if err := RegisterPermissionsTool(serverTools, pw, pm, s, logger); err != nil {
-				database.Close()
-				return nil, fmt.Errorf("server.New: %w", err)
-			}
+		ps := NewPermissionsStore(database, pm, logger)
+		commands.permStore.Store(ps)
+		if err := RegisterPermissionsTool(serverTools, ps, pm, logger); err != nil {
+			database.Close()
+			return nil, fmt.Errorf("server.New: %w", err)
 		}
 	}
 
@@ -702,15 +743,15 @@ func (s *Server) Reload() error {
 		return fmt.Errorf("Reload: %w", err)
 	}
 
-	// Reload permissions config.
-	permCfg, err := config.LoadPermissionsConfig(cfg.Security.PermissionsFile)
+	// Reload permissions from DB.
+	permCfg, err := config.LoadPermissionsFromDB(s.database)
 	if err != nil {
-		return fmt.Errorf("Reload: load permissions config: %w", err)
+		return fmt.Errorf("Reload: load permissions from DB: %w", err)
 	}
 	if s.permissions != nil {
 		s.permissions.Update(permCfg)
 		s.permissions.SetLogPermissions(cfg.Debug.LogPermissions)
-		s.logger.Info("permissions reloaded",
+		s.logger.Info("permissions reloaded from DB",
 			"users", len(permCfg.Users),
 			"channels", len(permCfg.Channels),
 		)
@@ -723,12 +764,12 @@ func (s *Server) Reload() error {
 		s.permissions = pm
 		// Wire into command handler for admin commands.
 		s.commands.permissions.Store(pm)
-		if cfg.Security.PermissionsFile != "" && s.commands.permWriter.Load() == nil {
-			pw := NewPermissionsWriter(cfg.Security.PermissionsFile, s.logger)
-			s.commands.permWriter.Store(pw)
+		if s.commands.permStore.Load() == nil {
+			ps := NewPermissionsStore(s.database, pm, s.logger)
+			s.commands.permStore.Store(ps)
 			// Register the permissions_manage LLM tool if not already present.
 			if !s.serverTools.HasTool("permissions_manage") {
-				if err := RegisterPermissionsTool(s.serverTools, pw, pm, s, s.logger); err != nil {
+				if err := RegisterPermissionsTool(s.serverTools, ps, pm, s.logger); err != nil {
 					s.logger.Error("Reload: failed to register permissions_manage tool", "error", err)
 				}
 			}
@@ -753,7 +794,8 @@ func (s *Server) Reload() error {
 	// Update NickServ verifier: recreate on enable or TTL change, disable if
 	// no longer required. Always recreating when enabled is cheap (just a
 	// struct with empty maps) and ensures TTL changes take effect.
-	requireNickServ := cfg.Security.RequireNickServ || len(permCfg.Users) > 0
+	reloadUserCount, _ := s.database.UserCount()
+	requireNickServ := cfg.Security.RequireNickServ || reloadUserCount > 0
 	if requireNickServ {
 		cacheTTL := defaultNickServCacheTTL
 		if cfg.Security.NickServCacheTTL != "" {

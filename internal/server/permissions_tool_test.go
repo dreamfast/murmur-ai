@@ -4,52 +4,60 @@ import (
 	"context"
 	"io"
 	"log/slog"
-	"path/filepath"
 	"strings"
 	"testing"
 
 	"murmur/internal/config"
+	"murmur/internal/db"
 )
 
 // testPermToolEnv holds all the components needed for permissions tool tests.
 type testPermToolEnv struct {
-	pm       *PermissionManager
-	pw       *PermissionsWriter
-	reloader *pmReloader
-	logger   *slog.Logger
+	pm     *PermissionManager
+	ps     *PermissionsStore
+	logger *slog.Logger
 }
 
 // newTestPermToolEnv creates a test environment with a permission manager,
-// permissions writer, and a mock reloader that updates the PM from the file.
-// The admin nick is always "admin" with role "admin".
+// DB-backed permissions store, and a discarding logger. The admin nick is
+// always "admin" with role "admin".
 func newTestPermToolEnv(t *testing.T) *testPermToolEnv {
 	t.Helper()
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	dir := t.TempDir()
-	path := filepath.Join(dir, "permissions.toml")
 
-	permCfg := &config.PermissionsConfig{
-		Users: map[string]config.UserPermissions{
-			"admin": {Role: "admin", Tools: []string{"*"}, Autonomy: "auto"},
-		},
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
 	}
+	if err := database.Migrate(); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	t.Cleanup(func() { database.Close() })
 
-	pm := NewPermissionManager(permCfg, logger)
-	pw := NewPermissionsWriter(path, logger)
-
-	// Seed the file with the initial config so reads work.
-	if err := pw.WriteUser("admin", config.UserPermissions{Role: "admin", Tools: []string{"*"}, Autonomy: "auto"}); err != nil {
+	// Seed the admin user in the DB.
+	if err := database.CreateUser(&db.UserRow{
+		Nick:      "admin",
+		Role:      "admin",
+		Tools:     db.StringSlice{"*"},
+		DenyTools: db.StringSlice{},
+		Autonomy:  "auto",
+	}); err != nil {
 		t.Fatalf("seed admin user: %v", err)
 	}
 
-	reloader := &pmReloader{pm: pm, pw: pw}
+	permCfg, err := config.LoadPermissionsFromDB(database)
+	if err != nil {
+		t.Fatalf("LoadPermissionsFromDB: %v", err)
+	}
+
+	pm := NewPermissionManager(permCfg, logger)
+	ps := NewPermissionsStore(database, pm, logger)
 
 	return &testPermToolEnv{
-		pm:       pm,
-		pw:       pw,
-		reloader: reloader,
-		logger:   logger,
+		pm:     pm,
+		ps:     ps,
+		logger: logger,
 	}
 }
 
@@ -70,14 +78,14 @@ func TestPermissionsManage_NonAdminRejected(t *testing.T) {
 	args := map[string]any{"action": "list_users"}
 
 	// No nick in context.
-	_, err := handlePermissionsManage(context.Background(), args, env.pw, env.pm, env.reloader, env.logger)
+	_, err := handlePermissionsManage(context.Background(), args, env.ps, env.pm)
 	if err == nil || !strings.Contains(err.Error(), "permission denied") {
 		t.Errorf("expected permission denied with no nick, got: %v", err)
 	}
 
 	// Non-admin nick in context.
 	ctx := userCtx("regularuser")
-	_, err = handlePermissionsManage(ctx, args, env.pw, env.pm, env.reloader, env.logger)
+	_, err = handlePermissionsManage(ctx, args, env.ps, env.pm)
 	if err == nil || !strings.Contains(err.Error(), "permission denied") {
 		t.Errorf("expected permission denied for non-admin, got: %v", err)
 	}
@@ -87,7 +95,7 @@ func TestPermissionsManage_ListUsers(t *testing.T) {
 	t.Parallel()
 	env := newTestPermToolEnv(t)
 
-	result, err := handlePermissionsManage(adminCtx(), map[string]any{"action": "list_users"}, env.pw, env.pm, env.reloader, env.logger)
+	result, err := handlePermissionsManage(adminCtx(), map[string]any{"action": "list_users"}, env.ps, env.pm)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -100,19 +108,35 @@ func TestPermissionsManage_ListUsers_SingleUser(t *testing.T) {
 	t.Parallel()
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	// Create a PM with only the admin user to verify the list format with
-	// a minimal config. The admin user must exist for the admin check to pass.
-	pm := NewPermissionManager(&config.PermissionsConfig{
-		Users: map[string]config.UserPermissions{
-			"admin": {Role: "admin"},
-		},
-	}, logger)
 
-	dir := t.TempDir()
-	pw := NewPermissionsWriter(filepath.Join(dir, "permissions.toml"), logger)
-	reloader := &pmReloader{pm: pm, pw: pw}
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := database.Migrate(); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	t.Cleanup(func() { database.Close() })
 
-	result, err := handlePermissionsManage(adminCtx(), map[string]any{"action": "list_users"}, pw, pm, reloader, logger)
+	// Seed only the admin user (no tools, no autonomy — minimal config).
+	if err := database.CreateUser(&db.UserRow{
+		Nick:      "admin",
+		Role:      "admin",
+		Tools:     db.StringSlice{},
+		DenyTools: db.StringSlice{},
+	}); err != nil {
+		t.Fatalf("seed admin user: %v", err)
+	}
+
+	permCfg, err := config.LoadPermissionsFromDB(database)
+	if err != nil {
+		t.Fatalf("LoadPermissionsFromDB: %v", err)
+	}
+
+	pm := NewPermissionManager(permCfg, logger)
+	ps := NewPermissionsStore(database, pm, logger)
+
+	result, err := handlePermissionsManage(adminCtx(), map[string]any{"action": "list_users"}, ps, pm)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -128,7 +152,7 @@ func TestPermissionsManage_GetUser(t *testing.T) {
 	result, err := handlePermissionsManage(adminCtx(), map[string]any{
 		"action": "get_user",
 		"nick":   "admin",
-	}, env.pw, env.pm, env.reloader, env.logger)
+	}, env.ps, env.pm)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -147,7 +171,7 @@ func TestPermissionsManage_GetUser_NotFound(t *testing.T) {
 	result, err := handlePermissionsManage(adminCtx(), map[string]any{
 		"action": "get_user",
 		"nick":   "nobody",
-	}, env.pw, env.pm, env.reloader, env.logger)
+	}, env.ps, env.pm)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -162,7 +186,7 @@ func TestPermissionsManage_GetUser_MissingNick(t *testing.T) {
 
 	_, err := handlePermissionsManage(adminCtx(), map[string]any{
 		"action": "get_user",
-	}, env.pw, env.pm, env.reloader, env.logger)
+	}, env.ps, env.pm)
 	if err == nil || !strings.Contains(err.Error(), "missing required argument") {
 		t.Errorf("expected missing argument error, got: %v", err)
 	}
@@ -176,7 +200,7 @@ func TestPermissionsManage_AddUser(t *testing.T) {
 		"action": "add_user",
 		"nick":   "alice",
 		"role":   "user",
-	}, env.pw, env.pm, env.reloader, env.logger)
+	}, env.ps, env.pm)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -198,7 +222,7 @@ func TestPermissionsManage_AddUser_DefaultRole(t *testing.T) {
 	result, err := handlePermissionsManage(adminCtx(), map[string]any{
 		"action": "add_user",
 		"nick":   "bob",
-	}, env.pw, env.pm, env.reloader, env.logger)
+	}, env.ps, env.pm)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -223,7 +247,7 @@ func TestPermissionsManage_AddUser_AlreadyExists(t *testing.T) {
 	result, err := handlePermissionsManage(adminCtx(), map[string]any{
 		"action": "add_user",
 		"nick":   "admin",
-	}, env.pw, env.pm, env.reloader, env.logger)
+	}, env.ps, env.pm)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -240,7 +264,7 @@ func TestPermissionsManage_RemoveUser(t *testing.T) {
 	_, err := handlePermissionsManage(adminCtx(), map[string]any{
 		"action": "add_user",
 		"nick":   "charlie",
-	}, env.pw, env.pm, env.reloader, env.logger)
+	}, env.ps, env.pm)
 	if err != nil {
 		t.Fatalf("add user: %v", err)
 	}
@@ -249,7 +273,7 @@ func TestPermissionsManage_RemoveUser(t *testing.T) {
 	result, err := handlePermissionsManage(adminCtx(), map[string]any{
 		"action": "remove_user",
 		"nick":   "charlie",
-	}, env.pw, env.pm, env.reloader, env.logger)
+	}, env.ps, env.pm)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -271,7 +295,7 @@ func TestPermissionsManage_RemoveUser_NotFound(t *testing.T) {
 	_, err := handlePermissionsManage(adminCtx(), map[string]any{
 		"action": "remove_user",
 		"nick":   "nobody",
-	}, env.pw, env.pm, env.reloader, env.logger)
+	}, env.ps, env.pm)
 	if err == nil || !strings.Contains(err.Error(), "not found") {
 		t.Errorf("expected 'not found' error, got: %v", err)
 	}
@@ -285,7 +309,7 @@ func TestPermissionsManage_SetUserTools(t *testing.T) {
 		"action": "set_user_tools",
 		"nick":   "admin",
 		"value":  "shell,mail_read",
-	}, env.pw, env.pm, env.reloader, env.logger)
+	}, env.ps, env.pm)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -311,7 +335,7 @@ func TestPermissionsManage_SetUserDeny(t *testing.T) {
 		"action": "set_user_deny",
 		"nick":   "admin",
 		"value":  "shell",
-	}, env.pw, env.pm, env.reloader, env.logger)
+	}, env.ps, env.pm)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -334,7 +358,7 @@ func TestPermissionsManage_SetUserRole(t *testing.T) {
 	_, err := handlePermissionsManage(adminCtx(), map[string]any{
 		"action": "add_user",
 		"nick":   "dave",
-	}, env.pw, env.pm, env.reloader, env.logger)
+	}, env.ps, env.pm)
 	if err != nil {
 		t.Fatalf("add user: %v", err)
 	}
@@ -343,7 +367,7 @@ func TestPermissionsManage_SetUserRole(t *testing.T) {
 		"action": "set_user_role",
 		"nick":   "dave",
 		"value":  "admin",
-	}, env.pw, env.pm, env.reloader, env.logger)
+	}, env.ps, env.pm)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -366,7 +390,7 @@ func TestPermissionsManage_SetUserAutonomy(t *testing.T) {
 		"action": "set_user_autonomy",
 		"nick":   "admin",
 		"value":  "approve",
-	}, env.pw, env.pm, env.reloader, env.logger)
+	}, env.ps, env.pm)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -389,7 +413,7 @@ func TestPermissionsManage_SetUserModel(t *testing.T) {
 		"action": "set_user_model",
 		"nick":   "admin",
 		"value":  "openai,anthropic",
-	}, env.pw, env.pm, env.reloader, env.logger)
+	}, env.ps, env.pm)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -412,7 +436,7 @@ func TestPermissionsManage_SetUserRatelimit(t *testing.T) {
 		"action": "set_user_ratelimit",
 		"nick":   "admin",
 		"value":  "100",
-	}, env.pw, env.pm, env.reloader, env.logger)
+	}, env.ps, env.pm)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -435,7 +459,7 @@ func TestPermissionsManage_SetUserRatelimit_Invalid(t *testing.T) {
 		"action": "set_user_ratelimit",
 		"nick":   "admin",
 		"value":  "notanumber",
-	}, env.pw, env.pm, env.reloader, env.logger)
+	}, env.ps, env.pm)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -452,7 +476,7 @@ func TestPermissionsManage_SetUserField_UserNotFound(t *testing.T) {
 		"action": "set_user_tools",
 		"nick":   "nobody",
 		"value":  "shell",
-	}, env.pw, env.pm, env.reloader, env.logger)
+	}, env.ps, env.pm)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -468,7 +492,7 @@ func TestPermissionsManage_ListChannels(t *testing.T) {
 	// No channels initially.
 	result, err := handlePermissionsManage(adminCtx(), map[string]any{
 		"action": "list_channels",
-	}, env.pw, env.pm, env.reloader, env.logger)
+	}, env.ps, env.pm)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -486,7 +510,7 @@ func TestPermissionsManage_SetChannelTools(t *testing.T) {
 		"action":  "set_channel_tools",
 		"channel": "#general",
 		"value":   "shell,note_*",
-	}, env.pw, env.pm, env.reloader, env.logger)
+	}, env.ps, env.pm)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -513,7 +537,7 @@ func TestPermissionsManage_SetChannelDeny(t *testing.T) {
 		"action":  "set_channel_deny",
 		"channel": "#general",
 		"value":   "shell",
-	}, env.pw, env.pm, env.reloader, env.logger)
+	}, env.ps, env.pm)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -530,7 +554,7 @@ func TestPermissionsManage_SetChannelAutonomy(t *testing.T) {
 		"action":  "set_channel_autonomy",
 		"channel": "#general",
 		"value":   "report",
-	}, env.pw, env.pm, env.reloader, env.logger)
+	}, env.ps, env.pm)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -553,7 +577,7 @@ func TestPermissionsManage_SetChannelModel(t *testing.T) {
 		"action":  "set_channel_model",
 		"channel": "#general",
 		"value":   "openai",
-	}, env.pw, env.pm, env.reloader, env.logger)
+	}, env.ps, env.pm)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -577,7 +601,7 @@ func TestPermissionsManage_GetChannel(t *testing.T) {
 		"action":  "set_channel_autonomy",
 		"channel": "#test",
 		"value":   "approve",
-	}, env.pw, env.pm, env.reloader, env.logger)
+	}, env.ps, env.pm)
 	if err != nil {
 		t.Fatalf("setup: %v", err)
 	}
@@ -585,7 +609,7 @@ func TestPermissionsManage_GetChannel(t *testing.T) {
 	result, err := handlePermissionsManage(adminCtx(), map[string]any{
 		"action":  "get_channel",
 		"channel": "#test",
-	}, env.pw, env.pm, env.reloader, env.logger)
+	}, env.ps, env.pm)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -604,7 +628,7 @@ func TestPermissionsManage_GetChannel_NotFound(t *testing.T) {
 	result, err := handlePermissionsManage(adminCtx(), map[string]any{
 		"action":  "get_channel",
 		"channel": "#nonexistent",
-	}, env.pw, env.pm, env.reloader, env.logger)
+	}, env.ps, env.pm)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -619,7 +643,7 @@ func TestPermissionsManage_UnknownAction(t *testing.T) {
 
 	_, err := handlePermissionsManage(adminCtx(), map[string]any{
 		"action": "do_something_weird",
-	}, env.pw, env.pm, env.reloader, env.logger)
+	}, env.ps, env.pm)
 	if err == nil || !strings.Contains(err.Error(), "unknown action") {
 		t.Errorf("expected 'unknown action' error, got: %v", err)
 	}
@@ -629,7 +653,7 @@ func TestPermissionsManage_MissingAction(t *testing.T) {
 	t.Parallel()
 	env := newTestPermToolEnv(t)
 
-	_, err := handlePermissionsManage(adminCtx(), map[string]any{}, env.pw, env.pm, env.reloader, env.logger)
+	_, err := handlePermissionsManage(adminCtx(), map[string]any{}, env.ps, env.pm)
 	if err == nil || !strings.Contains(err.Error(), "missing required argument") {
 		t.Errorf("expected 'missing required argument' error, got: %v", err)
 	}
@@ -640,7 +664,7 @@ func TestPermissionsManage_RegisterTool(t *testing.T) {
 	env := newTestPermToolEnv(t)
 
 	registry := NewToolRegistry()
-	err := RegisterPermissionsTool(registry, env.pw, env.pm, env.reloader, env.logger)
+	err := RegisterPermissionsTool(registry, env.ps, env.pm, env.logger)
 	if err != nil {
 		t.Fatalf("RegisterPermissionsTool: %v", err)
 	}
@@ -660,12 +684,12 @@ func TestPermissionsManage_RegisterTool_Duplicate(t *testing.T) {
 	env := newTestPermToolEnv(t)
 
 	registry := NewToolRegistry()
-	if err := RegisterPermissionsTool(registry, env.pw, env.pm, env.reloader, env.logger); err != nil {
+	if err := RegisterPermissionsTool(registry, env.ps, env.pm, env.logger); err != nil {
 		t.Fatalf("first register: %v", err)
 	}
 
 	// Second registration should fail.
-	err := RegisterPermissionsTool(registry, env.pw, env.pm, env.reloader, env.logger)
+	err := RegisterPermissionsTool(registry, env.ps, env.pm, env.logger)
 	if err == nil {
 		t.Error("expected error on duplicate registration")
 	}
@@ -678,7 +702,7 @@ func TestPermissionsManage_SetUserRole_EmptyValue(t *testing.T) {
 	result, err := handlePermissionsManage(adminCtx(), map[string]any{
 		"action": "set_user_role",
 		"nick":   "admin",
-	}, env.pw, env.pm, env.reloader, env.logger)
+	}, env.ps, env.pm)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -694,7 +718,7 @@ func TestPermissionsManage_SetChannelAutonomy_EmptyValue(t *testing.T) {
 	result, err := handlePermissionsManage(adminCtx(), map[string]any{
 		"action":  "set_channel_autonomy",
 		"channel": "#test",
-	}, env.pw, env.pm, env.reloader, env.logger)
+	}, env.ps, env.pm)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -710,7 +734,7 @@ func TestPermissionsManage_SetChannelTools_MissingChannel(t *testing.T) {
 	_, err := handlePermissionsManage(adminCtx(), map[string]any{
 		"action": "set_channel_tools",
 		"value":  "shell",
-	}, env.pw, env.pm, env.reloader, env.logger)
+	}, env.ps, env.pm)
 	if err == nil || !strings.Contains(err.Error(), "missing required argument") {
 		t.Errorf("expected 'missing required argument' error, got: %v", err)
 	}
