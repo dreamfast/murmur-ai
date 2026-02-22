@@ -58,6 +58,23 @@ max_history = 100
 # summary_threshold = 80      # message count that triggers summarization (default: 80% of max_history)
 # cross_channel_context = 10  # recent messages per other channel included in system prompt (-1 to disable)
 
+# RAG (Retrieval-Augmented Generation) memory search.
+# Enables FTS5 full-text search over ingested documents and conversation summaries.
+# Optionally add an embedding provider for hybrid semantic + keyword search.
+# Works with any OpenAI-compatible embeddings API (OpenRouter, Ollama, local, etc.).
+# [memory.rag]
+# enabled = true
+# auto_ingest_summaries = true  # auto-ingest conversation summaries (default: true)
+# files = ["~/.murmur/knowledge/readme.md"]  # files to index on startup
+
+# Optional: embedding provider for semantic search (FTS5-only if omitted).
+# Any OpenAI-compatible /v1/embeddings endpoint works (OpenRouter, Ollama, local, etc.).
+# [memory.rag.embeddings]
+# api_base = "http://localhost:11434/v1"  # e.g., Ollama local
+# api_key = ""                            # not needed for local Ollama
+# model = "nomic-embed-text"
+# dimensions = 768
+
 [scheduler]
 enabled = true
 heartbeat_interval = "5m"

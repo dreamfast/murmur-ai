@@ -166,6 +166,47 @@ type MemoryConfig struct {
 	// of activity in other channels (e.g., news posted to #news can be
 	// referenced from #murmur). Set to -1 to disable. Defaults to 10.
 	CrossChannelContext int `toml:"cross_channel_context"`
+	// RAG holds configuration for retrieval-augmented generation (RAG)
+	// using FTS5 full-text search and optional embedding-based semantic search.
+	RAG RAGConfig `toml:"rag"`
+}
+
+// RAGConfig holds configuration for the RAG memory search system.
+type RAGConfig struct {
+	// Enabled controls whether the RAG system is active. Defaults to false.
+	Enabled bool `toml:"enabled"`
+	// AutoIngestSummaries controls whether conversation summaries are
+	// automatically ingested into the RAG store. Defaults to true when
+	// RAG is enabled.
+	AutoIngestSummaries *bool `toml:"auto_ingest_summaries"`
+	// Files is a list of file paths to index on startup. Supports ~ for
+	// home directory expansion. Relative paths resolve from the process CWD.
+	Files []string `toml:"files"`
+	// Embeddings holds optional embedding provider configuration for
+	// semantic search. When not configured, only FTS5 search is used.
+	Embeddings *EmbeddingsConfig `toml:"embeddings"`
+}
+
+// GetAutoIngestSummaries returns the auto_ingest_summaries value,
+// defaulting to true if not set.
+func (r *RAGConfig) GetAutoIngestSummaries() bool {
+	if r.AutoIngestSummaries == nil {
+		return true
+	}
+	return *r.AutoIngestSummaries
+}
+
+// EmbeddingsConfig holds configuration for the embedding provider used
+// by the RAG system for semantic search.
+type EmbeddingsConfig struct {
+	// APIBase is the base URL for the embeddings API (e.g., "https://api.openai.com/v1").
+	APIBase string `toml:"api_base"`
+	// APIKey is the API key for authentication. Supports "vault:" prefix.
+	APIKey string `toml:"api_key"`
+	// Model is the embedding model name. Defaults to "text-embedding-3-small".
+	Model string `toml:"model"`
+	// Dimensions is the embedding vector dimensionality. Defaults to 1536.
+	Dimensions int `toml:"dimensions"`
 }
 
 // VaultConfig holds secrets vault settings.

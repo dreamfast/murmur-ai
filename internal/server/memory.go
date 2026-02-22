@@ -45,6 +45,12 @@ type Memory struct {
 	maxHistory       int
 	summaryThreshold int
 
+	// OnSummary is an optional callback invoked after a successful
+	// summarization. It receives the channel name and the summary text.
+	// Used by the RAG system to auto-ingest summaries. The callback is
+	// responsible for its own error handling (e.g., logging failures).
+	OnSummary func(channel, summary string)
+
 	// summarizeMu prevents concurrent summarization for the same channel.
 	// The map key is the channel name. Access to the map itself is guarded
 	// by summarizeMapMu.
@@ -263,6 +269,12 @@ func (m *Memory) MaybeSummarize(ctx context.Context, channel string) error {
 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("MaybeSummarize: commit: %w", err)
+	}
+
+	// Invoke the OnSummary callback (e.g., RAG auto-ingest) after a
+	// successful commit.
+	if m.OnSummary != nil {
+		m.OnSummary(channel, summaryText)
 	}
 
 	m.logger.Info("conversation summarized",

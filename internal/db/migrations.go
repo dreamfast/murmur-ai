@@ -178,6 +178,45 @@ var migrations = []string{
 	// When set, the task uses this LLM provider instead of the channel/global default.
 	// Empty string (default) means use the normal resolution chain.
 	`ALTER TABLE scheduled_tasks ADD COLUMN provider TEXT NOT NULL DEFAULT '';`,
+
+	// Migration 11: RAG memory documents with FTS5 full-text search.
+	// memory_documents stores chunked text content for retrieval-augmented generation.
+	// The FTS5 virtual table provides fast full-text search over content.
+	// Triggers keep the FTS5 index in sync with the base table.
+	`CREATE TABLE memory_documents (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		source TEXT NOT NULL,
+		chunk_id TEXT NOT NULL UNIQUE,
+		content TEXT NOT NULL,
+		metadata TEXT NOT NULL DEFAULT '{}',
+		embedding BLOB,
+		created DATETIME DEFAULT CURRENT_TIMESTAMP,
+		updated DATETIME DEFAULT CURRENT_TIMESTAMP
+	);
+	CREATE INDEX idx_memory_source ON memory_documents(source);
+
+	CREATE VIRTUAL TABLE memory_documents_fts USING fts5(
+		content, source, chunk_id,
+		content=memory_documents,
+		content_rowid=id
+	);
+
+	CREATE TRIGGER memory_documents_ai AFTER INSERT ON memory_documents BEGIN
+		INSERT INTO memory_documents_fts(rowid, content, source, chunk_id)
+		VALUES (new.id, new.content, new.source, new.chunk_id);
+	END;
+
+	CREATE TRIGGER memory_documents_ad AFTER DELETE ON memory_documents BEGIN
+		INSERT INTO memory_documents_fts(memory_documents_fts, rowid, content, source, chunk_id)
+		VALUES ('delete', old.id, old.content, old.source, old.chunk_id);
+	END;
+
+	CREATE TRIGGER memory_documents_au AFTER UPDATE ON memory_documents BEGIN
+		INSERT INTO memory_documents_fts(memory_documents_fts, rowid, content, source, chunk_id)
+		VALUES ('delete', old.id, old.content, old.source, old.chunk_id);
+		INSERT INTO memory_documents_fts(rowid, content, source, chunk_id)
+		VALUES (new.id, new.content, new.source, new.chunk_id);
+	END;`,
 }
 
 // Migrate runs all pending schema migrations. It creates the schema_version

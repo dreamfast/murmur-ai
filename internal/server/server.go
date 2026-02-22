@@ -20,6 +20,7 @@ import (
 	"murmur/internal/db"
 	"murmur/internal/irc"
 	"murmur/internal/llm"
+	"murmur/internal/rag"
 	"murmur/internal/tools"
 	"murmur/internal/vault"
 )
@@ -200,6 +201,63 @@ func New(cfg *config.ServerConfig, configPath string, logger *slog.Logger) (*Ser
 	if err := RegisterNoteTools(serverTools, notesStore); err != nil {
 		database.Close()
 		return nil, fmt.Errorf("server.New: register note tools: %w", err)
+	}
+
+	// Wire RAG memory search if enabled.
+	if cfg.Memory.RAG.Enabled {
+		// Optionally create an embedding provider for semantic search.
+		var embedder rag.EmbeddingProvider
+		if embCfg := cfg.Memory.RAG.Embeddings; embCfg != nil && embCfg.APIBase != "" {
+			embedder = rag.NewOpenAIEmbeddingProvider(rag.OpenAIEmbeddingConfig{
+				APIBase: embCfg.APIBase,
+				APIKey:  embCfg.APIKey,
+				Model:   embCfg.Model,
+				Dims:    embCfg.Dimensions,
+			})
+			logger.Info("RAG embedding provider configured",
+				"api_base", embCfg.APIBase,
+				"model", embCfg.Model,
+			)
+		}
+
+		ragStore := rag.NewRAGStore(database, embedder, logger, rag.RAGStoreConfig{})
+		if err := RegisterRAGTools(serverTools, ragStore); err != nil {
+			database.Close()
+			return nil, fmt.Errorf("server.New: register RAG tools: %w", err)
+		}
+
+		// Auto-ingest summaries into RAG when summarization completes.
+		if cfg.Memory.RAG.GetAutoIngestSummaries() {
+			memory.OnSummary = func(channel, summary string) {
+				if err := ragStore.Ingest("summary:"+channel, summary); err != nil {
+					logger.Error("RAG auto-ingest summary failed",
+						"channel", channel,
+						"error", err,
+					)
+				}
+			}
+		}
+
+		// Index startup files synchronously. This is a one-time cost during
+		// server initialization (local file reads + SQLite inserts). Running
+		// synchronously avoids lifecycle issues with untracked goroutines
+		// racing the database close on shutdown.
+		for _, path := range cfg.Memory.RAG.Files {
+			if err := ragStore.IngestFile(path); err != nil {
+				logger.Warn("RAG startup file ingest failed",
+					"path", path,
+					"error", err,
+				)
+			} else {
+				logger.Info("RAG indexed startup file", "path", path)
+			}
+		}
+
+		logger.Info("RAG memory search enabled",
+			"embeddings", embedder != nil,
+			"auto_ingest_summaries", cfg.Memory.RAG.GetAutoIngestSummaries(),
+			"startup_files", len(cfg.Memory.RAG.Files),
+		)
 	}
 
 	// reloadPtr is a late-binding pointer used by the config_manage tool's
