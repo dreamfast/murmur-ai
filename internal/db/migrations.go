@@ -137,6 +137,42 @@ var migrations = []string{
 	// Empty string (default) means legacy tasks with no creator — these bypass
 	// permission filtering for backward compatibility.
 	`ALTER TABLE scheduled_tasks ADD COLUMN created_by TEXT NOT NULL DEFAULT '';`,
+
+	// Migration 9: Users, channel permissions, and metadata tables.
+	// Users table replaces the TOML-based permissions.toml file. The 'default'
+	// nick serves as the fallback row when no specific user entry exists.
+	// Channel permissions store per-channel tool/model/autonomy overrides.
+	// Metadata stores import markers and other key-value state.
+	`CREATE TABLE users (
+		nick TEXT PRIMARY KEY COLLATE NOCASE,
+		role TEXT NOT NULL DEFAULT 'user' CHECK(role IN ('admin', 'user')),
+		tools TEXT NOT NULL DEFAULT '["*"]',
+		deny_tools TEXT NOT NULL DEFAULT '[]',
+		autonomy TEXT NOT NULL DEFAULT 'approve' CHECK(autonomy IN ('report', 'approve', 'auto', '')),
+		allowed_models TEXT NOT NULL DEFAULT '[]',
+		deny_models TEXT NOT NULL DEFAULT '[]',
+		max_messages_per_hour INTEGER NOT NULL DEFAULT 0,
+		api_key TEXT NOT NULL DEFAULT '',
+		nickserv_account TEXT NOT NULL DEFAULT '',
+		created DATETIME DEFAULT CURRENT_TIMESTAMP,
+		updated DATETIME DEFAULT CURRENT_TIMESTAMP
+	);
+	CREATE UNIQUE INDEX idx_users_api_key ON users(api_key) WHERE api_key != '';
+	CREATE INDEX idx_users_role ON users(role);
+
+	CREATE TABLE channel_permissions (
+		channel TEXT PRIMARY KEY COLLATE NOCASE,
+		tools TEXT NOT NULL DEFAULT '[]',
+		deny_tools TEXT NOT NULL DEFAULT '[]',
+		autonomy TEXT NOT NULL DEFAULT '' CHECK(autonomy IN ('report', 'approve', 'auto', '')),
+		allowed_models TEXT NOT NULL DEFAULT '[]'
+	);
+
+	CREATE TABLE metadata (
+		key TEXT PRIMARY KEY,
+		value TEXT NOT NULL DEFAULT '',
+		updated DATETIME DEFAULT CURRENT_TIMESTAMP
+	);`,
 }
 
 // Migrate runs all pending schema migrations. It creates the schema_version

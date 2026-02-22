@@ -88,6 +88,9 @@ func TestMigrate_CreatesAllTables(t *testing.T) {
 		"custom_tools",
 		"events",
 		"channel_settings",
+		"users",
+		"channel_permissions",
+		"metadata",
 	}
 
 	for _, table := range expectedTables {
@@ -126,6 +129,8 @@ func TestMigrate_CreatesIndexes(t *testing.T) {
 		"idx_events_timestamp",
 		"idx_events_source",
 		"idx_channel_settings_auto_join",
+		"idx_users_api_key",
+		"idx_users_role",
 	}
 
 	for _, idx := range expectedIndexes {
