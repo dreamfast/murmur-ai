@@ -9,6 +9,7 @@ import (
 
 	"murmur/internal/db"
 	"murmur/internal/llm"
+	"murmur/internal/llm/llmtest"
 )
 
 // newTestMemory creates an in-memory database, runs migrations, and returns
@@ -320,7 +321,7 @@ func TestMemory_GetHistoryCount(t *testing.T) {
 func TestMemory_SummarizationTriggered(t *testing.T) {
 	t.Parallel()
 
-	provider := &llm.MockProvider{
+	provider := &llmtest.MockProvider{
 		NameVal: "test-summary",
 		Responses: []*llm.ChatResponse{
 			{Content: "This is a summary of the conversation."},
@@ -426,7 +427,7 @@ func TestMemory_SummarizationDisabled(t *testing.T) {
 func TestMemory_SummaryIncludedInHistory(t *testing.T) {
 	t.Parallel()
 
-	provider := &llm.MockProvider{
+	provider := &llmtest.MockProvider{
 		NameVal: "test-summary",
 		Responses: []*llm.ChatResponse{
 			{Content: "Key facts: user asked about Go, assistant explained interfaces."},
@@ -472,7 +473,7 @@ func TestMemory_SummaryIncludedInHistory(t *testing.T) {
 func TestMemory_SummarizationFailureDoesntBlockAdd(t *testing.T) {
 	t.Parallel()
 
-	provider := &llm.MockProvider{
+	provider := &llmtest.MockProvider{
 		NameVal: "test-summary",
 		Errors:  []error{fmt.Errorf("LLM unavailable")},
 	}
@@ -500,7 +501,7 @@ func TestMemory_SummarizationFailureDoesntBlockAdd(t *testing.T) {
 func TestMemory_SummaryThresholdConfig(t *testing.T) {
 	t.Parallel()
 
-	provider := &llm.MockProvider{
+	provider := &llmtest.MockProvider{
 		NameVal: "test-summary",
 		Responses: []*llm.ChatResponse{
 			{Content: "Summary text."},
@@ -538,7 +539,7 @@ func TestMemory_SummaryThresholdConfig(t *testing.T) {
 func TestMemory_ClearHistoryClearsSummaries(t *testing.T) {
 	t.Parallel()
 
-	provider := &llm.MockProvider{
+	provider := &llmtest.MockProvider{
 		NameVal: "test-summary",
 		Responses: []*llm.ChatResponse{
 			{Content: "Summary to be cleared."},
@@ -599,7 +600,7 @@ func TestMemory_ClearHistoryClearsSummaries(t *testing.T) {
 func TestMemory_MultiCycleSummarization(t *testing.T) {
 	t.Parallel()
 
-	provider := &llm.MockProvider{
+	provider := &llmtest.MockProvider{
 		NameVal: "test-summary",
 		Responses: []*llm.ChatResponse{
 			{Content: "First cycle summary."},

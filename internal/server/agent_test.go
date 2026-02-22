@@ -20,6 +20,7 @@ import (
 	"murmur/internal/db"
 	"murmur/internal/irc"
 	"murmur/internal/llm"
+	"murmur/internal/llm/llmtest"
 	"murmur/internal/tools"
 )
 
@@ -29,7 +30,7 @@ type testAgentEnv struct {
 	registry *Registry
 	memory   *Memory
 	router   *Router
-	mock     *llm.MockProvider
+	mock     *llmtest.MockProvider
 	sent     []string // captured IRC messages
 	mu       sync.Mutex
 }
@@ -97,7 +98,7 @@ func newTestAgentEnv(t *testing.T) *testAgentEnv {
 	sender := bus.NewSender(nil, "#murmur-bus", "", 0, logger)
 	router := NewRouter(registry, sender, logger)
 
-	mock := &llm.MockProvider{
+	mock := &llmtest.MockProvider{
 		NameVal: "test-provider",
 	}
 
@@ -466,7 +467,7 @@ func TestAgent_SetProvider(t *testing.T) {
 	env := newTestAgentEnv(t)
 
 	// Add a second provider.
-	addTestProvider(env.agent, "other-provider", &llm.MockProvider{NameVal: "other-provider"})
+	addTestProvider(env.agent, "other-provider", &llmtest.MockProvider{NameVal: "other-provider"})
 
 	// Switch to the other provider for a channel.
 	if err := env.agent.SetProvider("#test", "other-provider"); err != nil {
@@ -509,8 +510,8 @@ func TestAgent_SetProvider_PerChannel(t *testing.T) {
 	router := NewRouter(registry, sender, logger)
 	channelSettings := NewChannelSettingsStore(database, logger)
 
-	mock := &llm.MockProvider{NameVal: "default-provider"}
-	other := &llm.MockProvider{NameVal: "other-provider"}
+	mock := &llmtest.MockProvider{NameVal: "default-provider"}
+	other := &llmtest.MockProvider{NameVal: "other-provider"}
 	providers := map[string]llm.Provider{
 		"default-provider": mock,
 		"other-provider":   other,
@@ -589,8 +590,8 @@ func TestAgent_ResolveProvider(t *testing.T) {
 	router := NewRouter(registry, sender, logger)
 	channelSettings := NewChannelSettingsStore(database, logger)
 
-	mock := &llm.MockProvider{NameVal: "default-provider"}
-	other := &llm.MockProvider{NameVal: "other-provider"}
+	mock := &llmtest.MockProvider{NameVal: "default-provider"}
+	other := &llmtest.MockProvider{NameVal: "other-provider"}
 	providers := map[string]llm.Provider{
 		"default-provider": mock,
 		"other-provider":   other,
@@ -687,7 +688,7 @@ func TestAgent_ResolveProvider_StaleOverride(t *testing.T) {
 		t.Fatalf("SetProvider: %v", err)
 	}
 
-	mock := &llm.MockProvider{NameVal: "default-provider"}
+	mock := &llmtest.MockProvider{NameVal: "default-provider"}
 	providers := map[string]llm.Provider{
 		"default-provider": mock,
 		// "removed-provider" is NOT in the providers map — simulates config removal.
@@ -735,8 +736,8 @@ func TestAgent_GetProviderNames(t *testing.T) {
 	env := newTestAgentEnv(t)
 
 	// Add more providers.
-	addTestProvider(env.agent, "beta", &llm.MockProvider{NameVal: "beta"})
-	addTestProvider(env.agent, "alpha", &llm.MockProvider{NameVal: "alpha"})
+	addTestProvider(env.agent, "beta", &llmtest.MockProvider{NameVal: "beta"})
+	addTestProvider(env.agent, "alpha", &llmtest.MockProvider{NameVal: "alpha"})
 
 	names := env.agent.GetProviderNames()
 	if len(names) != 3 {
@@ -1205,7 +1206,7 @@ func TestAgent_ServerToolExecution(t *testing.T) {
 		t.Fatalf("Register server tool: %v", err)
 	}
 
-	mock := &llm.MockProvider{NameVal: "test-provider"}
+	mock := &llmtest.MockProvider{NameVal: "test-provider"}
 	providers := map[string]llm.Provider{"test-provider": mock}
 
 	// LLM calls the server-side tool, then returns text.
@@ -1333,7 +1334,7 @@ func TestAgent_ServerToolPriority(t *testing.T) {
 		t.Fatalf("Register server tool: %v", err)
 	}
 
-	mock := &llm.MockProvider{NameVal: "test-provider"}
+	mock := &llmtest.MockProvider{NameVal: "test-provider"}
 	providers := map[string]llm.Provider{"test-provider": mock}
 
 	mock.Responses = []*llm.ChatResponse{
@@ -1431,7 +1432,7 @@ func TestAgent_ApprovalFlow_Auto(t *testing.T) {
 	router := NewRouter(registry, sender, logger)
 	approvals := NewApprovalManager(logger)
 
-	mock := &llm.MockProvider{NameVal: "test-provider"}
+	mock := &llmtest.MockProvider{NameVal: "test-provider"}
 	providers := map[string]llm.Provider{"test-provider": mock}
 
 	mock.Responses = []*llm.ChatResponse{
@@ -1540,7 +1541,7 @@ func TestAgent_ApprovalFlow_Report(t *testing.T) {
 	router := NewRouter(registry, sender, logger)
 	approvals := NewApprovalManager(logger)
 
-	mock := &llm.MockProvider{NameVal: "test-provider"}
+	mock := &llmtest.MockProvider{NameVal: "test-provider"}
 	providers := map[string]llm.Provider{"test-provider": mock}
 
 	// LLM tries to call the tool, gets error, then responds with text.
@@ -1659,7 +1660,7 @@ func TestAgent_ApprovalFlow_Approve(t *testing.T) {
 	router := NewRouter(registry, sender, logger)
 	approvals := NewApprovalManager(logger)
 
-	mock := &llm.MockProvider{NameVal: "test-provider"}
+	mock := &llmtest.MockProvider{NameVal: "test-provider"}
 	providers := map[string]llm.Provider{"test-provider": mock}
 
 	mock.Responses = []*llm.ChatResponse{
@@ -1797,8 +1798,8 @@ func TestAgent_BuildSystemPrompt_ChannelSpecificModel(t *testing.T) {
 	router := NewRouter(registry, sender, logger)
 	channelSettings := NewChannelSettingsStore(database, logger)
 
-	mock := &llm.MockProvider{NameVal: "default-provider"}
-	other := &llm.MockProvider{NameVal: "kimi"}
+	mock := &llmtest.MockProvider{NameVal: "default-provider"}
+	other := &llmtest.MockProvider{NameVal: "kimi"}
 	providers := map[string]llm.Provider{
 		"default-provider": mock,
 		"kimi":             other,
@@ -1874,7 +1875,7 @@ func TestAgent_SetProvider_SyncsTopicOnNilConn(t *testing.T) {
 	env := newTestAgentEnv(t)
 
 	// Add a second provider.
-	addTestProvider(env.agent, "kimi", &llm.MockProvider{NameVal: "kimi"})
+	addTestProvider(env.agent, "kimi", &llmtest.MockProvider{NameVal: "kimi"})
 
 	// SetProvider should succeed and call syncChannelTopic (which is a no-op
 	// because conn is nil). No panic should occur.
@@ -1906,7 +1907,7 @@ func TestAgent_SyncChannelTopic_SkipsBusChannel(t *testing.T) {
 	sender := bus.NewSender(nil, "#murmur-bus", "", 0, logger)
 	router := NewRouter(registry, sender, logger)
 
-	mock := &llm.MockProvider{NameVal: "test-provider"}
+	mock := &llmtest.MockProvider{NameVal: "test-provider"}
 	providers := map[string]llm.Provider{"test-provider": mock}
 
 	agent := NewAgent(
@@ -2056,7 +2057,7 @@ func TestAgent_ExecuteTool_ServerTool(t *testing.T) {
 		t.Fatalf("Register: %v", err)
 	}
 
-	mock := &llm.MockProvider{NameVal: "test-provider"}
+	mock := &llmtest.MockProvider{NameVal: "test-provider"}
 	providers := map[string]llm.Provider{"test-provider": mock}
 
 	agent := NewAgent(
@@ -2093,7 +2094,7 @@ func TestAgent_ExecuteTool_BusTool(t *testing.T) {
 	sender := bus.NewSender(nil, "#murmur-bus", "", 0, logger)
 	router := NewRouter(registry, sender, logger)
 
-	mock := &llm.MockProvider{NameVal: "test-provider"}
+	mock := &llmtest.MockProvider{NameVal: "test-provider"}
 	providers := map[string]llm.Provider{"test-provider": mock}
 
 	agent := NewAgent(
@@ -2285,7 +2286,7 @@ func TestAgent_BuildSystemPrompt_DM(t *testing.T) {
 	sender := bus.NewSender(nil, "#murmur-bus", "", 0, logger)
 	router := NewRouter(registry, sender, logger)
 
-	mock := &llm.MockProvider{NameVal: "test-provider"}
+	mock := &llmtest.MockProvider{NameVal: "test-provider"}
 	providers := map[string]llm.Provider{"test-provider": mock}
 
 	// Create a real IRC connection config to test IsChannel.
@@ -2392,10 +2393,10 @@ func TestAgent_UpdateProviders(t *testing.T) {
 	}
 
 	// Swap to a completely new set of providers.
-	newMock := &llm.MockProvider{NameVal: "new-provider"}
+	newMock := &llmtest.MockProvider{NameVal: "new-provider"}
 	newProviders := map[string]llm.Provider{
 		"new-provider": newMock,
-		"extra":        &llm.MockProvider{NameVal: "extra"},
+		"extra":        &llmtest.MockProvider{NameVal: "extra"},
 	}
 	env.agent.UpdateProviders(newProviders, "new-provider")
 

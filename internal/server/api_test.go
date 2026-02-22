@@ -16,6 +16,7 @@ import (
 	"murmur/internal/config"
 	"murmur/internal/db"
 	"murmur/internal/llm"
+	"murmur/internal/llm/llmtest"
 )
 
 // testAPIEnv holds the components needed for API handler tests.
@@ -47,7 +48,7 @@ func newTestAPIEnv(t *testing.T) *testAPIEnv {
 	router := NewRouter(registry, sender, logger)
 	serverTools := NewToolRegistry()
 
-	mock := &llm.MockProvider{
+	mock := &llmtest.MockProvider{
 		NameVal: "test-provider",
 		Responses: []*llm.ChatResponse{
 			{Content: "event processed"},
@@ -665,7 +666,7 @@ func TestAPI_AuthMiddleware_EmptyConfigKey(t *testing.T) {
 	router := NewRouter(registry, sender, logger)
 	serverTools := NewToolRegistry()
 
-	mock := &llm.MockProvider{NameVal: "test-provider"}
+	mock := &llmtest.MockProvider{NameVal: "test-provider"}
 	providers := map[string]llm.Provider{"test-provider": mock}
 
 	agent := NewAgent(providers, "test-provider", serverTools, registry, memory, router,
@@ -760,7 +761,7 @@ func newTestAPIEnvWithPerms(t *testing.T) *testAPIEnv {
 	router := NewRouter(registry, sender, logger)
 	serverTools := NewToolRegistry()
 
-	mock := &llm.MockProvider{
+	mock := &llmtest.MockProvider{
 		NameVal: "test-provider",
 		Responses: []*llm.ChatResponse{
 			{Content: "event processed"},

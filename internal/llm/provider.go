@@ -5,7 +5,6 @@ package llm
 import (
 	"context"
 	"encoding/json"
-	"sync"
 )
 
 // Role constants for message roles in the chat completions API.
@@ -79,44 +78,4 @@ type Usage struct {
 	PromptTokens     int
 	CompletionTokens int
 	TotalTokens      int
-}
-
-// MockProvider is a test helper that returns predetermined responses.
-// It records all calls for assertions.
-type MockProvider struct {
-	NameVal   string
-	Responses []*ChatResponse
-	Errors    []error
-	Calls     []*ChatRequest
-
-	mu      sync.Mutex
-	callIdx int
-}
-
-// Name returns the mock provider's name.
-func (m *MockProvider) Name() string {
-	return m.NameVal
-}
-
-// ChatCompletion returns the next predetermined response or error.
-// It records the request for later assertions.
-func (m *MockProvider) ChatCompletion(_ context.Context, req *ChatRequest) (*ChatResponse, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	m.Calls = append(m.Calls, req)
-	idx := m.callIdx
-	m.callIdx++
-
-	// Return error if configured for this index.
-	if idx < len(m.Errors) && m.Errors[idx] != nil {
-		return nil, m.Errors[idx]
-	}
-
-	// Return response, cycling if we run out.
-	if len(m.Responses) == 0 {
-		return &ChatResponse{Content: "mock response"}, nil
-	}
-	respIdx := idx % len(m.Responses)
-	return m.Responses[respIdx], nil
 }

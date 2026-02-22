@@ -16,22 +16,13 @@ const (
 
 // IRC color codes.
 const (
-	colorWhite      = "00"
-	colorBlack      = "01"
-	colorBlue       = "02"
-	colorGreen      = "03"
-	colorRed        = "04"
-	colorBrown      = "05"
-	colorPurple     = "06"
-	colorOrange     = "07"
-	colorYellow     = "08"
-	colorLightGreen = "09"
-	colorCyan       = "10"
-	colorLightCyan  = "11"
-	colorLightBlue  = "12"
-	colorPink       = "13"
-	colorGrey       = "14"
-	colorLightGrey  = "15"
+	colorGreen     = "03"
+	colorOrange    = "07"
+	colorCyan      = "10"
+	colorLightCyan = "11"
+	colorLightBlue = "12"
+	colorGrey      = "14"
+	colorLightGrey = "15"
 )
 
 // Regex patterns for markdown elements.

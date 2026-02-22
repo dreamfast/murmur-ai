@@ -167,8 +167,12 @@ func NewCodeExecTool(cfg CodeExecToolConfig) Tool {
 // handleCodeExec extracts arguments, builds a Piston request, sends it,
 // and formats the response.
 func handleCodeExec(ctx context.Context, cfg CodeExecToolConfig, client *http.Client, args map[string]any) (string, error) {
-	// Extract language — fall back to default if missing.
-	language := OptionalStringArg(args, "language", cfg.DefaultLang)
+	// Extract language — use RequireStringArg since schema marks it required,
+	// but fall back to configured default if the LLM omits it.
+	language, err := RequireStringArg(args, "language")
+	if err != nil || language == "" {
+		language = cfg.DefaultLang
+	}
 	if language == "" {
 		return "", fmt.Errorf("missing required argument \"language\"")
 	}

@@ -87,8 +87,8 @@ func NewIRCManageTool(irc IRCManager, memory MemoryReader, busChannel string, pe
 }
 
 func (m *ircManageTool) handle(_ context.Context, args map[string]any) (string, error) {
-	action, _ := args["action"].(string)
-	if action == "" {
+	action, err := RequireStringArg(args, "action")
+	if err != nil {
 		return "", fmt.Errorf("irc_manage: action is required")
 	}
 
@@ -189,7 +189,7 @@ func (m *ircManageTool) handleSend(args map[string]any) (string, error) {
 		return "", err
 	}
 
-	message, _ := args["message"].(string)
+	message := OptionalStringArg(args, "message", "")
 	if message == "" {
 		return "", fmt.Errorf("irc_manage: message is required for send action")
 	}
@@ -209,7 +209,7 @@ func (m *ircManageTool) handleTopic(args map[string]any) (string, error) {
 		return "", err
 	}
 
-	topic, _ := args["message"].(string)
+	topic := OptionalStringArg(args, "message", "")
 	if topic == "" {
 		return "", fmt.Errorf("irc_manage: message (topic text) is required for topic action")
 	}
@@ -230,7 +230,7 @@ func (m *ircManageTool) handleKick(args map[string]any) (string, error) {
 		return "", err
 	}
 
-	nick, _ := args["nick"].(string)
+	nick := OptionalStringArg(args, "nick", "")
 	if nick == "" {
 		return "", fmt.Errorf("irc_manage: nick is required for kick action")
 	}
@@ -239,7 +239,7 @@ func (m *ircManageTool) handleKick(args map[string]any) (string, error) {
 		return "", fmt.Errorf("irc_manage: not joined to %s, join first", channel)
 	}
 
-	reason, _ := args["message"].(string)
+	reason := OptionalStringArg(args, "message", "")
 	if err := m.irc.Kick(channel, nick, reason); err != nil {
 		return "", fmt.Errorf("irc_manage: kick %s from %s: %w", nick, channel, err)
 	}
@@ -260,9 +260,9 @@ func (m *ircManageTool) handleBan(args map[string]any) (string, error) {
 	}
 
 	// Prefer explicit mask; fall back to nick!*@* from the nick parameter.
-	mask, _ := args["mask"].(string)
+	mask := OptionalStringArg(args, "mask", "")
 	if mask == "" {
-		nick, _ := args["nick"].(string)
+		nick := OptionalStringArg(args, "nick", "")
 		if nick == "" {
 			return "", fmt.Errorf("irc_manage: mask or nick is required for ban action")
 		}
@@ -285,9 +285,9 @@ func (m *ircManageTool) handleUnban(args map[string]any) (string, error) {
 		return "", fmt.Errorf("irc_manage: not joined to %s, join first", channel)
 	}
 
-	mask, _ := args["mask"].(string)
+	mask := OptionalStringArg(args, "mask", "")
 	if mask == "" {
-		nick, _ := args["nick"].(string)
+		nick := OptionalStringArg(args, "nick", "")
 		if nick == "" {
 			return "", fmt.Errorf("irc_manage: mask or nick is required for unban action")
 		}
@@ -309,7 +309,7 @@ func (m *ircManageTool) handleMode(args map[string]any, modeStr, label string) (
 		return "", err
 	}
 
-	nick, _ := args["nick"].(string)
+	nick := OptionalStringArg(args, "nick", "")
 	if nick == "" {
 		return "", fmt.Errorf("irc_manage: nick is required for %s action", label)
 	}
@@ -346,9 +346,9 @@ func (m *ircManageTool) handleReadHistory(args map[string]any) (string, error) {
 		return "", fmt.Errorf("irc_manage: not joined to %s, join first", channel)
 	}
 
-	limit := defaultHistoryLimit
-	if l, ok := args["limit"].(float64); ok && l > 0 {
-		limit = int(l)
+	limit := OptionalIntArg(args, "limit", defaultHistoryLimit)
+	if limit <= 0 {
+		limit = defaultHistoryLimit
 	}
 	if limit > maxHistoryLimit {
 		limit = maxHistoryLimit
@@ -410,7 +410,7 @@ func (m *ircManageTool) handleSummarizeChannel(args map[string]any) (string, err
 
 // requireChannel extracts and validates the channel parameter.
 func (m *ircManageTool) requireChannel(args map[string]any) (string, error) {
-	channel, _ := args["channel"].(string)
+	channel := OptionalStringArg(args, "channel", "")
 	if channel == "" {
 		return "", fmt.Errorf("irc_manage: channel is required")
 	}

@@ -4,10 +4,6 @@ import "errors"
 
 // Sentinel errors for bus protocol operations.
 var (
-	// ErrMessageTooLarge is returned when a marshaled bus message exceeds
-	// the maximum IRC message length.
-	ErrMessageTooLarge = errors.New("bus message exceeds maximum IRC message length")
-
 	// ErrUnknownMessageType is returned when a bus message has an
 	// unrecognized type field.
 	ErrUnknownMessageType = errors.New("unknown bus message type")
