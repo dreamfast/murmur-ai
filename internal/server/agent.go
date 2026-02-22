@@ -58,6 +58,11 @@ type requestNickKey struct{}
 // referencing or continuing prior conversations. Only checked in buildSystemPrompt.
 type taskModeKey struct{}
 
+// taskProviderKey is a context key that carries an optional LLM provider name
+// override for scheduled tasks. When set to a non-empty string, resolveProvider
+// tries this provider before the channel and global defaults.
+type taskProviderKey struct{}
+
 // ephemeralSeq is an atomic counter used to generate unique ephemeral channel
 // keys for scheduled tasks and events. This prevents key collisions when the
 // same task fires concurrently (e.g., overlapping executions of a recurring task).
@@ -356,7 +361,9 @@ func (a *Agent) HandleMessage(ctx context.Context, channel, nick, message string
 // The taskID is included in the ephemeral key for debuggability. The createdBy
 // parameter is the nick of the user who created the task; their current
 // permissions are used for tool filtering. If empty, no filtering is applied.
-func (a *Agent) RunScheduledTask(ctx context.Context, taskID int64, channel, taskDescription, createdBy string) {
+// The provider parameter is an optional LLM provider name override; empty
+// means use the normal resolution chain (channel -> global default).
+func (a *Agent) RunScheduledTask(ctx context.Context, taskID int64, channel, taskDescription, createdBy, provider string) {
 	// Build ephemeral channel key with a unique sequence number to prevent
 	// collisions between overlapping executions of the same recurring task.
 	seq := ephemeralSeq.Add(1)
@@ -372,6 +379,11 @@ func (a *Agent) RunScheduledTask(ctx context.Context, taskID int64, channel, tas
 
 	// Mark context as task mode so buildSystemPrompt appends focus instruction.
 	ctx = context.WithValue(ctx, taskModeKey{}, true)
+
+	// Inject per-task provider override if specified.
+	if provider != "" {
+		ctx = context.WithValue(ctx, taskProviderKey{}, provider)
+	}
 
 	// Store the task instruction in the ephemeral context.
 	content := "[Scheduled Task] " + taskDescription
@@ -591,9 +603,13 @@ func (a *Agent) runLoop(ctx context.Context, memoryChannel, ircChannel, nick str
 
 		tools := llm.ConvertBusTools(busTools)
 
-		// Get the primary provider for this channel (per-channel override or global default).
-		// Use ircChannel for provider resolution (real channel context).
-		primaryProvider, err := a.resolveProvider(ircChannel, nick, pm)
+		// Get the primary provider. Check for per-task provider override (from context),
+		// then per-channel override, then global default.
+		var providerOverrides []string
+		if taskProv, ok := ctx.Value(taskProviderKey{}).(string); ok && taskProv != "" {
+			providerOverrides = append(providerOverrides, taskProv)
+		}
+		primaryProvider, err := a.resolveProvider(ircChannel, nick, pm, providerOverrides...)
 		if err != nil {
 			a.logger.Error("no active provider", "error", err, "channel", ircChannel)
 			a.send(ircChannel, "error: no LLM provider available")
@@ -951,15 +967,31 @@ func (a *Agent) GetProviderForChannel(channel string) string {
 // by the caller to avoid races during hot reload.
 //
 // ChannelSettingsStore is backed by SQLite and is safe for concurrent use.
-func (a *Agent) resolveProvider(channel, nick string, pm *PermissionManager) (llm.Provider, error) {
+func (a *Agent) resolveProvider(channel, nick string, pm *PermissionManager, overrides ...string) (llm.Provider, error) {
 	providers := a.loadProviders()
 	if len(providers) == 0 {
 		return nil, fmt.Errorf("no providers configured")
 	}
 
-	// Check per-channel override.
+	// Check explicit overrides first (e.g. per-task model assignment).
+	// Overrides are tried in order; if a name doesn't exist, skip with a warning.
 	var resolved llm.Provider
-	if a.channelSettings != nil {
+	for _, name := range overrides {
+		if name == "" {
+			continue
+		}
+		if p, ok := providers[name]; ok {
+			resolved = p
+			break
+		}
+		a.logger.Warn("provider override not found, skipping",
+			"override", name,
+			"channel", channel,
+		)
+	}
+
+	// Check per-channel override.
+	if resolved == nil && a.channelSettings != nil {
 		name, err := a.channelSettings.GetProvider(channel)
 		if err != nil {
 			a.logger.Warn("failed to read channel provider setting",
@@ -1069,11 +1101,22 @@ func (a *Agent) buildSystemPrompt(ctx context.Context, channel string, cfg agent
 	sb.WriteString(cfg.systemPrompt)
 
 	// Active model context — always included, even without an IRC connection.
+	// In task mode, check for a per-task provider override so the prompt
+	// accurately reflects the model that will actually handle the request.
 	modelName := a.GetProviderForChannel(channel)
 	globalDefault := a.GetProvider()
 	scope := "global default"
 	if modelName != globalDefault {
 		scope = "channel-specific"
+	}
+	if taskProv, ok := ctx.Value(taskProviderKey{}).(string); ok && taskProv != "" {
+		// Verify the override exists before advertising it.
+		// If invalid, keep the channel/global scope determined above.
+		providers := a.loadProviders()
+		if _, exists := providers[taskProv]; exists {
+			modelName = taskProv
+			scope = "task-specific"
+		}
 	}
 	fmt.Fprintf(&sb, "\n\n## Active Model\n- Active model: %s (%s)\n",
 		sanitizePromptValue(modelName), scope)

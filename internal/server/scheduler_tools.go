@@ -81,6 +81,10 @@ func RegisterSchedulerTools(registry *ToolRegistry, scheduler *Scheduler, defaul
 					"description": {
 						"type": "string",
 						"description": "What the task should do when it fires (natural language instruction for the AI agent)"
+					},
+					"provider": {
+						"type": "string",
+						"description": "Optional LLM provider name to use for this task (e.g. 'openrouter-claude'). If omitted, uses the channel or global default."
 					}
 				},
 				"required": ["schedule", "description"]
@@ -95,6 +99,7 @@ func RegisterSchedulerTools(registry *ToolRegistry, scheduler *Scheduler, defaul
 					return "", err
 				}
 				channel := tools.OptionalStringArg(args, "channel", defaultChannel)
+				provider := strings.TrimSpace(tools.OptionalStringArg(args, "provider", ""))
 
 				// Extract the requesting user's nick from context for permission tracking.
 				// Fail closed: if the nick is missing, reject the request rather than
@@ -104,11 +109,16 @@ func RegisterSchedulerTools(registry *ToolRegistry, scheduler *Scheduler, defaul
 					return "", fmt.Errorf("task_add: unable to identify task creator from context")
 				}
 
-				id, err := scheduler.AddTask(description, schedule, description, channel, createdBy)
+				id, err := scheduler.AddTask(description, schedule, description, channel, createdBy, provider)
 				if err != nil {
 					return "", fmt.Errorf("task_add: %w", err)
 				}
-				return fmt.Sprintf("Task #%d created: %q (schedule: %s, channel: %s)", id, description, schedule, channel), nil
+				msg := fmt.Sprintf("Task #%d created: %q (schedule: %s, channel: %s", id, description, schedule, channel)
+				if provider != "" {
+					msg += fmt.Sprintf(", provider: %s", provider)
+				}
+				msg += ")"
+				return msg, nil
 			},
 		},
 		{
@@ -124,6 +134,10 @@ func RegisterSchedulerTools(registry *ToolRegistry, scheduler *Scheduler, defaul
 					"time": {
 						"type": "string",
 						"description": "When to fire the reminder. ISO 8601 format (e.g. '2026-02-22T15:00:00Z') or relative (e.g. '+2h', '+30m', '+1d')"
+					},
+					"provider": {
+						"type": "string",
+						"description": "Optional LLM provider name to use for this reminder (e.g. 'openrouter-claude'). If omitted, uses the channel or global default."
 					}
 				},
 				"required": ["message", "time"]
@@ -138,6 +152,7 @@ func RegisterSchedulerTools(registry *ToolRegistry, scheduler *Scheduler, defaul
 					return "", err
 				}
 				channel := tools.OptionalStringArg(args, "channel", defaultChannel)
+				provider := strings.TrimSpace(tools.OptionalStringArg(args, "provider", ""))
 
 				runAt, err := parseReminderTime(timeStr)
 				if err != nil {
@@ -153,12 +168,16 @@ func RegisterSchedulerTools(registry *ToolRegistry, scheduler *Scheduler, defaul
 				}
 
 				action := "[Reminder] " + message
-				id, err := scheduler.AddOneShotTask(message, runAt, action, channel, createdBy)
+				id, err := scheduler.AddOneShotTask(message, runAt, action, channel, createdBy, provider)
 				if err != nil {
 					return "", fmt.Errorf("reminder_add: %w", err)
 				}
-				return fmt.Sprintf("Reminder #%d set: %q (fires at %s, channel: %s)",
-					id, message, runAt.Format("2006-01-02 15:04 UTC"), channel), nil
+				msg := fmt.Sprintf("Reminder #%d set: %q (fires at %s, channel: %s", id, message, runAt.Format("2006-01-02 15:04 UTC"), channel)
+				if provider != "" {
+					msg += fmt.Sprintf(", provider: %s", provider)
+				}
+				msg += ")"
+				return msg, nil
 			},
 		},
 		{

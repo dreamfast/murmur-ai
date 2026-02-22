@@ -69,13 +69,13 @@ func (a *schedulerAdapter) ListTasks() ([]dashboard.TaskInfo, error) {
 }
 
 // AddTask creates a new cron task.
-func (a *schedulerAdapter) AddTask(name, schedule, action, channel, createdBy string) (int64, error) {
-	return a.s.AddTask(name, schedule, action, channel, createdBy)
+func (a *schedulerAdapter) AddTask(name, schedule, action, channel, createdBy, provider string) (int64, error) {
+	return a.s.AddTask(name, schedule, action, channel, createdBy, provider)
 }
 
 // AddOneShotTask creates a new one-shot task.
-func (a *schedulerAdapter) AddOneShotTask(name string, runAt time.Time, action, channel, createdBy string) (int64, error) {
-	return a.s.AddOneShotTask(name, runAt, action, channel, createdBy)
+func (a *schedulerAdapter) AddOneShotTask(name string, runAt time.Time, action, channel, createdBy, provider string) (int64, error) {
+	return a.s.AddOneShotTask(name, runAt, action, channel, createdBy, provider)
 }
 
 // RemoveTask deletes a task by ID.
@@ -104,6 +104,7 @@ func scheduledTaskToInfo(t ScheduledTask) dashboard.TaskInfo {
 		Enabled:   t.Enabled,
 		Type:      t.Type,
 		CreatedBy: t.CreatedBy,
+		Provider:  t.Provider,
 	}
 	if t.LastRun.Valid {
 		lr := t.LastRun.Time

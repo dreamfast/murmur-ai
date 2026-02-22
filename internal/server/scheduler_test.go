@@ -24,12 +24,13 @@ type taskRunCall struct {
 	Channel     string
 	Description string
 	CreatedBy   string
+	Provider    string
 }
 
-func (m *mockTaskRunner) RunScheduledTask(_ context.Context, taskID int64, channel, description, createdBy string) {
+func (m *mockTaskRunner) RunScheduledTask(_ context.Context, taskID int64, channel, description, createdBy, provider string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.calls = append(m.calls, taskRunCall{TaskID: taskID, Channel: channel, Description: description, CreatedBy: createdBy})
+	m.calls = append(m.calls, taskRunCall{TaskID: taskID, Channel: channel, Description: description, CreatedBy: createdBy, Provider: provider})
 }
 
 func (m *mockTaskRunner) getCalls() []taskRunCall {
@@ -67,7 +68,7 @@ func TestScheduler_AddAndListTasks(t *testing.T) {
 	runner := &mockTaskRunner{}
 	s, _ := newTestScheduler(t, runner)
 
-	id, err := s.AddTask("daily-check", "0 9 * * *", "Check system health", "#murmur", "")
+	id, err := s.AddTask("daily-check", "0 9 * * *", "Check system health", "#murmur", "", "")
 	if err != nil {
 		t.Fatalf("AddTask: %v", err)
 	}
@@ -108,7 +109,7 @@ func TestScheduler_RemoveTask(t *testing.T) {
 	runner := &mockTaskRunner{}
 	s, _ := newTestScheduler(t, runner)
 
-	id, err := s.AddTask("temp-task", "*/5 * * * *", "Temporary", "#test", "")
+	id, err := s.AddTask("temp-task", "*/5 * * * *", "Temporary", "#test", "", "")
 	if err != nil {
 		t.Fatalf("AddTask: %v", err)
 	}
@@ -172,7 +173,7 @@ func TestScheduler_SkipsDisabledTasks(t *testing.T) {
 	runner := &mockTaskRunner{}
 	s, _ := newTestScheduler(t, runner)
 
-	id, err := s.AddTask("disabled-task", "*/5 * * * *", "Should not run", "#test", "")
+	id, err := s.AddTask("disabled-task", "*/5 * * * *", "Should not run", "#test", "", "")
 	if err != nil {
 		t.Fatalf("AddTask: %v", err)
 	}
@@ -264,7 +265,7 @@ type blockingTaskRunner struct {
 	unblock chan struct{}
 }
 
-func (r *blockingTaskRunner) RunScheduledTask(_ context.Context, _ int64, _, _, _ string) {
+func (r *blockingTaskRunner) RunScheduledTask(_ context.Context, _ int64, _, _, _, _ string) {
 	r.started.Add(1)
 	<-r.unblock
 }
@@ -293,7 +294,7 @@ func TestScheduler_InvalidCronExpression(t *testing.T) {
 	runner := &mockTaskRunner{}
 	s, _ := newTestScheduler(t, runner)
 
-	_, err := s.AddTask("bad-task", "not-a-cron", "action", "#test", "")
+	_, err := s.AddTask("bad-task", "not-a-cron", "action", "#test", "", "")
 	if err == nil {
 		t.Fatal("expected error for invalid cron expression")
 	}
@@ -305,7 +306,7 @@ func TestScheduler_EnableDisableTask(t *testing.T) {
 	runner := &mockTaskRunner{}
 	s, _ := newTestScheduler(t, runner)
 
-	id, err := s.AddTask("toggle-task", "0 * * * *", "Hourly check", "#test", "")
+	id, err := s.AddTask("toggle-task", "0 * * * *", "Hourly check", "#test", "", "")
 	if err != nil {
 		t.Fatalf("AddTask: %v", err)
 	}
@@ -371,7 +372,7 @@ func TestTaskCommands_List(t *testing.T) {
 	runner := &mockTaskRunner{}
 	scheduler := NewScheduler(database, runner, 30*time.Second, 3, logger)
 
-	_, err = scheduler.AddTask("daily-check", "0 9 * * *", "Check health", "#murmur", "")
+	_, err = scheduler.AddTask("daily-check", "0 9 * * *", "Check health", "#murmur", "", "")
 	if err != nil {
 		t.Fatalf("AddTask: %v", err)
 	}
@@ -461,7 +462,7 @@ func TestScheduler_AddOneShotTask(t *testing.T) {
 	s, _ := newTestScheduler(t, runner)
 
 	runAt := time.Now().UTC().Add(2 * time.Hour)
-	id, err := s.AddOneShotTask("test-reminder", runAt, "[Reminder] test", "#murmur", "")
+	id, err := s.AddOneShotTask("test-reminder", runAt, "[Reminder] test", "#murmur", "", "")
 	if err != nil {
 		t.Fatalf("AddOneShotTask: %v", err)
 	}
@@ -497,7 +498,7 @@ func TestScheduler_AddOneShotTask_PastTime(t *testing.T) {
 	s, _ := newTestScheduler(t, runner)
 
 	past := time.Now().UTC().Add(-1 * time.Hour)
-	_, err := s.AddOneShotTask("past-reminder", past, "[Reminder] past", "#murmur", "")
+	_, err := s.AddOneShotTask("past-reminder", past, "[Reminder] past", "#murmur", "", "")
 	if err == nil {
 		t.Fatal("expected error for past run_at time")
 	}
@@ -606,7 +607,7 @@ func TestScheduler_OneShotPanicResetsNextRun(t *testing.T) {
 // panickingTaskRunner panics when RunScheduledTask is called.
 type panickingTaskRunner struct{}
 
-func (r *panickingTaskRunner) RunScheduledTask(_ context.Context, _ int64, _, _, _ string) {
+func (r *panickingTaskRunner) RunScheduledTask(_ context.Context, _ int64, _, _, _, _ string) {
 	panic("simulated task panic")
 }
 
@@ -618,7 +619,7 @@ func TestScheduler_EnableOneShotTask(t *testing.T) {
 
 	// Add a one-shot task in the future.
 	runAt := time.Now().UTC().Add(2 * time.Hour)
-	id, err := s.AddOneShotTask("future-reminder", runAt, "[Reminder] future", "#murmur", "")
+	id, err := s.AddOneShotTask("future-reminder", runAt, "[Reminder] future", "#murmur", "", "")
 	if err != nil {
 		t.Fatalf("AddOneShotTask: %v", err)
 	}
@@ -842,7 +843,7 @@ func TestAddTask_StoresCreatedBy(t *testing.T) {
 	s, _ := newTestScheduler(t, runner)
 
 	// Add a cron task with a creator.
-	id, err := s.AddTask("user-task", "0 9 * * *", "Check health", "#murmur", "alice")
+	id, err := s.AddTask("user-task", "0 9 * * *", "Check health", "#murmur", "alice", "")
 	if err != nil {
 		t.Fatalf("AddTask: %v", err)
 	}
@@ -863,7 +864,7 @@ func TestAddTask_StoresCreatedBy(t *testing.T) {
 
 	// Add a one-shot task with a creator.
 	runAt := time.Now().UTC().Add(2 * time.Hour)
-	id2, err := s.AddOneShotTask("user-reminder", runAt, "[Reminder] test", "#murmur", "bob")
+	id2, err := s.AddOneShotTask("user-reminder", runAt, "[Reminder] test", "#murmur", "bob", "")
 	if err != nil {
 		t.Fatalf("AddOneShotTask: %v", err)
 	}
@@ -969,7 +970,7 @@ func TestTaskCommands_ListShowsCreatedBy(t *testing.T) {
 	scheduler := NewScheduler(database, runner, 30*time.Second, 3, logger)
 
 	// Add a task with a creator.
-	_, err = scheduler.AddTask("user-task", "0 9 * * *", "Check health", "#murmur", "alice")
+	_, err = scheduler.AddTask("user-task", "0 9 * * *", "Check health", "#murmur", "alice", "")
 	if err != nil {
 		t.Fatalf("AddTask: %v", err)
 	}
@@ -1033,5 +1034,118 @@ func TestTaskCommands_AddStoresCreatedBy(t *testing.T) {
 	}
 	if tasks[0].CreatedBy != "bob" {
 		t.Errorf("created_by = %q, want %q", tasks[0].CreatedBy, "bob")
+	}
+}
+
+func TestAddTask_StoresProvider(t *testing.T) {
+	t.Parallel()
+
+	runner := &mockTaskRunner{}
+	s, _ := newTestScheduler(t, runner)
+
+	tests := []struct {
+		name     string
+		provider string
+	}{
+		{"empty provider", ""},
+		{"explicit provider", "openrouter"},
+		{"another provider", "ollama-local"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			id, err := s.AddTask(
+				"task-"+tt.provider, "0 9 * * *", "Check health",
+				"#murmur", "alice", tt.provider,
+			)
+			if err != nil {
+				t.Fatalf("AddTask: %v", err)
+			}
+
+			tasks, err := s.ListTasks()
+			if err != nil {
+				t.Fatalf("ListTasks: %v", err)
+			}
+
+			var found *ScheduledTask
+			for i := range tasks {
+				if tasks[i].ID == id {
+					found = &tasks[i]
+					break
+				}
+			}
+			if found == nil {
+				t.Fatalf("task %d not found in ListTasks", id)
+			}
+			if found.Provider != tt.provider {
+				t.Errorf("provider = %q, want %q", found.Provider, tt.provider)
+			}
+		})
+	}
+}
+
+func TestAddOneShotTask_StoresProvider(t *testing.T) {
+	t.Parallel()
+
+	runner := &mockTaskRunner{}
+	s, _ := newTestScheduler(t, runner)
+
+	runAt := time.Now().UTC().Add(2 * time.Hour)
+	id, err := s.AddOneShotTask("reminder-with-provider", runAt, "Check status", "#murmur", "bob", "kimi")
+	if err != nil {
+		t.Fatalf("AddOneShotTask: %v", err)
+	}
+
+	tasks, err := s.ListTasks()
+	if err != nil {
+		t.Fatalf("ListTasks: %v", err)
+	}
+
+	var found *ScheduledTask
+	for i := range tasks {
+		if tasks[i].ID == id {
+			found = &tasks[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("task %d not found in ListTasks", id)
+	}
+	if found.Provider != "kimi" {
+		t.Errorf("provider = %q, want %q", found.Provider, "kimi")
+	}
+}
+
+func TestScheduler_DispatchesProviderToRunner(t *testing.T) {
+	t.Parallel()
+
+	runner := &mockTaskRunner{}
+	s, database := newTestScheduler(t, runner)
+
+	// Add a task with a provider override.
+	id, err := s.AddTask("provider-task", "0 9 * * *", "Check health", "#murmur", "alice", "special-model")
+	if err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+
+	// Force next_run into the past so getDueTasks picks it up.
+	past := time.Now().UTC().Add(-1 * time.Minute)
+	_, err = database.Exec(`UPDATE scheduled_tasks SET next_run = ? WHERE id = ?`, past, id)
+	if err != nil {
+		t.Fatalf("update next_run: %v", err)
+	}
+
+	// Tick the scheduler to dispatch the task.
+	s.tick(context.Background())
+
+	// Wait for the goroutine to execute.
+	s.taskWg.Wait()
+
+	calls := runner.getCalls()
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 runner call, got %d", len(calls))
+	}
+	if calls[0].Provider != "special-model" {
+		t.Errorf("provider = %q, want %q", calls[0].Provider, "special-model")
 	}
 }

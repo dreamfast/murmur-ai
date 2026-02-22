@@ -173,6 +173,11 @@ var migrations = []string{
 		value TEXT NOT NULL DEFAULT '',
 		updated DATETIME DEFAULT CURRENT_TIMESTAMP
 	);`,
+
+	// Migration 10: Add provider column to scheduled_tasks for per-task model assignment.
+	// When set, the task uses this LLM provider instead of the channel/global default.
+	// Empty string (default) means use the normal resolution chain.
+	`ALTER TABLE scheduled_tasks ADD COLUMN provider TEXT NOT NULL DEFAULT '';`,
 }
 
 // Migrate runs all pending schema migrations. It creates the schema_version

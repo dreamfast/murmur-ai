@@ -451,27 +451,37 @@ func (h *CommandHandler) cmdTask(channel, nick string, args []string) {
 	}
 
 	if len(args) == 0 {
-		h.send(channel, "usage: !task add <cron_expr> <description> | !task remove <id> | !task enable <id> | !task disable <id>")
+		h.send(channel, "usage: !task add [--provider=<name>] <cron_expr> <description> | !task remove <id> | !task enable <id> | !task disable <id>")
 		return
 	}
 
 	subcmd := args[0]
 	switch subcmd {
 	case "add":
-		// !task add <cron_expr> <description>
+		// !task add [--provider=<name>] <cron_expr> <description>
 		// cron_expr is 5 fields: min hour dom month dow
-		if len(args) < 7 {
-			h.send(channel, "usage: !task add <min> <hour> <dom> <month> <dow> <description>")
+		var provider string
+		taskArgs := args[1:]
+		if len(taskArgs) > 0 && strings.HasPrefix(taskArgs[0], "--provider=") {
+			provider = strings.TrimSpace(strings.TrimPrefix(taskArgs[0], "--provider="))
+			taskArgs = taskArgs[1:]
+		}
+		if len(taskArgs) < 6 {
+			h.send(channel, "usage: !task add [--provider=<name>] <min> <hour> <dom> <month> <dow> <description>")
 			return
 		}
-		cronExpr := strings.Join(args[1:6], " ")
-		description := strings.Join(args[6:], " ")
-		id, err := h.scheduler.AddTask(description, cronExpr, description, channel, nick)
+		cronExpr := strings.Join(taskArgs[:5], " ")
+		description := strings.Join(taskArgs[5:], " ")
+		id, err := h.scheduler.AddTask(description, cronExpr, description, channel, nick, provider)
 		if err != nil {
 			h.send(channel, fmt.Sprintf("error adding task: %v", err))
 			return
 		}
-		h.send(channel, fmt.Sprintf("task #%d added: %s [%s]", id, description, cronExpr))
+		msg := fmt.Sprintf("task #%d added: %s [%s]", id, description, cronExpr)
+		if provider != "" {
+			msg += fmt.Sprintf(" (provider: %s)", provider)
+		}
+		h.send(channel, msg)
 
 	case "remove":
 		if len(args) < 2 {
@@ -522,7 +532,7 @@ func (h *CommandHandler) cmdTask(channel, nick string, args []string) {
 		h.send(channel, fmt.Sprintf("task #%d disabled", id))
 
 	default:
-		h.send(channel, "usage: !task add <cron_expr> <description> | !task remove <id> | !task enable <id> | !task disable <id>")
+		h.send(channel, "usage: !task add [--provider=<name>] <cron_expr> <description> | !task remove <id> | !task enable <id> | !task disable <id>")
 	}
 }
 

@@ -64,6 +64,10 @@ heartbeat_interval = "5m"
 client_timeout = "2m"
 tick_interval = "30s"     # how often to check for due tasks (minimum granularity)
 max_concurrent = 3        # max simultaneous scheduled tasks
+# Per-task model assignment: scheduled tasks can specify an LLM provider override.
+# Use the --provider flag with !task add, or the "provider" field in the task_add tool.
+# Example: !task add --provider=ollama-local 0 9 * * * Summarize overnight logs
+# If the provider doesn't exist at runtime, the task falls back to channel/global default.
 
 [approval]
 # timeout = "2m"  # how long to wait for user !approve/!deny before auto-denying

@@ -36,14 +36,15 @@ type TaskInfo struct {
 	Type      string     `json:"type"`
 	RunAt     *time.Time `json:"run_at"`
 	CreatedBy string     `json:"created_by"`
+	Provider  string     `json:"provider"`
 }
 
 // TaskManager provides scheduled task operations. Implemented by
 // server.Scheduler (via an adapter that converts ScheduledTask to TaskInfo).
 type TaskManager interface {
 	ListTasks() ([]TaskInfo, error)
-	AddTask(name, schedule, action, channel, createdBy string) (int64, error)
-	AddOneShotTask(name string, runAt time.Time, action, channel, createdBy string) (int64, error)
+	AddTask(name, schedule, action, channel, createdBy, provider string) (int64, error)
+	AddOneShotTask(name string, runAt time.Time, action, channel, createdBy, provider string) (int64, error)
 	RemoveTask(id int64) error
 	EnableTask(id int64) error
 	DisableTask(id int64) error
@@ -693,8 +694,9 @@ type createTaskRequest struct {
 	Schedule string `json:"schedule"` // cron expression; empty for one-shot
 	Action   string `json:"action"`
 	Channel  string `json:"channel"`
-	Type     string `json:"type"`   // "cron" or "once"
-	RunAt    string `json:"run_at"` // RFC3339 for one-shot tasks
+	Type     string `json:"type"`     // "cron" or "once"
+	RunAt    string `json:"run_at"`   // RFC3339 for one-shot tasks
+	Provider string `json:"provider"` // optional LLM provider override
 }
 
 // handleAdminCreateTask creates a new scheduled task.
@@ -723,6 +725,8 @@ func (h *Handler) handleAdminCreateTask(w http.ResponseWriter, _ *http.Request, 
 		return
 	}
 
+	req.Provider = strings.TrimSpace(req.Provider)
+
 	var id int64
 	var err error
 
@@ -737,13 +741,13 @@ func (h *Handler) handleAdminCreateTask(w http.ResponseWriter, _ *http.Request, 
 			h.jsonResponse(w, http.StatusBadRequest, errorResponse{Error: "run_at must be RFC3339 format"})
 			return
 		}
-		id, err = h.api.tasks.AddOneShotTask(req.Name, runAt, req.Action, req.Channel, createdBy)
+		id, err = h.api.tasks.AddOneShotTask(req.Name, runAt, req.Action, req.Channel, createdBy, req.Provider)
 	case "cron", "":
 		if req.Schedule == "" {
 			h.jsonResponse(w, http.StatusBadRequest, errorResponse{Error: "schedule is required for cron tasks"})
 			return
 		}
-		id, err = h.api.tasks.AddTask(req.Name, req.Schedule, req.Action, req.Channel, createdBy)
+		id, err = h.api.tasks.AddTask(req.Name, req.Schedule, req.Action, req.Channel, createdBy, req.Provider)
 	default:
 		h.jsonResponse(w, http.StatusBadRequest, errorResponse{Error: "type must be 'cron' or 'once'"})
 		return

@@ -2470,7 +2470,7 @@ func TestRunScheduledTask_IsolatedContext(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	env.agent.RunScheduledTask(ctx, 42, "#test", "Run health check", "alice")
+	env.agent.RunScheduledTask(ctx, 42, "#test", "Run health check", "alice", "")
 
 	// Verify the LLM was called.
 	if len(env.mock.Calls) != 1 {
@@ -2522,7 +2522,7 @@ func TestRunScheduledTask_ResponseCopiedToChannel(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	env.agent.RunScheduledTask(ctx, 99, "#test", "Run health check", "alice")
+	env.agent.RunScheduledTask(ctx, 99, "#test", "Run health check", "alice", "")
 
 	// Verify the final response was copied to the real channel's history.
 	msgs, err := env.memory.GetHistory("#test", 10)
@@ -2551,7 +2551,7 @@ func TestRunScheduledTask_CleanupAfterExecution(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	env.agent.RunScheduledTask(ctx, 7, "#test", "Clean up task", "bob")
+	env.agent.RunScheduledTask(ctx, 7, "#test", "Clean up task", "bob", "")
 
 	// Verify no ephemeral contexts remain by checking all possible keys.
 	// Since the ephemeral key includes a sequence number, we scan the
@@ -2940,6 +2940,188 @@ func TestGetProviderChain_SkipsMissingFallback(t *testing.T) {
 	}
 	if chain[1].Name() != "fb2" {
 		t.Errorf("chain[1] = %q, want fb2", chain[1].Name())
+	}
+}
+
+func TestPerTaskModel_UsesSpecifiedProvider(t *testing.T) {
+	t.Parallel()
+	env := newTestAgentEnv(t)
+
+	// Create a second mock provider with a distinct name.
+	altMock := &llmtest.MockProvider{
+		NameVal: "alt-provider",
+		Responses: []*llm.ChatResponse{
+			{Content: "Alt provider response."},
+		},
+	}
+	addTestProvider(env.agent, "alt-provider", altMock)
+
+	// The default provider should NOT be called.
+	env.mock.Responses = []*llm.ChatResponse{
+		{Content: "Default provider response."},
+	}
+
+	ctx := context.Background()
+	env.agent.RunScheduledTask(ctx, 100, "#test", "Run alt task", "alice", "alt-provider")
+
+	// Verify the alt provider was called, not the default.
+	if len(altMock.Calls) != 1 {
+		t.Fatalf("expected 1 call to alt-provider, got %d", len(altMock.Calls))
+	}
+	if len(env.mock.Calls) != 0 {
+		t.Errorf("expected 0 calls to default provider, got %d", len(env.mock.Calls))
+	}
+
+	// Verify the response came from the alt provider.
+	sent := env.getSent()
+	if len(sent) != 1 {
+		t.Fatalf("expected 1 sent message, got %d: %v", len(sent), sent)
+	}
+	if sent[0] != "Alt provider response." {
+		t.Errorf("sent = %q, want %q", sent[0], "Alt provider response.")
+	}
+}
+
+func TestPerTaskModel_FallbackOnMissing(t *testing.T) {
+	t.Parallel()
+	env := newTestAgentEnv(t)
+
+	// Only the default "test-provider" exists. Specify a non-existent provider.
+	env.mock.Responses = []*llm.ChatResponse{
+		{Content: "Default fallback response."},
+	}
+
+	ctx := context.Background()
+	env.agent.RunScheduledTask(ctx, 101, "#test", "Run missing provider task", "alice", "nonexistent-provider")
+
+	// The default provider should be used as fallback.
+	if len(env.mock.Calls) != 1 {
+		t.Fatalf("expected 1 call to default provider (fallback), got %d", len(env.mock.Calls))
+	}
+
+	sent := env.getSent()
+	if len(sent) != 1 {
+		t.Fatalf("expected 1 sent message, got %d: %v", len(sent), sent)
+	}
+	if sent[0] != "Default fallback response." {
+		t.Errorf("sent = %q, want %q", sent[0], "Default fallback response.")
+	}
+}
+
+func TestResolveProvider_OverrideChain(t *testing.T) {
+	t.Parallel()
+	env := newTestAgentEnv(t)
+
+	// Set up channel settings with a per-channel provider.
+	channelMock := &llmtest.MockProvider{NameVal: "channel-provider"}
+	overrideMock := &llmtest.MockProvider{NameVal: "override-provider"}
+	addTestProvider(env.agent, "channel-provider", channelMock)
+	addTestProvider(env.agent, "override-provider", overrideMock)
+
+	// Wire up channel settings backed by the same in-memory DB.
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	cs := NewChannelSettingsStore(env.memory.db, logger)
+	env.agent.channelSettings = cs
+
+	// Set per-channel provider.
+	if err := cs.SetProvider("#test", "channel-provider"); err != nil {
+		t.Fatalf("SetProvider: %v", err)
+	}
+
+	tests := []struct {
+		name     string
+		override string
+		wantName string
+	}{
+		{
+			name:     "override wins over channel and default",
+			override: "override-provider",
+			wantName: "override-provider",
+		},
+		{
+			name:     "channel wins when no override",
+			override: "",
+			wantName: "channel-provider",
+		},
+		{
+			name:     "missing override falls through to channel",
+			override: "nonexistent",
+			wantName: "channel-provider",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var overrides []string
+			if tt.override != "" {
+				overrides = append(overrides, tt.override)
+			}
+			p, err := env.agent.resolveProvider("#test", "alice", nil, overrides...)
+			if err != nil {
+				t.Fatalf("resolveProvider: %v", err)
+			}
+			if p.Name() != tt.wantName {
+				t.Errorf("provider = %q, want %q", p.Name(), tt.wantName)
+			}
+		})
+	}
+
+	// Also test: no channel setting, no override → global default.
+	if err := cs.SetProvider("#test", ""); err != nil {
+		t.Fatalf("SetProvider clear: %v", err)
+	}
+	p, err := env.agent.resolveProvider("#test", "alice", nil)
+	if err != nil {
+		t.Fatalf("resolveProvider (default): %v", err)
+	}
+	if p.Name() != "test-provider" {
+		t.Errorf("default provider = %q, want %q", p.Name(), "test-provider")
+	}
+}
+
+func TestBuildSystemPrompt_TaskProviderOverride(t *testing.T) {
+	t.Parallel()
+	env := newTestAgentEnv(t)
+
+	// Add an alt provider.
+	altMock := &llmtest.MockProvider{NameVal: "alt-provider"}
+	addTestProvider(env.agent, "alt-provider", altMock)
+
+	// With task provider override — should show the overridden model name.
+	ctx := context.WithValue(context.Background(), taskModeKey{}, true)
+	ctx = context.WithValue(ctx, taskProviderKey{}, "alt-provider")
+	prompt := env.agent.buildSystemPrompt(ctx, "#test", env.agent.loadConfig())
+	if !strings.Contains(prompt, "Active model: alt-provider (task-specific)") {
+		t.Errorf("task override prompt should show alt-provider as task-specific, got:\n%s", prompt)
+	}
+
+	// With non-existent task provider override — should fall back to default.
+	ctx2 := context.WithValue(context.Background(), taskModeKey{}, true)
+	ctx2 = context.WithValue(ctx2, taskProviderKey{}, "nonexistent")
+	prompt2 := env.agent.buildSystemPrompt(ctx2, "#test", env.agent.loadConfig())
+	if strings.Contains(prompt2, "task-specific") {
+		t.Errorf("nonexistent provider override should not show task-specific, got:\n%s", prompt2)
+	}
+	if !strings.Contains(prompt2, "Active model: test-provider") {
+		t.Errorf("nonexistent provider override should fall back to default, got:\n%s", prompt2)
+	}
+
+	// With non-existent task provider override + channel provider set —
+	// should show channel provider with "channel-specific" scope, not "global default".
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	cs := NewChannelSettingsStore(env.memory.db, logger)
+	env.agent.channelSettings = cs
+	channelMock := &llmtest.MockProvider{NameVal: "channel-model"}
+	addTestProvider(env.agent, "channel-model", channelMock)
+	if err := cs.SetProvider("#test", "channel-model"); err != nil {
+		t.Fatalf("SetProvider: %v", err)
+	}
+
+	ctx3 := context.WithValue(context.Background(), taskModeKey{}, true)
+	ctx3 = context.WithValue(ctx3, taskProviderKey{}, "nonexistent")
+	prompt3 := env.agent.buildSystemPrompt(ctx3, "#test", env.agent.loadConfig())
+	if !strings.Contains(prompt3, "Active model: channel-model (channel-specific)") {
+		t.Errorf("invalid task override with channel provider should show channel-specific, got:\n%s", prompt3)
 	}
 }
 

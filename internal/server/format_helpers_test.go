@@ -279,6 +279,23 @@ func TestFormatTaskList(t *testing.T) {
 			want: `  #3 [cron] "old task" [] #ops — next: N/A — disabled`,
 		},
 		{
+			name: "task with provider",
+			tasks: []ScheduledTask{
+				{
+					ID:        4,
+					Name:      "model-specific task",
+					Schedule:  "0 12 * * *",
+					Channel:   "#ml",
+					Enabled:   true,
+					NextRun:   sql.NullTime{Time: fixedTime, Valid: true},
+					Type:      TaskTypeCron,
+					CreatedBy: "alice",
+					Provider:  "openrouter",
+				},
+			},
+			want: `  #4 [cron] "model-specific task" [0 12 * * *] #ml — next: 2026-02-22 15:00 UTC — enabled, by: alice, provider: openrouter`,
+		},
+		{
 			name: "multiple tasks",
 			tasks: []ScheduledTask{
 				{

@@ -60,7 +60,7 @@ func ParseCSV(values []string) []string {
 
 // FormatTaskList formats a slice of ScheduledTask into a human-readable
 // multi-line string. Each task is displayed with its ID, type, name,
-// schedule, channel, next run time, status, and creator.
+// schedule, channel, next run time, status, creator, and provider override.
 func FormatTaskList(tasks []ScheduledTask) string {
 	var lines []string
 	for _, t := range tasks {
@@ -84,8 +84,12 @@ func FormatTaskList(tasks []ScheduledTask) string {
 		if t.CreatedBy != "" {
 			creator = ", by: " + t.CreatedBy
 		}
-		lines = append(lines, fmt.Sprintf("  #%d [%s] %q [%s] %s — next: %s — %s%s",
-			t.ID, typeLabel, t.Name, schedInfo, t.Channel, nextRun, status, creator))
+		providerInfo := ""
+		if t.Provider != "" {
+			providerInfo = ", provider: " + t.Provider
+		}
+		lines = append(lines, fmt.Sprintf("  #%d [%s] %q [%s] %s — next: %s — %s%s%s",
+			t.ID, typeLabel, t.Name, schedInfo, t.Channel, nextRun, status, creator, providerInfo))
 	}
 	return strings.Join(lines, "\n")
 }

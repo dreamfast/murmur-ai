@@ -39,7 +39,7 @@ func (m *mockTaskManager) ListTasks() ([]TaskInfo, error) {
 	return m.tasks, nil
 }
 
-func (m *mockTaskManager) AddTask(name, schedule, action, channel, createdBy string) (int64, error) {
+func (m *mockTaskManager) AddTask(name, schedule, action, channel, createdBy, provider string) (int64, error) {
 	if m.addErr != nil {
 		return 0, m.addErr
 	}
@@ -53,11 +53,12 @@ func (m *mockTaskManager) AddTask(name, schedule, action, channel, createdBy str
 		Enabled:   true,
 		Type:      "cron",
 		CreatedBy: createdBy,
+		Provider:  provider,
 	})
 	return m.nextID, nil
 }
 
-func (m *mockTaskManager) AddOneShotTask(name string, runAt time.Time, action, channel, createdBy string) (int64, error) {
+func (m *mockTaskManager) AddOneShotTask(name string, runAt time.Time, action, channel, createdBy, provider string) (int64, error) {
 	if m.addErr != nil {
 		return 0, m.addErr
 	}
@@ -71,6 +72,7 @@ func (m *mockTaskManager) AddOneShotTask(name string, runAt time.Time, action, c
 		Type:      "once",
 		RunAt:     &runAt,
 		CreatedBy: createdBy,
+		Provider:  provider,
 	})
 	return m.nextID, nil
 }
