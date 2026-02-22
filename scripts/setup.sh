@@ -591,6 +591,26 @@ IRC_SERVER_PASS_TOML="$(toml_escape "$IRC_SERVER_PASS")"
 
 if [[ "$INSTALL_MODE" == "docker" ]]; then
 	# Docker mode: write configs to project configs/ directory
+
+	# Generate NickServ and OPER passwords (needed for config generation)
+	BOT_NICKSERV_PASS="$(generate_passphrase)"
+	CLIENT_NICKSERV_PASS="$(generate_passphrase)"
+	OPER_PASS="$(generate_passphrase)"
+
+	# Generate OPER bcrypt hash (needed for ergo config)
+	OPER_BCRYPT_HASH=""
+	if [[ "$DRY_RUN" != "true" ]]; then
+		info "Generating OPER credentials..."
+		OPER_BCRYPT_HASH="$(generate_bcrypt_hash "$OPER_PASS")"
+		if [[ -n "$OPER_BCRYPT_HASH" ]]; then
+			success "OPER credentials generated"
+		else
+			warn "Could not generate OPER bcrypt hash — OPER will not be available."
+			OPER_PASS=""
+		fi
+	fi
+
+	# Generate and write configs
 	SERVER_CONFIG="$(generate_server_config)"
 	CLIENT_CONFIG="$(generate_client_config)"
 	PERMISSIONS_CONFIG="$(generate_permissions_config)"
@@ -601,24 +621,30 @@ if [[ "$INSTALL_MODE" == "docker" ]]; then
 	write_file "$CONFIGS_DIR/permissions.toml" "$PERMISSIONS_CONFIG"
 	write_file_secure "$PROJECT_DIR/.env" "$ENV_CONTENT"
 
-	# Handle ergo config (server password, OPER credentials)
+	# Handle ergo config (server password + OPER credentials)
 	docker_setup_ergo_config
 
 	# Build Docker images
 	docker_build
 
-	# Start IRC server and register admin
+	# Start IRC server and register all nicks
 	docker_start_ircd
-	docker_register_admin
+	docker_register_all_nicks
 
-	# Store vault secrets
+	# Store vault secrets (including NickServ and OPER passwords)
 	docker_store_secrets
+	docker_store_nickserv_secrets
 
 	# Start all services
 	docker_start_all
 
 else
 	# ─── Bare metal mode ─────────────────────────────────────────────────────
+
+	# Generate NickServ and OPER passwords (needed for config generation)
+	BOT_NICKSERV_PASS="$(generate_passphrase)"
+	CLIENT_NICKSERV_PASS="$(generate_passphrase)"
+	OPER_PASS="$(generate_passphrase)"
 
 	SERVER_CONFIG="$(generate_server_config)"
 	CLIENT_CONFIG="$(generate_client_config)"
@@ -655,6 +681,9 @@ else
 	if [[ "$DRY_RUN" != "true" ]]; then
 		vault_store_bare "llm-api-key" "$LLM_KEY"
 		vault_store_bare "api-key" "$API_KEY"
+		vault_store_bare "nickserv-password" "$BOT_NICKSERV_PASS"
+		vault_store_bare "client-nickserv-password" "$CLIENT_NICKSERV_PASS"
+		vault_store_bare "oper-password" "$OPER_PASS"
 
 		if [[ "$SEARCH_PROVIDER" == "brave" && -n "$BRAVE_KEY" ]]; then
 			vault_store_bare "brave-search-key" "$BRAVE_KEY"
@@ -662,6 +691,14 @@ else
 	else
 		info "[dry-run] Would store vault secrets"
 	fi
+
+	echo ""
+	warn "Bare metal mode: register nicks with NickServ manually on your IRC server."
+	warn "Connect as each nick and run:"
+	echo "    ${DIM}$ADMIN_NICK:      /msg NickServ REGISTER <your admin password>${RESET}"
+	echo "    ${DIM}murmur:           /msg NickServ REGISTER $BOT_NICKSERV_PASS${RESET}"
+	echo "    ${DIM}murmur-client:    /msg NickServ REGISTER $CLIENT_NICKSERV_PASS${RESET}"
+	warn "These passwords are stored in the vault — they must match what NickServ has."
 fi
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -680,9 +717,9 @@ if [[ "$INSTALL_MODE" == "docker" ]]; then
 	if [[ "$DASHBOARD_ENABLED" == "true" ]]; then
 		echo "    Dashboard      ${DIM}localhost:$DASHBOARD_PORT${RESET}"
 	fi
-	if [[ -n "$IRC_SERVER_PASS" ]]; then
+	if [[ -n "$IRC_SERVER_PASS" || -n "${OPER_BCRYPT_HASH:-}" ]]; then
 		echo ""
-		warn "ergo.generated.yaml was created with the server password."
+		warn "ergo.generated.yaml was created with custom credentials."
 		warn "Update docker-compose.yml to mount it instead of ergo.yaml:"
 		echo "    ${DIM}- ./configs/ergo.generated.yaml:/ircd/ircd.yaml:ro${RESET}"
 	fi

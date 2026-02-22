@@ -109,7 +109,8 @@ docker_start_all() {
 # ─── Ergo config management ─────────────────────────────────────────────────
 
 # docker_setup_ergo_config — copies ergo.yaml to ergo.generated.yaml and
-# applies IRC server password if set.
+# applies IRC server password and OPER credentials if set.
+# Expects: IRC_SERVER_PASS, OPER_BCRYPT_HASH (from nickserv.sh)
 docker_setup_ergo_config() {
 	if [[ "$DRY_RUN" != "true" ]]; then
 		cp "$CONFIGS_DIR/ergo.yaml" "$CONFIGS_DIR/ergo.generated.yaml"
@@ -118,14 +119,10 @@ docker_setup_ergo_config() {
 	if [[ -n "$IRC_SERVER_PASS" ]]; then
 		info "Setting IRC server password in Ergo config..."
 		if [[ "$DRY_RUN" != "true" ]]; then
-			# Generate bcrypt hash via Docker, passing password on stdin.
-			# Read stdin into a variable first — apk consumes stdin otherwise.
 			local bcrypt_hash
-			bcrypt_hash="$(printf '%s' "$IRC_SERVER_PASS" | docker run --rm -i alpine:3.21 sh -c \
-				'pw=$(cat); apk add --no-cache apache2-utils >/dev/null 2>&1; htpasswd -nbBC 4 "" "$pw" | cut -d: -f2')" || true
+			bcrypt_hash="$(generate_bcrypt_hash "$IRC_SERVER_PASS")"
 			if [[ -n "$bcrypt_hash" ]]; then
-				# Insert password into the generated ergo config under server:
-				# Bcrypt hashes contain $ which sed interprets as backrefs; use awk instead.
+				# Bcrypt hashes contain $ which sed interprets as backrefs; use awk.
 				if grep -q "^    password:" "$CONFIGS_DIR/ergo.generated.yaml" 2>/dev/null; then
 					awk -v hash="$bcrypt_hash" '/^    password:/{print "    password: \""hash"\""; next}1' \
 						"$CONFIGS_DIR/ergo.generated.yaml" >"$CONFIGS_DIR/ergo.generated.yaml.tmp" &&
@@ -143,41 +140,32 @@ docker_setup_ergo_config() {
 			info "[dry-run] Would generate bcrypt hash and write ergo.generated.yaml"
 		fi
 	fi
-}
 
-# ─── NickServ registration (basic — replaced by nickserv.sh in Task 2) ──────
-
-# docker_register_admin — registers the admin nick with NickServ
-docker_register_admin() {
-	info "${BOLD}Registering admin account with NickServ...${RESET}"
-
-	if [[ "$DRY_RUN" != "true" ]]; then
-		info "Registering admin account '$ADMIN_NICK' with NickServ..."
-		local irc_output
-		irc_output="$({
-			# If server password is set, send PASS first
-			if [[ -n "$IRC_SERVER_PASS" ]]; then
-				printf 'PASS %s\r\n' "$IRC_SERVER_PASS"
-			fi
-			printf 'NICK %s\r\n' "$ADMIN_NICK"
-			printf 'USER %s 0 * :Murmur Admin\r\n' "$ADMIN_NICK"
-			sleep 2
-			printf 'PRIVMSG NickServ :REGISTER %s\r\n' "$ADMIN_PASS"
-			sleep 3
-			printf 'QUIT :setup complete\r\n'
-		} | compose_cmd exec -T ircd \
-			sh -c 'nc localhost 6667 2>/dev/null' 2>&1)" || true
-
-		if [[ "$irc_output" == *"900"* || "$irc_output" == *"logged in"* || "$irc_output" == *"Account created"* ]]; then
-			success "Admin account registered (nick: $ADMIN_NICK)"
-		else
-			warn "Could not confirm NickServ registration — you may need to register manually:"
-			warn "  /msg NickServ REGISTER <password>"
-		fi
-	else
-		info "[dry-run] Would register admin account with NickServ"
+	# Update OPER password hash in ergo config (context-aware: only under opers.admin)
+	if [[ -n "${OPER_BCRYPT_HASH:-}" && "$DRY_RUN" != "true" ]]; then
+		info "Setting OPER credentials in Ergo config..."
+		# Use context-aware awk: track opers → admin sections, only replace password there.
+		# Bcrypt hashes contain $ so we pass the hash via -v to avoid shell interpolation.
+		awk -v hash="$OPER_BCRYPT_HASH" '
+			/^[a-zA-Z]/ && !/^opers:/ { in_opers=0; in_admin=0 }
+			/^opers:/ { in_opers=1 }
+			in_opers && /^    [a-zA-Z]/ { in_admin=0 }
+			in_opers && /^    admin:/ { in_admin=1 }
+			in_admin && /^        password:/ {
+				print "        password: \""hash"\""
+				next
+			}
+			{ print }
+		' "$CONFIGS_DIR/ergo.generated.yaml" >"$CONFIGS_DIR/ergo.generated.yaml.tmp" &&
+			mv "$CONFIGS_DIR/ergo.generated.yaml.tmp" "$CONFIGS_DIR/ergo.generated.yaml"
+		success "OPER credentials configured in ergo.generated.yaml"
+	elif [[ -n "${OPER_BCRYPT_HASH:-}" && "$DRY_RUN" == "true" ]]; then
+		info "[dry-run] Would set OPER credentials in ergo.generated.yaml"
 	fi
 }
+
+# ─── NickServ registration ───────────────────────────────────────────────────
+# Registration logic lives in nickserv.sh: docker_register_all_nicks.
 
 # ─── Vault secrets ──────────────────────────────────────────────────────────
 
