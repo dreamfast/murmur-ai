@@ -165,3 +165,27 @@ func (s *ChannelSettingsStore) GetAutoJoinChannels() ([]string, error) {
 	}
 	return channels, nil
 }
+
+// ListAll returns all channel settings rows ordered by channel name.
+func (s *ChannelSettingsStore) ListAll() ([]ChannelSettings, error) {
+	rows, err := s.db.Query(
+		`SELECT channel, provider, auto_join, topic_prefix FROM channel_settings ORDER BY channel`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("ChannelSettingsStore.ListAll: %w", err)
+	}
+	defer rows.Close()
+
+	var settings []ChannelSettings
+	for rows.Next() {
+		var cs ChannelSettings
+		if err := rows.Scan(&cs.Channel, &cs.Provider, &cs.AutoJoin, &cs.TopicPrefix); err != nil {
+			return nil, fmt.Errorf("ChannelSettingsStore.ListAll: scan: %w", err)
+		}
+		settings = append(settings, cs)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("ChannelSettingsStore.ListAll: rows: %w", err)
+	}
+	return settings, nil
+}

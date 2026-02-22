@@ -61,6 +61,7 @@ type Handler struct {
 	logger   *slog.Logger
 	status   StatusProvider // may be nil if no provider is configured
 	verify   CredentialVerifier
+	api      adminAPI // admin API dependencies; zero value means admin API is disabled
 
 	// rateMu protects loginAttempts for per-IP rate limiting.
 	rateMu        sync.Mutex
@@ -69,9 +70,10 @@ type Handler struct {
 
 // NewHandler creates a dashboard HTTP handler. The status parameter may be nil
 // if no StatusProvider is available; the /dashboard/status endpoint will return
-// 503 Service Unavailable in that case.
-func NewHandler(sessions *SessionStore, cfg config.DashboardConfig, ircCfg config.IRCConfig, status StatusProvider, logger *slog.Logger) *Handler {
-	return &Handler{
+// 503 Service Unavailable in that case. The admin parameter may be nil if the
+// admin API should be disabled; admin API endpoints will return 503 in that case.
+func NewHandler(sessions *SessionStore, cfg config.DashboardConfig, ircCfg config.IRCConfig, status StatusProvider, admin *AdminDeps, logger *slog.Logger) *Handler {
+	h := &Handler{
 		sessions:      sessions,
 		cfg:           cfg,
 		ircCfg:        ircCfg,
@@ -80,6 +82,18 @@ func NewHandler(sessions *SessionStore, cfg config.DashboardConfig, ircCfg confi
 		verify:        VerifyIRCCredentials,
 		loginAttempts: make(map[string][]time.Time),
 	}
+	if admin != nil {
+		h.api = adminAPI{
+			database:  admin.DB,
+			admin:     admin.Admin,
+			tasks:     admin.Tasks,
+			tools:     admin.Tools,
+			channels:  admin.Channels,
+			providers: admin.Providers,
+			reloader:  admin.Reloader,
+		}
+	}
+	return h
 }
 
 // ServeHTTP implements http.Handler and routes requests to the appropriate
@@ -100,6 +114,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleLogout(w, r)
 	case r.Method == http.MethodGet && r.URL.Path == "/dashboard/status":
 		h.handleStatus(w, r)
+	case strings.HasPrefix(r.URL.Path, "/dashboard/api/"):
+		h.routeAdminAPI(w, r)
 	case r.URL.Path == "/ws":
 		h.handleWebSocket(w, r)
 	default:

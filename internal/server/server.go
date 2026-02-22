@@ -624,7 +624,8 @@ func (s *Server) Run(ctx context.Context) error {
 		}
 
 		sessions := dashboard.NewSessionStore(sessionTimeout, s.logger)
-		dashHandler := dashboard.NewHandler(sessions, startCfg.Dashboard, startCfg.IRC, s.statusProvider(), s.logger)
+		adminDeps := s.buildAdminDeps()
+		dashHandler := dashboard.NewHandler(sessions, startCfg.Dashboard, startCfg.IRC, s.statusProvider(), adminDeps, s.logger)
 		s.dashboardServer = api.NewHTTPServer(startCfg.Dashboard.Listen, dashHandler, s.logger)
 
 		done := make(chan struct{})

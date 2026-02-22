@@ -51,7 +51,7 @@ func testHandler(t *testing.T) (*Handler, *SessionStore) {
 		},
 	}
 
-	h := NewHandler(store, cfg, ircCfg, nil, logger)
+	h := NewHandler(store, cfg, ircCfg, nil, nil, logger)
 	h.verify = noopVerifier
 	return h, store
 }
@@ -75,7 +75,7 @@ func testHandlerWithStatus(t *testing.T, sp StatusProvider) (*Handler, *SessionS
 		},
 	}
 
-	h := NewHandler(store, cfg, ircCfg, sp, logger)
+	h := NewHandler(store, cfg, ircCfg, sp, nil, logger)
 	h.verify = noopVerifier
 	return h, store
 }
