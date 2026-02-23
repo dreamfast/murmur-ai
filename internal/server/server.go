@@ -71,6 +71,11 @@ type Server struct {
 	// queuing to prevent abuse from IRC floods.
 	flood *floodGuard
 
+	// debouncer collects consecutive IRC messages from the same nick+channel
+	// and concatenates them into a single message after a quiet period. This
+	// allows multi-line pastes to be processed as one LLM call.
+	debouncer *messageDebouncer
+
 	// startTime records when the server was created, used for uptime reporting.
 	startTime time.Time
 
@@ -491,6 +496,14 @@ func New(cfg *config.ServerConfig, configPath string, logger *slog.Logger) (*Ser
 		modelSwitcher = agent
 	}
 	flood := newFloodGuard(logger)
+
+	// Parse the debounce window for multi-line paste support.
+	debounceWindow, err := cfg.ParseDebounceWindow()
+	if err != nil {
+		database.Close()
+		return nil, fmt.Errorf("server.New: %w", err)
+	}
+
 	var debugToggler DebugToggler
 	if ircLogHandler != nil {
 		debugToggler = ircLogHandler
@@ -522,6 +535,14 @@ func New(cfg *config.ServerConfig, configPath string, logger *slog.Logger) (*Ser
 	s.allowedUsers.Store(&cfg.Security.AllowedUsers)
 	if nickserv != nil {
 		s.nickserv.Store(nickserv)
+	}
+
+	// Create the message debouncer for multi-line paste support. The flush
+	// callback is set later in Run() when the run context is available.
+	// We pass a no-op here; Run() replaces it before any messages arrive.
+	s.debouncer = newMessageDebouncer(debounceWindow, func(_, _, _ string) {}, logger)
+	if debounceWindow > 0 {
+		logger.Info("message debouncing enabled", "window", debounceWindow)
 	}
 
 	// Wire the reloader to the command handler now that the server exists.
@@ -630,6 +651,14 @@ func (s *Server) Run(ctx context.Context) error {
 	// Wire the bus receiver to the message handler.
 	s.handler.RegisterBusHandler(s.receiver.HandleRaw)
 
+	// Wire the debouncer's flush callback now that we have the run context.
+	// The flush callback routes debounced messages through flood protection
+	// and into the agent loop. This must be set before RegisterUserHandler
+	// so that debounced messages have a valid context.
+	s.debouncer.SetFlush(func(channel, nick, message string) {
+		s.processDebounced(ctx, channel, nick, message)
+	})
+
 	// Wire the user message handler. The closure captures ctx so that agent
 	// goroutines receive the server's run context without storing it as a
 	// field (which would be a data race).
@@ -733,7 +762,12 @@ func (s *Server) Run(ctx context.Context) error {
 	monitorCancel()
 	monitorWg.Wait()
 
-	// Close the flood guard first to stop per-channel worker goroutines from
+	// Close the debouncer first to flush any pending multi-line batches.
+	// This ensures buffered messages are delivered before we shut down
+	// the flood guard.
+	s.debouncer.Close()
+
+	// Close the flood guard to stop per-channel worker goroutines from
 	// picking up new messages. This also prevents enqueue from sending on
 	// closed channels. Workers that are mid-handler will finish naturally.
 	s.flood.Close()
@@ -1097,11 +1131,22 @@ func (s *Server) handleUserMessage(ctx context.Context, channel, nick, message s
 		return
 	}
 
+	// Route through the debouncer. Multi-line pastes are collected and
+	// concatenated before being processed. The debouncer's flush callback
+	// (set in Run) handles flood protection and agent dispatch.
+	s.debouncer.Add(channel, nick, message)
+}
+
+// processDebounced is the debouncer's flush callback. It receives the
+// concatenated message after the quiet period expires (or immediately if
+// debouncing is disabled). It applies flood protection, permissions rate
+// limiting, and enqueues the message for the agent loop.
+func (s *Server) processDebounced(ctx context.Context, channel, nick, message string) {
 	// Per-nick rate limiting: drop messages from nicks that exceed the
 	// flood threshold. This prevents a single user from queuing dozens
-	// of LLM calls.
+	// of LLM calls. Counts debounced messages, not raw IRC lines.
 	if !s.flood.allow(nick) {
-		s.logger.Debug("message dropped by flood guard",
+		s.logger.Debug("debounced message dropped by flood guard",
 			"channel", channel,
 			"nick", nick,
 		)
@@ -1112,7 +1157,7 @@ func (s *Server) handleUserMessage(ctx context.Context, channel, nick, message s
 	// hourly rate limit (vs the flood guard's short burst protection).
 	// Admins with max_messages_per_hour = -1 bypass this check.
 	if pm := s.permissions; pm != nil && !pm.CheckRateLimit(nick) {
-		s.logger.Info("message dropped by permissions rate limit",
+		s.logger.Info("debounced message dropped by permissions rate limit",
 			"channel", channel,
 			"nick", nick,
 		)

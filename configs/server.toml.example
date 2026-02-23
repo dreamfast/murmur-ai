@@ -1,6 +1,7 @@
 [server]
 data_dir = "~/.murmur"
 system_prompt_file = "~/.murmur/system_prompt.md"
+# debounce_window = "2s"  # wait for multi-line pastes before processing (0 to disable)
 # debug_channel = "#murmur-debug"  # DEPRECATED: use [debug] section below
 
 [irc]
