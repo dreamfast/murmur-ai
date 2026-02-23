@@ -79,3 +79,59 @@ type Usage struct {
 	CompletionTokens int
 	TotalTokens      int
 }
+
+// SanitizeHistory removes orphaned tool-call sequences from the start of a
+// message history. When history is truncated by a LIMIT query, the window may
+// begin with tool-result messages whose corresponding assistant tool_calls
+// message was outside the window. Providers like Kimi reject these with
+// "toolcallid not found". This function strips leading orphaned tool results
+// and any assistant tool_calls message whose results are not all present.
+func SanitizeHistory(msgs []Message) []Message {
+	if len(msgs) == 0 {
+		return msgs
+	}
+
+	// Skip leading tool-result messages that have no preceding assistant
+	// tool_calls message in the window.
+	start := 0
+	for start < len(msgs) && msgs[start].Role == RoleTool {
+		start++
+	}
+
+	// Also skip a leading assistant message with tool_calls if not all of
+	// its tool results are present in the remaining messages.
+	for start < len(msgs) && msgs[start].Role == RoleAssistant && len(msgs[start].ToolCalls) > 0 {
+		// Collect the tool_call IDs from this assistant message.
+		needed := make(map[string]struct{}, len(msgs[start].ToolCalls))
+		for _, tc := range msgs[start].ToolCalls {
+			needed[tc.ID] = struct{}{}
+		}
+
+		// Scan forward for matching tool results.
+		for j := start + 1; j < len(msgs); j++ {
+			if msgs[j].Role == RoleTool && msgs[j].ToolCallID != "" {
+				delete(needed, msgs[j].ToolCallID)
+			}
+			// Stop scanning at the next non-tool message.
+			if msgs[j].Role != RoleTool {
+				break
+			}
+		}
+
+		if len(needed) > 0 {
+			// Not all tool results are present — skip this assistant message
+			// and any following tool results that belong to it.
+			start++
+			for start < len(msgs) && msgs[start].Role == RoleTool {
+				start++
+			}
+		} else {
+			break // All tool results present — this is a valid start.
+		}
+	}
+
+	if start == 0 {
+		return msgs
+	}
+	return msgs[start:]
+}

@@ -530,9 +530,15 @@ func (a *Agent) runLoop(ctx context.Context, memoryChannel, ircChannel, nick str
 		})
 		// Reconstruct structured tool_calls on assistant messages so that
 		// OpenAI-compatible APIs receive the correct message format.
+		reconstructed := make([]llm.Message, 0, len(history))
 		for _, msg := range history {
-			messages = append(messages, reconstructToolCalls(msg))
+			reconstructed = append(reconstructed, reconstructToolCalls(msg))
 		}
+		// Strip orphaned tool-call sequences from the start of the history
+		// window. When maxHistory truncates the conversation, the window may
+		// begin with tool results whose assistant message was outside the
+		// window. Providers like Kimi reject these with "toolcallid not found".
+		messages = append(messages, llm.SanitizeHistory(reconstructed)...)
 
 		// Get available tools: server-side tools first, then client tools.
 		// Server tools take priority — if a server tool and client tool share
@@ -783,14 +789,18 @@ func (a *Agent) runLoop(ctx context.Context, memoryChannel, ircChannel, nick str
 		return
 	}
 
-	messages := make([]llm.Message, 0, 2+len(history))
+	reconstructed := make([]llm.Message, 0, len(history))
+	for _, msg := range history {
+		reconstructed = append(reconstructed, reconstructToolCalls(msg))
+	}
+	sanitized := llm.SanitizeHistory(reconstructed)
+
+	messages := make([]llm.Message, 0, 2+len(sanitized))
 	messages = append(messages, llm.Message{
 		Role:    llm.RoleSystem,
 		Content: a.buildSystemPrompt(ctx, ircChannel, cfg),
 	})
-	for _, msg := range history {
-		messages = append(messages, reconstructToolCalls(msg))
-	}
+	messages = append(messages, sanitized...)
 	// Append a system directive asking for a progress summary.
 	messages = append(messages, llm.Message{
 		Role: llm.RoleSystem,

@@ -740,3 +740,107 @@ func TestOpenAICompatProvider_ReasoningContentPassthrough(t *testing.T) {
 		t.Errorf("ReasoningContent = %q, want %q", resp.ReasoningContent, "Let me think about this greeting")
 	}
 }
+
+func TestSanitizeHistory(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		msgs      []Message
+		wantLen   int
+		wantFirst string // Role of the first message after sanitization
+	}{
+		{
+			name:    "empty history",
+			msgs:    nil,
+			wantLen: 0,
+		},
+		{
+			name: "clean history — no orphans",
+			msgs: []Message{
+				{Role: RoleUser, Content: "hello"},
+				{Role: RoleAssistant, Content: "hi there"},
+			},
+			wantLen:   2,
+			wantFirst: RoleUser,
+		},
+		{
+			name: "orphaned tool results at start",
+			msgs: []Message{
+				{Role: RoleTool, Content: "result1", ToolCallID: "c1", Name: "shell"},
+				{Role: RoleTool, Content: "result2", ToolCallID: "c2", Name: "shell"},
+				{Role: RoleUser, Content: "next question"},
+				{Role: RoleAssistant, Content: "answer"},
+			},
+			wantLen:   2,
+			wantFirst: RoleUser,
+		},
+		{
+			name: "assistant with tool_calls but missing results",
+			msgs: []Message{
+				{Role: RoleAssistant, ToolCalls: []ToolCall{
+					{ID: "c1", Type: "function", Function: FunctionCall{Name: "shell"}},
+					{ID: "c2", Type: "function", Function: FunctionCall{Name: "search"}},
+				}},
+				{Role: RoleTool, Content: "result1", ToolCallID: "c1", Name: "shell"},
+				// c2 result is missing (truncated)
+				{Role: RoleUser, Content: "follow up"},
+			},
+			wantLen:   1,
+			wantFirst: RoleUser,
+		},
+		{
+			name: "assistant with tool_calls and all results present",
+			msgs: []Message{
+				{Role: RoleAssistant, ToolCalls: []ToolCall{
+					{ID: "c1", Type: "function", Function: FunctionCall{Name: "shell"}},
+				}},
+				{Role: RoleTool, Content: "result1", ToolCallID: "c1", Name: "shell"},
+				{Role: RoleUser, Content: "thanks"},
+			},
+			wantLen:   3,
+			wantFirst: RoleAssistant,
+		},
+		{
+			name: "orphaned tool then orphaned assistant then clean",
+			msgs: []Message{
+				{Role: RoleTool, Content: "orphan", ToolCallID: "old1", Name: "shell"},
+				{Role: RoleAssistant, ToolCalls: []ToolCall{
+					{ID: "c1", Type: "function", Function: FunctionCall{Name: "shell"}},
+				}},
+				// c1 result missing
+				{Role: RoleUser, Content: "new question"},
+				{Role: RoleAssistant, Content: "answer"},
+			},
+			wantLen:   2,
+			wantFirst: RoleUser,
+		},
+		{
+			name: "system message at start preserved",
+			msgs: []Message{
+				{Role: RoleSystem, Content: "summary of previous conversation"},
+				{Role: RoleUser, Content: "hello"},
+			},
+			wantLen:   2,
+			wantFirst: RoleSystem,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := SanitizeHistory(tt.msgs)
+			if len(got) != tt.wantLen {
+				t.Errorf("SanitizeHistory() returned %d messages, want %d", len(got), tt.wantLen)
+				for i, m := range got {
+					t.Logf("  [%d] role=%s content=%q tool_call_id=%s", i, m.Role, m.Content, m.ToolCallID)
+				}
+				return
+			}
+			if tt.wantLen > 0 && got[0].Role != tt.wantFirst {
+				t.Errorf("first message role = %q, want %q", got[0].Role, tt.wantFirst)
+			}
+		})
+	}
+}
