@@ -57,6 +57,14 @@ func newMessageDebouncer(window time.Duration, flushFn func(channel, nick, messa
 	}
 }
 
+// SetFlush replaces the flush callback under the mutex. This is used to
+// wire the real callback in Run() after the server context is available.
+func (d *messageDebouncer) SetFlush(fn func(channel, nick, message string)) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.flush = fn
+}
+
 // debounceKey builds the map key for a channel+nick pair. The null byte
 // separator is safe because IRC channel names and nicks cannot contain NUL.
 func debounceKey(channel, nick string) string {
@@ -75,8 +83,9 @@ func (d *messageDebouncer) Add(channel, nick, message string) {
 			d.mu.Unlock()
 			return
 		}
+		fn := d.flush
 		d.mu.Unlock()
-		d.flush(channel, nick, message)
+		fn(channel, nick, message)
 		return
 	}
 
@@ -106,6 +115,7 @@ func (d *messageDebouncer) Add(channel, nick, message string) {
 			batch.timer.Stop()
 		}
 		lines := batch.lines
+		fn := d.flush
 		delete(d.pending, key)
 		d.mu.Unlock()
 
@@ -114,7 +124,7 @@ func (d *messageDebouncer) Add(channel, nick, message string) {
 			"nick", nick,
 			"lines", len(lines),
 		)
-		d.flush(channel, nick, strings.Join(lines, "\n"))
+		fn(channel, nick, strings.Join(lines, "\n"))
 		return
 	}
 
@@ -124,6 +134,7 @@ func (d *messageDebouncer) Add(channel, nick, message string) {
 	if batch.timer != nil {
 		batch.timer.Stop()
 	}
+	fn := d.flush
 	batch.timer = d.afterFunc(d.window, func() {
 		d.mu.Lock()
 		// Check that this batch is still the current one for this key.
@@ -142,7 +153,7 @@ func (d *messageDebouncer) Add(channel, nick, message string) {
 			"nick", nick,
 			"lines", len(lines),
 		)
-		d.flush(channel, nick, strings.Join(lines, "\n"))
+		fn(channel, nick, strings.Join(lines, "\n"))
 	})
 	d.mu.Unlock()
 }
@@ -157,6 +168,7 @@ func (d *messageDebouncer) Close() {
 		return
 	}
 	d.closed = true
+	fn := d.flush
 
 	// Collect all pending batches and clear the map.
 	batches := make([]*pendingBatch, 0, len(d.pending))
@@ -171,6 +183,6 @@ func (d *messageDebouncer) Close() {
 
 	// Flush all pending batches outside the lock.
 	for _, batch := range batches {
-		d.flush(batch.channel, batch.nick, strings.Join(batch.lines, "\n"))
+		fn(batch.channel, batch.nick, strings.Join(batch.lines, "\n"))
 	}
 }
