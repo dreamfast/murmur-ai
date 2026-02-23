@@ -36,9 +36,10 @@ type NickServVerifier struct {
 	inflight   map[string]*inflightLookup
 }
 
-// cachedIdentity stores a cached NickServ identification result.
+// cachedIdentity stores a cached positive NickServ identification result.
+// Only identified users are cached; negative results are not stored.
 type cachedIdentity struct {
-	account   string    // NickServ account name; empty if not identified
+	account   string    // NickServ account name (always non-empty in cache)
 	expiresAt time.Time // when this cache entry expires
 }
 
@@ -115,8 +116,12 @@ func (v *NickServVerifier) IsIdentified(nick string) bool {
 		return false
 	}
 
-	// Cache the result.
-	if v.cacheTTL > 0 {
+	identified := account != ""
+
+	// Only cache positive results. Negative results (not identified) are
+	// not cached so that a user who identifies with NickServ after their
+	// first message is recognized immediately on the next attempt.
+	if v.cacheTTL > 0 && identified {
 		v.mu.Lock()
 		v.cache[lowerNick] = cachedIdentity{
 			account:   account,
@@ -125,7 +130,6 @@ func (v *NickServVerifier) IsIdentified(nick string) bool {
 		v.mu.Unlock()
 	}
 
-	identified := account != ""
 	if !identified {
 		v.logger.Debug("nick not identified with NickServ",
 			"nick", nick,

@@ -37,6 +37,8 @@ type Connection struct {
 	onConnect []func()
 	onOper    []func()
 	onMessage []func(channel, nick, message string)
+	onQuit    []func(nick string)
+	onNick    []func(oldNick, newNick string)
 
 	// joinedMu protects joinedChannels for concurrent access.
 	joinedMu sync.RWMutex
@@ -221,6 +223,43 @@ func NewConnection(cfg config.IRCConfig, channels []string, logger *slog.Logger)
 		logger.Error("OPER authentication failed: no oper host match")
 	})
 
+	// Track user QUIT events for cache invalidation (e.g. NickServ cache).
+	// Uses Add (synchronous) because the callbacks are fast in-memory operations.
+	client.Handlers.Add(girc.QUIT, func(_ *girc.Client, e girc.Event) {
+		if e.Source == nil {
+			return
+		}
+		nick := e.Source.Name
+
+		conn.mu.Lock()
+		quitHandlers := make([]func(string), len(conn.onQuit))
+		copy(quitHandlers, conn.onQuit)
+		conn.mu.Unlock()
+
+		for _, h := range quitHandlers {
+			h(nick)
+		}
+	})
+
+	// Track NICK changes for cache invalidation. When a user changes their
+	// nick, the old nick's cached identity is no longer valid.
+	client.Handlers.Add(girc.NICK, func(_ *girc.Client, e girc.Event) {
+		if e.Source == nil || len(e.Params) < 1 {
+			return
+		}
+		oldNick := e.Source.Name
+		newNick := e.Params[0]
+
+		conn.mu.Lock()
+		nickHandlers := make([]func(string, string), len(conn.onNick))
+		copy(nickHandlers, conn.onNick)
+		conn.mu.Unlock()
+
+		for _, h := range nickHandlers {
+			h(oldNick, newNick)
+		}
+	})
+
 	// Route incoming PRIVMSG to registered handlers. Must use AddBg so the
 	// handler runs in a background goroutine — the message handler may call
 	// Whois() which blocks waiting for numeric replies that are dispatched
@@ -317,6 +356,24 @@ func (c *Connection) OnMessage(handler func(channel, nick, message string)) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.onMessage = append(c.onMessage, handler)
+}
+
+// OnQuit registers a callback that fires when any user disconnects from IRC.
+// The callback receives the nick of the user who quit. This is useful for
+// invalidating caches (e.g. NickServ identity cache) when users leave.
+func (c *Connection) OnQuit(handler func(nick string)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.onQuit = append(c.onQuit, handler)
+}
+
+// OnNick registers a callback that fires when any user changes their nick.
+// The callback receives the old nick and the new nick. This is useful for
+// invalidating caches keyed by nick.
+func (c *Connection) OnNick(handler func(oldNick, newNick string)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.onNick = append(c.onNick, handler)
 }
 
 // Close gracefully disconnects from the IRC server.

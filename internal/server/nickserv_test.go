@@ -96,6 +96,49 @@ func TestIsIdentified_WhoisError(t *testing.T) {
 	}
 }
 
+func TestIsIdentified_NegativeNotCached(t *testing.T) {
+	t.Parallel()
+
+	var whoisCalls atomic.Int32
+	var identified atomic.Bool
+	whois := func(nick string) (string, error) {
+		whoisCalls.Add(1)
+		if identified.Load() {
+			return "myaccount", nil
+		}
+		return "", nil // not identified yet
+	}
+
+	v := NewNickServVerifier(whois, 5*time.Minute, testLogger())
+
+	// First call: not identified — should NOT be cached.
+	if v.IsIdentified("user1") {
+		t.Error("expected user1 to NOT be identified on first call")
+	}
+	if whoisCalls.Load() != 1 {
+		t.Errorf("expected 1 WHOIS call, got %d", whoisCalls.Load())
+	}
+
+	// User identifies with NickServ between calls.
+	identified.Store(true)
+
+	// Second call: should perform a fresh WHOIS (not use stale negative cache).
+	if !v.IsIdentified("user1") {
+		t.Error("expected user1 to be identified after NickServ IDENTIFY")
+	}
+	if whoisCalls.Load() != 2 {
+		t.Errorf("expected 2 WHOIS calls (negative not cached), got %d", whoisCalls.Load())
+	}
+
+	// Third call: positive result should now be cached.
+	if !v.IsIdentified("user1") {
+		t.Error("expected user1 to still be identified (cached)")
+	}
+	if whoisCalls.Load() != 2 {
+		t.Errorf("expected still 2 WHOIS calls (positive cached), got %d", whoisCalls.Load())
+	}
+}
+
 func TestIsIdentified_NoCaching(t *testing.T) {
 	t.Parallel()
 

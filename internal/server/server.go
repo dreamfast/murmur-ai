@@ -584,6 +584,24 @@ func New(cfg *config.ServerConfig, configPath string, logger *slog.Logger) (*Ser
 		agent.SyncAllTopics()
 	})
 
+	// Invalidate NickServ cache when users quit or change nicks. A QUIT
+	// means the user's session ended — their identity must be re-verified
+	// on reconnect. A NICK change invalidates both old and new nicks.
+	conn.OnQuit(func(nick string) {
+		if nv := s.nickserv.Load(); nv != nil {
+			nv.InvalidateCache(nick)
+			logger.Debug("invalidated NickServ cache on QUIT", "nick", nick)
+		}
+	})
+	conn.OnNick(func(oldNick, newNick string) {
+		if nv := s.nickserv.Load(); nv != nil {
+			nv.InvalidateCache(oldNick)
+			nv.InvalidateCache(newNick)
+			logger.Debug("invalidated NickServ cache on NICK change",
+				"old_nick", oldNick, "new_nick", newNick)
+		}
+	})
+
 	// Join the debug channel and activate the IRC log handler on connect.
 	if ircLogHandler != nil {
 		conn.OnConnect(func() {
