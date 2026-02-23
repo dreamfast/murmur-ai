@@ -217,6 +217,24 @@ var migrations = []string{
 		INSERT INTO memory_documents_fts(rowid, content, source, chunk_id)
 		VALUES (new.id, new.content, new.source, new.chunk_id);
 	END;`,
+
+	// Migration 12: Docker container tracking for the docker_manage tool.
+	// Stores metadata for containers created and managed by the LLM agent.
+	// container_id and name are unique to prevent duplicates. Status is
+	// synced with Docker on startup via reconciliation.
+	`CREATE TABLE docker_containers (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		container_id TEXT NOT NULL UNIQUE,
+		name TEXT NOT NULL UNIQUE,
+		image TEXT NOT NULL,
+		status TEXT NOT NULL DEFAULT 'created',
+		channel TEXT NOT NULL,
+		nick TEXT NOT NULL,
+		ports TEXT NOT NULL DEFAULT '[]',
+		created DATETIME DEFAULT CURRENT_TIMESTAMP,
+		updated DATETIME DEFAULT CURRENT_TIMESTAMP
+	);
+	CREATE INDEX idx_docker_containers_status ON docker_containers(status);`,
 }
 
 // Migrate runs all pending schema migrations. It creates the schema_version

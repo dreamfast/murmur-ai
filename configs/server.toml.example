@@ -144,6 +144,22 @@ passphrase_env = "MURMUR_VAULT_PASS"
 # timeout = "30s"
 # max_content_length = 8000
 
+# Docker container management: full lifecycle control (create, exec, logs, stop, etc.).
+# Containers are tracked in SQLite and reconciled on startup.
+# Security: --cap-drop=ALL, --security-opt=no-new-privileges, resource limits.
+# [tools.docker_manage]
+# enabled = true
+# max_containers = 10       # max active containers (non-removed, non-exited)
+# memory_limit = "512m"     # per-container memory limit
+# cpu_limit = "1.0"         # per-container CPU limit
+# pids_limit = 256          # per-container process limit
+# network = ""              # Docker network (empty = default bridge)
+# allow_build = false       # enable "build" action (Dockerfile builds)
+# allow_network = true      # containers can access the network
+# read_only = false         # read-only root filesystem
+# allowed_images = []       # image allowlist (glob patterns, empty = all allowed)
+# timeout = "5m"            # max duration for Docker operations
+
 # Shell: execute commands inside ephemeral Docker containers.
 # [tools.shell]
 # enabled = true

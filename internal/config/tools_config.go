@@ -46,6 +46,9 @@ type ToolsConfig struct {
 	// Browser configures the browser automation tool backed by a Dockerized
 	// Playwright instance.
 	Browser *BrowserConfig `toml:"browser"`
+	// DockerManage configures the docker_manage tool for Docker container
+	// lifecycle management (create, exec, logs, stop, start, remove, etc.).
+	DockerManage *DockerManageConfig `toml:"docker_manage"`
 }
 
 // SystemInfoConfig configures the system_info tool which provides safe,
@@ -326,6 +329,65 @@ func (b *BrowserConfig) ParseTimeout() (time.Duration, error) {
 	return d, nil
 }
 
+// DockerManageConfig configures the docker_manage tool for Docker container
+// lifecycle management. The LLM agent can create, exec into, inspect, stop,
+// start, remove, and list Docker containers. Security hardening is applied
+// automatically (cap-drop, pids-limit, resource limits).
+type DockerManageConfig struct {
+	// Enabled controls whether the docker_manage tool is registered.
+	Enabled bool `toml:"enabled"`
+	// MaxContainers is the maximum number of active (non-removed, non-exited)
+	// containers allowed. Defaults to 10.
+	MaxContainers int `toml:"max_containers"`
+	// MemoryLimit is the Docker memory limit for created containers (e.g., "512m").
+	// Defaults to "512m".
+	MemoryLimit string `toml:"memory_limit"`
+	// CPULimit is the Docker CPU limit for created containers (e.g., "1.0").
+	// Defaults to "1.0".
+	CPULimit string `toml:"cpu_limit"`
+	// PidsLimit is the maximum number of processes inside created containers.
+	// Defaults to 256.
+	PidsLimit int `toml:"pids_limit"`
+	// Network is the Docker network to attach created containers to.
+	// Empty string uses Docker's default bridge network.
+	Network string `toml:"network"`
+	// AllowBuild enables the "build" action for building Docker images from
+	// Dockerfiles. Defaults to false for security.
+	AllowBuild bool `toml:"allow_build"`
+	// AllowNetwork enables network access for created containers. When false,
+	// containers are created with --network=none. Defaults to true.
+	AllowNetwork *bool `toml:"allow_network"`
+	// ReadOnly makes created containers' root filesystem read-only.
+	// Defaults to false.
+	ReadOnly bool `toml:"read_only"`
+	// AllowedImages is an optional list of allowed image patterns (glob syntax).
+	// When empty, all images are allowed. When non-empty, only images matching
+	// at least one pattern are permitted. Patterns use filepath.Match syntax
+	// (e.g., "ubuntu:*", "nginx:*", "alpine").
+	AllowedImages []string `toml:"allowed_images"`
+	// Timeout is the maximum duration for Docker operations (e.g., "5m").
+	// Defaults to "5m".
+	Timeout string `toml:"timeout"`
+}
+
+// GetAllowNetwork returns the AllowNetwork value, defaulting to true if not set.
+func (d *DockerManageConfig) GetAllowNetwork() bool {
+	if d.AllowNetwork == nil {
+		return true
+	}
+	return *d.AllowNetwork
+}
+
+// ParseTimeout parses the docker manage timeout string into a time.Duration.
+// Returns a default of 5m if the timeout is not set.
+func (d *DockerManageConfig) ParseTimeout() (time.Duration, error) {
+	dur, err := parseDurationDefault(d.Timeout, 5*time.Minute)
+	if err != nil {
+		return 0, fmt.Errorf("DockerManageConfig.ParseTimeout: %w", err)
+	}
+	return dur, nil
+}
+
 // validate checks tool-specific configuration for correctness and applies
 // defaults where appropriate. Each tool type has its own validation method
 // to keep the logic focused and testable.
@@ -345,6 +407,7 @@ func (t *ToolsConfig) validate() error {
 		t.validateOpenCode,
 		t.validateConfigManage,
 		t.validateBrowser,
+		t.validateDockerManage,
 	}
 	for _, v := range validators {
 		if err := v(); err != nil {
@@ -561,6 +624,31 @@ func (t *ToolsConfig) validateBrowser() error {
 		return fmt.Errorf("tools.browser.max_content_length must be non-negative, got %d", t.Browser.MaxContentLength)
 	}
 	return nil
+}
+
+func (t *ToolsConfig) validateDockerManage() error {
+	if t.DockerManage == nil || !t.DockerManage.Enabled {
+		return nil
+	}
+	if t.DockerManage.MaxContainers == 0 {
+		t.DockerManage.MaxContainers = 10
+	}
+	if t.DockerManage.MaxContainers < 0 {
+		return fmt.Errorf("tools.docker_manage.max_containers must be non-negative, got %d", t.DockerManage.MaxContainers)
+	}
+	if t.DockerManage.MemoryLimit == "" {
+		t.DockerManage.MemoryLimit = "512m"
+	}
+	if t.DockerManage.CPULimit == "" {
+		t.DockerManage.CPULimit = "1.0"
+	}
+	if t.DockerManage.PidsLimit == 0 {
+		t.DockerManage.PidsLimit = 256
+	}
+	if t.DockerManage.PidsLimit < 0 {
+		return fmt.Errorf("tools.docker_manage.pids_limit must be non-negative, got %d", t.DockerManage.PidsLimit)
+	}
+	return validatePositiveDuration(t.DockerManage.Timeout, "tools.docker_manage.timeout")
 }
 
 // HasExecutionTools returns true if any execution-capable tool (shell or
