@@ -91,10 +91,10 @@ func RegisterDockerManageTool(registry *ToolRegistry, database *db.DB, cfg *conf
 					"type": "string",
 					"description": "Container name or ID to operate on (for exec, logs, stop, start, remove, inspect)."
 				},
-				"command": {
-					"type": "string",
-					"description": "Command to run (for 'exec' action, e.g. 'ls -la /app')."
-				},
+			"command": {
+				"type": "string",
+				"description": "Command to run. For 'create': the container entrypoint command (e.g. 'sleep infinity', 'python -m http.server 8080'). For 'exec': the command to execute inside a running container (e.g. 'ls -la /app')."
+			},
 				"ports": {
 					"type": "array",
 					"items": {"type": "string"},
@@ -256,6 +256,14 @@ func dockerCreate(ctx context.Context, args map[string]any, deps *dockerManageDe
 
 	// Image and optional command.
 	dockerArgs = append(dockerArgs, image)
+
+	// Append the container command if provided (e.g. "sleep infinity",
+	// "python -m http.server 8080"). Without this, Docker uses the image's
+	// default CMD/ENTRYPOINT which may exit immediately for interactive images.
+	command := tools.OptionalStringArg(args, "command", "")
+	if command != "" {
+		dockerArgs = append(dockerArgs, strings.Fields(command)...)
+	}
 
 	// Execute with timeout.
 	execCtx, cancel := context.WithTimeout(ctx, deps.timeout)
