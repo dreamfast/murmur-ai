@@ -541,6 +541,18 @@ func New(cfg *config.ServerConfig, configPath string, logger *slog.Logger) (*Ser
 		}
 	}
 
+	// Register the docker_manage tool if enabled. Reconcile containers with
+	// Docker on startup to sync DB state with reality.
+	if cfg.Tools.DockerManage != nil && cfg.Tools.DockerManage.Enabled {
+		if err := ReconcileContainers(context.Background(), database, logger, nil); err != nil {
+			logger.Warn("docker_manage: startup reconciliation failed", "error", err)
+		}
+		if err := RegisterDockerManageTool(serverTools, database, cfg.Tools.DockerManage, pm, logger); err != nil {
+			database.Close()
+			return nil, fmt.Errorf("server.New: %w", err)
+		}
+	}
+
 	// Wire the late-binding reload pointer for the config_manage tool.
 	reloadPtr = s
 
