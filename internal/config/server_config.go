@@ -106,6 +106,11 @@ type ServerSection struct {
 	// Verbose sends status messages to IRC (thinking, tool calls, etc.)
 	// so the user can see what the agent is doing in real time.
 	Verbose bool `toml:"verbose"`
+	// DebounceWindow is how long to wait after the last message from a nick
+	// before processing the accumulated lines as a single message. This allows
+	// multi-line pastes to be concatenated instead of triggering separate LLM
+	// calls per line. Defaults to "2s". Set to "0" to disable debouncing.
+	DebounceWindow string `toml:"debounce_window"`
 	// DebugChannel is an IRC channel that receives live slog output for
 	// real-time debugging (e.g., "#murmur-debug"). Empty means disabled.
 	DebugChannel string `toml:"debug_channel"`
@@ -369,6 +374,11 @@ func LoadServerConfig(path string) (*ServerConfig, error) {
 		cfg.Server.Name = "server"
 	}
 
+	// Default debounce window to 2s.
+	if cfg.Server.DebounceWindow == "" {
+		cfg.Server.DebounceWindow = "2s"
+	}
+
 	// Expand ~ in system_prompt_file.
 	if cfg.Server.SystemPromptFile != "" {
 		cfg.Server.SystemPromptFile, err = expandHome(cfg.Server.SystemPromptFile)
@@ -499,6 +509,9 @@ func (c *ServerConfig) Validate() error {
 	if err := validatePositiveDuration(c.Approval.Timeout, "approval.timeout"); err != nil {
 		return err
 	}
+	if err := validateNonNegativeDuration(c.Server.DebounceWindow, "server.debounce_window"); err != nil {
+		return err
+	}
 
 	if err := validatePositiveDuration(c.Dashboard.SessionTimeout, "dashboard.session_timeout"); err != nil {
 		return err
@@ -579,6 +592,13 @@ func (c *ServerConfig) ParseApprovalTimeout() (time.Duration, error) {
 	return d, nil
 }
 
+// ParseDebounceWindow parses the debounce window duration string, returning
+// the configured duration. A zero duration means debouncing is disabled.
+// Defaults to 2s if not set.
+func (c *ServerConfig) ParseDebounceWindow() (time.Duration, error) {
+	return parseDurationDefault(c.Server.DebounceWindow, 2*time.Second)
+}
+
 // ParseDebugLevel parses the debug log level string into a slog.Level.
 // Returns slog.LevelDebug if the level string is empty or unrecognized.
 func (c *DebugConfig) ParseDebugLevel() slog.Level {
@@ -594,6 +614,23 @@ func (c *DebugConfig) ParseDebugLevel() slog.Level {
 	default:
 		return slog.LevelDebug
 	}
+}
+
+// validateNonNegativeDuration checks that a duration string, if non-empty,
+// parses to a non-negative value. Zero is allowed (used to disable features
+// like debouncing).
+func validateNonNegativeDuration(s, field string) error {
+	if s == "" {
+		return nil
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return fmt.Errorf("%s: %w", field, err)
+	}
+	if d < 0 {
+		return fmt.Errorf("%s: must be non-negative, got %s", field, s)
+	}
+	return nil
 }
 
 // validatePositiveDuration checks that a duration string, if non-empty, parses
