@@ -38,6 +38,24 @@ const iterationPauseThreshold = 100
 // reached. Kept short to avoid blocking the channel.
 const stopSummaryTimeout = 10 * time.Second
 
+// iterationSummaryTimeout is the maximum duration for the async LLM call
+// that generates a one-sentence description of what the agent is doing at
+// each iteration. Kept very short since this uses a small/fast model.
+const iterationSummaryTimeout = 5 * time.Second
+
+// maxSummaryLen is the maximum length (in runes) of an iteration summary
+// message sent to IRC. Summaries exceeding this are truncated (with "..."
+// suffix) to respect IRC line length limits.
+const maxSummaryLen = 200
+
+// maxRecentMessages is the number of recent conversation messages copied
+// into the async summary goroutine's prompt. Kept small for fast inference.
+const maxRecentMessages = 4
+
+// iterationSummaryPrompt is the system prompt for the small LLM that
+// generates one-sentence iteration status descriptions.
+const iterationSummaryPrompt = `Describe what the AI assistant is currently doing in ONE short sentence (max 15 words). Be specific about the action, not generic. Do not use quotes or special formatting.`
+
 // crossChannelMaxMsgLen is the maximum length (in runes) of a single message
 // included in the cross-channel context section of the system prompt.
 const crossChannelMaxMsgLen = 300
@@ -146,6 +164,15 @@ type Agent struct {
 	// produces a summary before exiting. Protected by loopCancelMu.
 	loopCancelMu sync.Mutex
 	loopCancels  map[string]context.CancelCauseFunc
+
+	// summaryInFlight tracks whether an async iteration summary goroutine
+	// is currently running for each channel. Only one summary goroutine is
+	// allowed per channel at a time to prevent goroutine fan-out.
+	summaryInFlight sync.Map // map[string]*atomic.Bool
+
+	// lastSummaryIter tracks the last iteration number for which an async
+	// summary was sent per channel. Used to skip stale out-of-order messages.
+	lastSummaryIter sync.Map // map[string]*atomic.Int32
 }
 
 // AgentParams holds all parameters for creating a new Agent. Using a struct
@@ -591,6 +618,13 @@ func (a *Agent) runLoop(ctx context.Context, memoryChannel, ircChannel, nick str
 	// handlers can perform defense-in-depth authorization checks.
 	ctx = context.WithValue(ctx, requestNickKey{}, nick)
 
+	// Reset the per-channel iteration summary ordering counter so that a
+	// new loop invocation starts fresh (prevents stale counters from a
+	// previous run suppressing summaries in this run).
+	if iterVal, ok := a.lastSummaryIter.Load(ircChannel); ok {
+		iterVal.(*atomic.Int32).Store(0)
+	}
+
 	for i := 0; i < iterationPauseThreshold; i++ {
 		// Check context before each iteration.
 		if ctx.Err() != nil {
@@ -702,10 +736,26 @@ func (a *Agent) runLoop(ctx context.Context, memoryChannel, ircChannel, nick str
 		// Build the provider chain: primary + configured fallbacks.
 		providerChain := a.getProviderChain(primaryProvider, nick, ircChannel, pm)
 
-		if i == 0 {
-			a.status(ircChannel, cfg.verbose, fmt.Sprintf("thinking... [%s, %d tools]", primaryProvider.Name(), len(tools)))
+		// Send a status message. On the first iteration, always show the
+		// old-style "thinking..." with tool count. On subsequent iterations,
+		// use the summary provider (if available) to generate a one-sentence
+		// description of what the agent is doing.
+		if i == 0 || a.summaryProvider == nil || !cfg.verbose {
+			if i == 0 {
+				a.status(ircChannel, cfg.verbose, fmt.Sprintf("thinking... [%s, %d tools]", primaryProvider.Name(), len(tools)))
+			} else {
+				a.status(ircChannel, cfg.verbose, fmt.Sprintf("thinking... [%s, iteration %d]", primaryProvider.Name(), i+1))
+			}
 		} else {
-			a.status(ircChannel, cfg.verbose, fmt.Sprintf("thinking... [%s, iteration %d]", primaryProvider.Name(), i+1))
+			// Copy the last few messages for the summary goroutine to avoid
+			// data races with the main loop's slice mutations.
+			start := 0
+			if len(messages) > maxRecentMessages {
+				start = len(messages) - maxRecentMessages
+			}
+			recentMsgs := make([]llm.Message, len(messages)-start)
+			copy(recentMsgs, messages[start:])
+			a.asyncIterationSummary(ircChannel, primaryProvider.Name(), recentMsgs, i+1)
 		}
 
 		// Call the LLM with failover: try each provider in the chain until
@@ -970,6 +1020,76 @@ func (a *Agent) generatePauseSummary(memoryChannel, ircChannel, nick string, ite
 		a.send(ircChannel, resp.Content)
 	}
 	a.send(ircChannel, continueMsg)
+}
+
+// asyncIterationSummary fires a goroutine that calls the summary LLM to
+// generate a one-sentence description of what the agent is doing, then sends
+// it as a status message. If the summary provider is nil, verbose is false,
+// or another summary goroutine is already in-flight for this channel, the
+// method falls back to the old-style "thinking..." message immediately.
+//
+// recentMsgs must be a COPY of the relevant messages (not a slice alias)
+// to avoid data races with the main loop.
+func (a *Agent) asyncIterationSummary(channel string, providerName string, recentMsgs []llm.Message, iteration int) {
+	// Load or create the per-channel in-flight flag.
+	flagVal, _ := a.summaryInFlight.LoadOrStore(channel, &atomic.Bool{})
+	inFlight := flagVal.(*atomic.Bool)
+
+	// Single-flight: if a summary goroutine is already running, send the
+	// old-style status and return.
+	if !inFlight.CompareAndSwap(false, true) {
+		a.status(channel, true, fmt.Sprintf("thinking... [%s, iteration %d]", providerName, iteration))
+		return
+	}
+
+	go func() {
+		defer inFlight.Store(false)
+
+		ctx, cancel := context.WithTimeout(a.lifecycleCtx, iterationSummaryTimeout)
+		defer cancel()
+
+		// Build a minimal prompt with only the recent messages.
+		messages := make([]llm.Message, 0, 1+len(recentMsgs))
+		messages = append(messages, llm.Message{
+			Role:    llm.RoleSystem,
+			Content: iterationSummaryPrompt,
+		})
+		messages = append(messages, recentMsgs...)
+
+		resp, err := a.summaryProvider.ChatCompletion(ctx, &llm.ChatRequest{
+			Messages: messages,
+		})
+		if err != nil {
+			// Fallback: send old-style status on error.
+			a.status(channel, true, fmt.Sprintf("thinking... [%s, iteration %d]", providerName, iteration))
+			return
+		}
+
+		summary := strings.TrimSpace(resp.Content)
+		if summary == "" {
+			a.status(channel, true, fmt.Sprintf("thinking... [%s, iteration %d]", providerName, iteration))
+			return
+		}
+
+		// Strip newlines/carriage returns and truncate to IRC-safe length.
+		summary = strings.ReplaceAll(summary, "\r\n", " ")
+		summary = strings.ReplaceAll(summary, "\r", " ")
+		summary = strings.ReplaceAll(summary, "\n", " ")
+		summaryRunes := []rune(summary)
+		if len(summaryRunes) > maxSummaryLen {
+			summary = string(summaryRunes[:maxSummaryLen-3]) + "..."
+		}
+
+		// Skip stale out-of-order messages.
+		iterVal, _ := a.lastSummaryIter.LoadOrStore(channel, &atomic.Int32{})
+		lastIter := iterVal.(*atomic.Int32)
+		if int32(iteration) <= lastIter.Load() {
+			return
+		}
+		lastIter.Store(int32(iteration))
+
+		a.status(channel, true, fmt.Sprintf("[iteration %d] %s", iteration, summary))
+	}()
 }
 
 // SetProvider switches the LLM provider for a specific channel. If name is

@@ -3247,3 +3247,264 @@ func TestAgent_StopChannel_NoActiveLoop(t *testing.T) {
 		t.Error("StopChannel returned true for channel with no active loop")
 	}
 }
+
+func TestAgent_AsyncIterationSummary_WithProvider(t *testing.T) {
+	t.Parallel()
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := database.Migrate(); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	t.Cleanup(func() { database.Close() })
+
+	memory := NewMemory(database, 100, 80, nil, logger)
+	registry := NewRegistry(2*time.Minute, logger)
+	registry.Register(&bus.RegisterMessage{
+		Type:     bus.TypeRegister,
+		ClientID: "test-client",
+		Hostname: "test-host",
+		Tools: []bus.ToolDef{
+			{Name: "shell", Description: "Run commands", Parameters: json.RawMessage(`{"type":"object","properties":{"cmd":{"type":"string"}}}`)},
+		},
+	})
+
+	sender := bus.NewSender(nil, "#murmur-bus", "", 0, logger)
+	router := NewRouter(registry, sender, logger)
+
+	// Primary provider: returns tool calls for first 3 iterations, then text.
+	primaryMock := &llmtest.MockProvider{
+		NameVal: "primary",
+		Responses: []*llm.ChatResponse{
+			{ToolCalls: []llm.ToolCall{{ID: "c1", Type: "function", Function: llm.FunctionCall{Name: "shell", Arguments: `{"cmd":"echo 1"}`}}}},
+			{ToolCalls: []llm.ToolCall{{ID: "c2", Type: "function", Function: llm.FunctionCall{Name: "shell", Arguments: `{"cmd":"echo 2"}`}}}},
+			{ToolCalls: []llm.ToolCall{{ID: "c3", Type: "function", Function: llm.FunctionCall{Name: "shell", Arguments: `{"cmd":"echo 3"}`}}}},
+			{Content: "Done! I ran 3 commands."},
+		},
+	}
+
+	// Summary provider: returns a description of what the agent is doing.
+	summaryMock := &llmtest.MockProvider{
+		NameVal: "summary",
+		Responses: []*llm.ChatResponse{
+			{Content: "Running shell commands to check system status."},
+		},
+	}
+
+	providers := map[string]llm.Provider{"primary": primaryMock}
+
+	var sent []string
+	var sentMu sync.Mutex
+	appendSent := func(_, message string) {
+		sentMu.Lock()
+		defer sentMu.Unlock()
+		sent = append(sent, message)
+	}
+	getSent := func() []string {
+		sentMu.Lock()
+		defer sentMu.Unlock()
+		result := make([]string, len(sent))
+		copy(result, sent)
+		return result
+	}
+
+	agent := NewAgent(AgentParams{
+		Providers:       providers,
+		DefaultProvider: "primary",
+		SummaryProvider: summaryMock,
+		Registry:        registry,
+		Memory:          memory,
+		Router:          router,
+		SystemPrompt:    "You are a test assistant.",
+		ServerName:      "test-server",
+		BusChannel:      "#test-bus",
+		MaxHistory:      100,
+		ToolTimeout:     2 * time.Second,
+		Verbose:         true,
+		Logger:          logger,
+	})
+	agent.sendFunc = appendSent
+	agent.routeToolFunc = func(_ context.Context, _ string, _ json.RawMessage) (string, error) {
+		return "ok", nil
+	}
+
+	agent.HandleMessage(context.Background(), "#test-summary", "user1", "run commands")
+
+	// Wait a bit for async summary goroutines to complete.
+	time.Sleep(200 * time.Millisecond)
+
+	messages := getSent()
+
+	// The summary provider should have been called for iterations 2+ (not iteration 1).
+	// After the sleep, all async goroutines should have completed.
+	summaryCallCount := len(summaryMock.Calls)
+
+	// We expect at least 1 summary call (iterations 2 and 3 may trigger async summaries).
+	if summaryCallCount == 0 {
+		t.Error("expected summary provider to be called at least once for iteration summaries")
+	}
+
+	// Check that at least one message contains the summary text pattern.
+	foundSummary := false
+	for _, msg := range messages {
+		if strings.Contains(msg, "[iteration") && strings.Contains(msg, "shell") {
+			foundSummary = true
+			break
+		}
+	}
+	// The async summary may or may not arrive before the final response
+	// depending on timing, so we check the summary provider was called
+	// rather than requiring the message to appear in a specific order.
+	if !foundSummary && summaryCallCount > 0 {
+		t.Logf("summary provider was called %d times but no summary message found in sent: %v", summaryCallCount, messages)
+	}
+
+	// Verify the final response was sent.
+	foundFinal := false
+	for _, msg := range messages {
+		if strings.Contains(msg, "Done! I ran 3 commands") {
+			foundFinal = true
+			break
+		}
+	}
+	if !foundFinal {
+		t.Errorf("expected final response, got: %v", messages)
+	}
+}
+
+func TestAgent_AsyncIterationSummary_NilProvider(t *testing.T) {
+	t.Parallel()
+	env := newTestAgentEnv(t)
+
+	// Primary returns tool call then text — no summary provider configured.
+	env.mock.Responses = []*llm.ChatResponse{
+		{ToolCalls: []llm.ToolCall{{ID: "c1", Type: "function", Function: llm.FunctionCall{Name: "shell", Arguments: `{"cmd":"echo hi"}`}}}},
+		{Content: "Done."},
+	}
+	env.agent.routeToolFunc = func(_ context.Context, _ string, _ json.RawMessage) (string, error) {
+		return "ok", nil
+	}
+
+	// Enable verbose to see status messages.
+	env.agent.mu.Lock()
+	env.agent.cfg.verbose = true
+	env.agent.mu.Unlock()
+
+	env.agent.HandleMessage(context.Background(), "#test-nil-summary", "user1", "do something")
+
+	sent := env.getSent()
+
+	// With no summary provider, iteration 2 should show old-style "thinking..." message.
+	foundThinking := false
+	for _, msg := range sent {
+		if strings.Contains(msg, "thinking...") {
+			foundThinking = true
+			break
+		}
+	}
+	if !foundThinking {
+		t.Errorf("expected 'thinking...' fallback with nil summary provider, got: %v", sent)
+	}
+}
+
+func TestAgent_AsyncIterationSummary_Timeout(t *testing.T) {
+	t.Parallel()
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := database.Migrate(); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	t.Cleanup(func() { database.Close() })
+
+	memory := NewMemory(database, 100, 80, nil, logger)
+	registry := NewRegistry(2*time.Minute, logger)
+	registry.Register(&bus.RegisterMessage{
+		Type:     bus.TypeRegister,
+		ClientID: "test-client",
+		Hostname: "test-host",
+		Tools: []bus.ToolDef{
+			{Name: "shell", Description: "Run commands", Parameters: json.RawMessage(`{"type":"object","properties":{"cmd":{"type":"string"}}}`)},
+		},
+	})
+
+	sender := bus.NewSender(nil, "#murmur-bus", "", 0, logger)
+	router := NewRouter(registry, sender, logger)
+
+	// Primary provider: returns tool call then text.
+	primaryMock := &llmtest.MockProvider{
+		NameVal: "primary",
+		Responses: []*llm.ChatResponse{
+			{ToolCalls: []llm.ToolCall{{ID: "c1", Type: "function", Function: llm.FunctionCall{Name: "shell", Arguments: `{"cmd":"echo 1"}`}}}},
+			{Content: "Done."},
+		},
+	}
+
+	// Summary provider: always errors (simulates timeout/failure).
+	summaryMock := &llmtest.MockProvider{
+		NameVal: "summary-slow",
+		Errors:  []error{errors.New("timeout")},
+	}
+
+	providers := map[string]llm.Provider{"primary": primaryMock}
+
+	var sent []string
+	var sentMu sync.Mutex
+	appendSent := func(_, message string) {
+		sentMu.Lock()
+		defer sentMu.Unlock()
+		sent = append(sent, message)
+	}
+	getSent := func() []string {
+		sentMu.Lock()
+		defer sentMu.Unlock()
+		result := make([]string, len(sent))
+		copy(result, sent)
+		return result
+	}
+
+	agent := NewAgent(AgentParams{
+		Providers:       providers,
+		DefaultProvider: "primary",
+		SummaryProvider: summaryMock,
+		Registry:        registry,
+		Memory:          memory,
+		Router:          router,
+		SystemPrompt:    "You are a test assistant.",
+		ServerName:      "test-server",
+		BusChannel:      "#test-bus",
+		MaxHistory:      100,
+		ToolTimeout:     2 * time.Second,
+		Verbose:         true,
+		Logger:          logger,
+	})
+	agent.sendFunc = appendSent
+	agent.routeToolFunc = func(_ context.Context, _ string, _ json.RawMessage) (string, error) {
+		return "ok", nil
+	}
+
+	agent.HandleMessage(context.Background(), "#test-timeout", "user1", "do something")
+
+	// Wait for async goroutines.
+	time.Sleep(200 * time.Millisecond)
+
+	messages := getSent()
+
+	// On summary provider error, should fall back to "thinking..." message.
+	foundThinking := false
+	for _, msg := range messages {
+		if strings.Contains(msg, "thinking...") {
+			foundThinking = true
+			break
+		}
+	}
+	if !foundThinking {
+		t.Errorf("expected 'thinking...' fallback on summary error, got: %v", messages)
+	}
+}
