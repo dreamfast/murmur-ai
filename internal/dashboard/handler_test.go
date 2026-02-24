@@ -93,7 +93,7 @@ func testSignRequest(t *testing.T, r *http.Request, sess *Session, body string) 
 		t.Fatalf("decode signing key: %v", err)
 	}
 	mac := hmac.New(sha256.New, keyBytes)
-	mac.Write([]byte(ts + r.Method + r.URL.Path + body))
+	mac.Write([]byte(ts + r.Method + r.URL.RequestURI() + body))
 	sig := hex.EncodeToString(mac.Sum(nil))
 	r.Header.Set(signatureHeader, sig)
 }
@@ -420,7 +420,7 @@ func TestSignatureVerification(t *testing.T) {
 				// Compute valid signature for the "valid" test case.
 				keyBytes, _ := hex.DecodeString(sess.SigningKey)
 				mac := hmac.New(sha256.New, keyBytes)
-				mac.Write([]byte(tt.timestamp + req.Method + req.URL.Path))
+				mac.Write([]byte(tt.timestamp + req.Method + req.URL.RequestURI()))
 				req.Header.Set(signatureHeader, hex.EncodeToString(mac.Sum(nil)))
 			}
 

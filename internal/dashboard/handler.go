@@ -262,8 +262,14 @@ func (h *Handler) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// Inject into headers so verifySignature can process them uniformly.
 	r.Header.Set(signatureTimestampHeader, tsStr)
 	r.Header.Set(signatureHeader, sig)
-	// Verify against the base path (without query string).
-	if !h.verifySignature(r, sess, "") {
+	// Verify against the base path (without query string). The frontend
+	// signs over just the path since the signature itself lives in the query.
+	// Temporarily strip the query so RequestURI() returns the bare path.
+	origRawQuery := r.URL.RawQuery
+	r.URL.RawQuery = ""
+	sigOK := h.verifySignature(r, sess, "")
+	r.URL.RawQuery = origRawQuery
+	if !sigOK {
 		http.Error(w, "invalid or expired request signature", http.StatusForbidden)
 		return
 	}
@@ -378,12 +384,14 @@ func (h *Handler) verifySignature(r *http.Request, sess *Session, body string) b
 	}
 
 	// Compute expected signature: HMAC-SHA256(key, timestamp+method+path+body).
+	// Use RequestURI (path + query string) to match the frontend's signedFetch,
+	// which signs over the full path including query parameters.
 	// The signing key is hex-encoded; decode it to use as the raw HMAC key.
 	keyBytes, err := hex.DecodeString(sess.SigningKey)
 	if err != nil {
 		return false
 	}
-	payload := tsStr + r.Method + r.URL.Path + body
+	payload := tsStr + r.Method + r.URL.RequestURI() + body
 	return mcrypto.VerifyHMAC(string(keyBytes), sig, []byte(payload))
 }
 
