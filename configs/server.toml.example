@@ -210,3 +210,11 @@ passphrase_env = "MURMUR_VAULT_PASS"
 # log_llm_requests = true      # log LLM API calls with provider, tokens, latency
 # log_bus_protocol = false     # log bus protocol messages (reserved for future use)
 # log_permissions = true       # log permission checks and denials
+
+# --- Usage statistics ---
+# Track LLM token consumption, tool invocations, and request metadata.
+# Data is stored in SQLite and exposed via the dashboard Statistics tab.
+# Enabled by default; set enabled = false to disable collection.
+# [statistics]
+# enabled = true               # collect usage statistics (default: true)
+# retention_days = 90          # auto-cleanup after N days (default: 90)

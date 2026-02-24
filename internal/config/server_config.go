@@ -15,18 +15,19 @@ import (
 
 // ServerConfig holds the complete server configuration loaded from TOML.
 type ServerConfig struct {
-	Server    ServerSection   `toml:"server"`
-	IRC       IRCConfig       `toml:"irc"`
-	LLM       LLMConfig       `toml:"llm"`
-	Memory    MemoryConfig    `toml:"memory"`
-	Scheduler SchedulerConfig `toml:"scheduler"`
-	Approval  ApprovalConfig  `toml:"approval"`
-	Security  SecurityConfig  `toml:"security"`
-	Vault     VaultConfig     `toml:"vault"`
-	Tools     ToolsConfig     `toml:"tools"`
-	API       APIConfig       `toml:"api"`
-	Dashboard DashboardConfig `toml:"dashboard"`
-	Debug     DebugConfig     `toml:"debug"`
+	Server     ServerSection    `toml:"server"`
+	IRC        IRCConfig        `toml:"irc"`
+	LLM        LLMConfig        `toml:"llm"`
+	Memory     MemoryConfig     `toml:"memory"`
+	Scheduler  SchedulerConfig  `toml:"scheduler"`
+	Approval   ApprovalConfig   `toml:"approval"`
+	Security   SecurityConfig   `toml:"security"`
+	Vault      VaultConfig      `toml:"vault"`
+	Tools      ToolsConfig      `toml:"tools"`
+	API        APIConfig        `toml:"api"`
+	Dashboard  DashboardConfig  `toml:"dashboard"`
+	Debug      DebugConfig      `toml:"debug"`
+	Statistics StatisticsConfig `toml:"statistics"`
 }
 
 // DashboardConfig holds settings for the web dashboard that provides a
@@ -73,6 +74,27 @@ type DebugConfig struct {
 	LogBusProtocol bool `toml:"log_bus_protocol"`
 	// LogPermissions enables logging of permission checks and denials.
 	LogPermissions bool `toml:"log_permissions"`
+}
+
+// StatisticsConfig holds settings for the usage statistics tracking system
+// that records LLM token consumption, tool invocations, and request metadata.
+type StatisticsConfig struct {
+	// Enabled controls whether usage statistics are collected. Defaults to true.
+	// Use a pointer so we can distinguish "not set" (nil → default true) from
+	// "explicitly set to false".
+	Enabled *bool `toml:"enabled"`
+	// RetentionDays is how many days to keep usage statistics before automatic
+	// cleanup. Defaults to 90. Must be positive.
+	RetentionDays int `toml:"retention_days"`
+}
+
+// IsEnabled returns whether statistics collection is enabled, defaulting to
+// true when not explicitly configured.
+func (c *StatisticsConfig) IsEnabled() bool {
+	if c.Enabled == nil {
+		return true
+	}
+	return *c.Enabled
 }
 
 // APIConfig holds configuration for the REST API server exposed by both
@@ -478,6 +500,11 @@ func LoadServerConfig(path string) (*ServerConfig, error) {
 		cfg.Dashboard.SessionTimeout = "24h"
 	}
 
+	// Default statistics retention to 90 days.
+	if cfg.Statistics.RetentionDays == 0 {
+		cfg.Statistics.RetentionDays = 90
+	}
+
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("LoadServerConfig: %w", err)
 	}
@@ -545,6 +572,11 @@ func (c *ServerConfig) Validate() error {
 	// Validate tool configurations.
 	if err := c.Tools.validate(); err != nil {
 		return err
+	}
+
+	// Validate statistics retention.
+	if c.Statistics.RetentionDays <= 0 {
+		return fmt.Errorf("statistics.retention_days must be positive, got %d", c.Statistics.RetentionDays)
 	}
 
 	return nil
