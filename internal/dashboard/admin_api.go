@@ -1031,10 +1031,12 @@ var allowedPeriods = map[string]bool{
 
 // allowedRequestTypes is the set of valid request_type filter values.
 var allowedRequestTypes = map[string]bool{
-	"chat":    true,
-	"task":    true,
-	"event":   true,
-	"summary": true,
+	"chat":              true,
+	"task":              true,
+	"event":             true,
+	"summary":           true,
+	"iteration_summary": true,
+	"pause_summary":     true,
 }
 
 // parseStatsQuery extracts and validates StatsQueryParams from URL query
@@ -1048,7 +1050,7 @@ func parseStatsQuery(q url.Values) (StatsQueryParams, string) {
 
 	if rt := q.Get("request_type"); rt != "" {
 		if !allowedRequestTypes[rt] {
-			return p, "request_type must be one of: chat, task, event, summary"
+			return p, "request_type must be one of: chat, task, event, summary, iteration_summary, pause_summary"
 		}
 		p.RequestType = rt
 	}

@@ -1384,7 +1384,7 @@ func TestParseStatsQuery(t *testing.T) {
 		{
 			name:    "invalid request_type",
 			query:   "request_type=invalid",
-			wantErr: "request_type must be one of: chat, task, event, summary",
+			wantErr: "request_type must be one of: chat, task, event, summary, iteration_summary, pause_summary",
 		},
 		{
 			name:    "invalid from date",

@@ -264,6 +264,38 @@ var migrations = []string{
 	CREATE INDEX idx_usage_stats_nick ON usage_stats(nick);
 	CREATE INDEX idx_usage_stats_channel_ts ON usage_stats(channel, timestamp);
 	CREATE INDEX idx_usage_stats_provider_ts ON usage_stats(provider, timestamp);`,
+
+	// Migration 14: Widen the request_type CHECK constraint on usage_stats to
+	// include 'iteration_summary' and 'pause_summary' for tracking summary
+	// provider LLM calls (e.g. OpenRouter Llama used during agent iterations).
+	// SQLite does not support ALTER COLUMN, so we recreate the table.
+	`CREATE TABLE usage_stats_new (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+		channel TEXT NOT NULL COLLATE NOCASE,
+		nick TEXT NOT NULL DEFAULT '' COLLATE NOCASE,
+		provider TEXT NOT NULL,
+		model TEXT NOT NULL DEFAULT '',
+		prompt_tokens INTEGER NOT NULL DEFAULT 0,
+		completion_tokens INTEGER NOT NULL DEFAULT 0,
+		total_tokens INTEGER NOT NULL DEFAULT 0,
+		tool_calls_count INTEGER NOT NULL DEFAULT 0,
+		tool_details TEXT NOT NULL DEFAULT '[]',
+		latency_ms INTEGER NOT NULL DEFAULT 0,
+		iteration INTEGER NOT NULL DEFAULT 0,
+		request_type TEXT NOT NULL DEFAULT 'chat' CHECK(request_type IN ('chat', 'task', 'event', 'summary', 'iteration_summary', 'pause_summary')),
+		status TEXT NOT NULL DEFAULT 'ok' CHECK(status IN ('ok', 'error')),
+		error_message TEXT
+	);
+	INSERT INTO usage_stats_new SELECT * FROM usage_stats;
+	DROP TABLE usage_stats;
+	ALTER TABLE usage_stats_new RENAME TO usage_stats;
+	CREATE INDEX idx_usage_stats_timestamp ON usage_stats(timestamp);
+	CREATE INDEX idx_usage_stats_channel ON usage_stats(channel);
+	CREATE INDEX idx_usage_stats_provider ON usage_stats(provider);
+	CREATE INDEX idx_usage_stats_nick ON usage_stats(nick);
+	CREATE INDEX idx_usage_stats_channel_ts ON usage_stats(channel, timestamp);
+	CREATE INDEX idx_usage_stats_provider_ts ON usage_stats(provider, timestamp);`,
 }
 
 // Migrate runs all pending schema migrations. It creates the schema_version

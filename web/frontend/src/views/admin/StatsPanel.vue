@@ -57,6 +57,8 @@
             <option value="task">task</option>
             <option value="event">event</option>
             <option value="summary">summary</option>
+            <option value="iteration_summary">iteration summary</option>
+            <option value="pause_summary">pause summary</option>
           </select>
         </div>
         <div>
@@ -235,6 +237,8 @@
                       'bg-info/20 text-info': row.request_type === 'task',
                       'bg-warning/20 text-warning': row.request_type === 'event',
                       'bg-bg-tertiary text-text-secondary': row.request_type === 'summary',
+                      'bg-purple-500/20 text-purple-400': row.request_type === 'iteration_summary',
+                      'bg-teal-500/20 text-teal-400': row.request_type === 'pause_summary',
                     }"
                   >{{ row.request_type }}</span>
                 </td>
