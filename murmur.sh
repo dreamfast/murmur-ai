@@ -40,6 +40,46 @@ PROJECT_DIR="${MURMUR_DIR:-$SCRIPT_DIR}"
 # Core services (always started with `start`)
 CORE_SERVICES=(ircd piston murmur-server murmur-client)
 
+# Profile-to-service mapping for optional services
+# Docker Compose profiles gate these; we resolve them so `start` brings up everything configured.
+declare -A PROFILE_SERVICES=(
+	[browser]=browser
+	[search]=searxng
+	[opencode]=opencode
+	[full]="browser searxng opencode"
+)
+
+# resolve_profile_services — reads COMPOSE_PROFILES from env or .env and
+# returns the corresponding service names.
+resolve_profile_services() {
+	local profiles="${COMPOSE_PROFILES:-}"
+
+	# Fall back to .env file
+	if [[ -z "$profiles" && -f "$PROJECT_DIR/.env" ]]; then
+		profiles="$(grep -oP '^COMPOSE_PROFILES=\K.*' "$PROJECT_DIR/.env" 2>/dev/null)" || true
+	fi
+
+	if [[ -z "$profiles" ]]; then
+		return
+	fi
+
+	local IFS=','
+	local -a profile_list
+	read -ra profile_list <<<"$profiles"
+
+	local -A seen=()
+	for profile in "${profile_list[@]}"; do
+		profile="$(echo "$profile" | tr -d ' ')"
+		local svcs="${PROFILE_SERVICES[$profile]:-}"
+		for svc in $svcs; do
+			if [[ -z "${seen[$svc]:-}" ]]; then
+				echo "$svc"
+				seen[$svc]=1
+			fi
+		done
+	done
+}
+
 # ─── Color helpers ────────────────────────────────────────────────────────────
 
 if [[ -t 1 ]] && command -v tput &>/dev/null; then
@@ -103,6 +143,11 @@ docker_start() {
 	local services=("$@")
 	if [[ ${#services[@]} -eq 0 ]]; then
 		services=("${CORE_SERVICES[@]}")
+		# Add profile-gated services (browser, searxng, opencode) if configured
+		local profile_svc
+		while IFS= read -r profile_svc; do
+			[[ -n "$profile_svc" ]] && services+=("$profile_svc")
+		done < <(resolve_profile_services)
 	fi
 
 	info "Starting: ${services[*]}"
@@ -141,7 +186,13 @@ docker_restart() {
 	if [[ ${#services[@]} -eq 0 ]]; then
 		info "Restarting all services..."
 		compose down
-		compose up -d "${CORE_SERVICES[@]}"
+		# Rebuild full service list including profile services
+		local all_services=("${CORE_SERVICES[@]}")
+		local profile_svc
+		while IFS= read -r profile_svc; do
+			[[ -n "$profile_svc" ]] && all_services+=("$profile_svc")
+		done < <(resolve_profile_services)
+		compose up -d "${all_services[@]}"
 	else
 		info "Restarting: ${services[*]}"
 		compose restart "${services[@]}"
@@ -311,7 +362,12 @@ docker_update() {
 
 	info "Restarting services..."
 	compose down
-	compose up -d "${CORE_SERVICES[@]}"
+	local all_services=("${CORE_SERVICES[@]}")
+	local profile_svc
+	while IFS= read -r profile_svc; do
+		[[ -n "$profile_svc" ]] && all_services+=("$profile_svc")
+	done < <(resolve_profile_services)
+	compose up -d "${all_services[@]}"
 
 	success "Update complete"
 }
