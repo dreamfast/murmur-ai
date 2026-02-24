@@ -61,6 +61,14 @@ type Reloader interface {
 	Reload() error
 }
 
+// AgentStopper is the interface the CommandHandler needs to stop an active
+// agent loop on a channel. Defined here (where consumed) per Go convention.
+type AgentStopper interface {
+	// StopChannel cancels the active agent loop on the given channel.
+	// Returns true if a loop was running and was signalled to stop.
+	StopChannel(channel string) bool
+}
+
 // CommandHandler dispatches built-in `!` commands. Commands are handled
 // without involving the LLM — they provide quick status and management.
 type CommandHandler struct {
@@ -75,6 +83,7 @@ type CommandHandler struct {
 	flood        FloodFlusher
 	debug        DebugToggler
 	reloader     Reloader
+	stopper      AgentStopper
 	permissions  atomic.Pointer[PermissionManager] // nil when permissions are not configured
 	permStore    atomic.Pointer[PermissionsStore]  // nil when permissions store is not configured
 	allowedUsers atomic.Pointer[[]string]
@@ -181,6 +190,8 @@ func (h *CommandHandler) HandleCommand(channel, nick, message string) bool {
 		h.cmdUser(channel, nick, args)
 	case "!channel":
 		h.cmdChannel(channel, nick, args)
+	case "!stop":
+		h.cmdStop(channel)
 	case "!debug":
 		h.cmdDebug(channel, args)
 	case "!reload":
@@ -341,6 +352,30 @@ func (h *CommandHandler) cmdFlush(channel string) {
 		return
 	}
 	h.send(channel, fmt.Sprintf("flushed: %d queued messages dropped, history cleared", dropped))
+}
+
+func (h *CommandHandler) cmdStop(channel string) {
+	if h.stopper == nil {
+		h.send(channel, "stop not available")
+		return
+	}
+
+	// Flush queued messages to prevent them from starting new loops after
+	// the current one is stopped.
+	dropped := 0
+	if h.flood != nil {
+		dropped = h.flood.flush(channel)
+	}
+
+	if h.stopper.StopChannel(channel) {
+		msg := "stopping agent loop..."
+		if dropped > 0 {
+			msg += fmt.Sprintf(" (%d queued messages dropped)", dropped)
+		}
+		h.send(channel, msg)
+	} else {
+		h.send(channel, "no active agent loop on this channel")
+	}
 }
 
 func (h *CommandHandler) cmdNotes(channel string, args []string) {
@@ -680,6 +715,7 @@ func (h *CommandHandler) cmdHelp(channel string) {
   !history [n] — show last N messages (default 10)
   !forget — clear conversation history
   !flush — drop queued messages and clear history (use during floods)
+  !stop — stop the active agent loop, show progress summary
   !notes — list/get/set/delete/search notes
   !approve — approve the most recent pending tool call
   !deny — deny the most recent pending tool call

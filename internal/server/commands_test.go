@@ -742,6 +742,83 @@ func TestCommandHandler_ReloadNilReloader(t *testing.T) {
 	}
 }
 
+// mockAgentStopper implements AgentStopper for testing.
+type mockAgentStopper struct {
+	active bool // whether StopChannel should report a loop was running
+	called bool
+}
+
+func (m *mockAgentStopper) StopChannel(channel string) bool {
+	m.called = true
+	return m.active
+}
+
+func TestCommandHandler_Stop_ActiveLoop(t *testing.T) {
+	t.Parallel()
+	env := newTestCommandEnv(t, nil)
+
+	stopper := &mockAgentStopper{active: true}
+	env.handler.stopper = stopper
+
+	handled := env.handler.HandleCommand("#test", "user1", "!stop")
+	if !handled {
+		t.Fatal("expected !stop to be handled")
+	}
+	if !stopper.called {
+		t.Error("expected StopChannel to be called")
+	}
+	msg := env.lastSent()
+	if !strings.Contains(msg, "stopping agent loop") {
+		t.Errorf("expected 'stopping agent loop' message, got: %s", msg)
+	}
+}
+
+func TestCommandHandler_Stop_NoActiveLoop(t *testing.T) {
+	t.Parallel()
+	env := newTestCommandEnv(t, nil)
+
+	stopper := &mockAgentStopper{active: false}
+	env.handler.stopper = stopper
+
+	handled := env.handler.HandleCommand("#test", "user1", "!stop")
+	if !handled {
+		t.Fatal("expected !stop to be handled")
+	}
+	if !stopper.called {
+		t.Error("expected StopChannel to be called")
+	}
+	msg := env.lastSent()
+	if msg != "no active agent loop on this channel" {
+		t.Errorf("expected 'no active agent loop on this channel', got: %s", msg)
+	}
+}
+
+func TestCommandHandler_Stop_NilStopper(t *testing.T) {
+	t.Parallel()
+	env := newTestCommandEnv(t, nil)
+	// stopper is nil by default
+
+	handled := env.handler.HandleCommand("#test", "user1", "!stop")
+	if !handled {
+		t.Fatal("expected !stop to be handled")
+	}
+	msg := env.lastSent()
+	if msg != "stop not available" {
+		t.Errorf("expected 'stop not available', got: %s", msg)
+	}
+}
+
+func TestCommandHandler_HelpIncludesStop(t *testing.T) {
+	t.Parallel()
+	env := newTestCommandEnv(t, nil)
+
+	env.handler.HandleCommand("#test", "user1", "!help")
+	msg := env.lastSent()
+	if !strings.Contains(msg, "!stop") {
+		t.Errorf("expected !stop in help, got: %s", msg)
+	}
+}
+
 func TestCommandHandler_UpdateAllowedUsers(t *testing.T) {
 	t.Parallel()
 	env := newTestCommandEnv(t, []string{"admin"})

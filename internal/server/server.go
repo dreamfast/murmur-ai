@@ -546,10 +546,11 @@ func New(cfg *config.ServerConfig, configPath string, logger *slog.Logger) (*Ser
 		logger.Info("message debouncing enabled", "window", debounceWindow)
 	}
 
-	// Wire the reloader to the command handler now that the server exists.
-	// This breaks the circular dependency: commands needs a Reloader, but
-	// the server needs commands to be created first.
+	// Wire the reloader and stopper to the command handler now that the
+	// server exists. This breaks the circular dependency: commands needs
+	// a Reloader/AgentStopper, but the server needs commands to be created first.
 	commands.reloader = s
+	commands.stopper = agent
 
 	// Wire permissions into the command handler for admin commands (!user, !channel).
 	// Also register the permissions_manage LLM tool with the DB-backed store.
