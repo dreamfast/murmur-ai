@@ -11,6 +11,7 @@
     "lint": "eslint src/"
   },
   "dependencies": {
+    "chart.js": "^4.4.0",
     "hack-font": "^3.3.0",
     "vue": "^3.5.0",
     "vue-router": "^4.5.0"

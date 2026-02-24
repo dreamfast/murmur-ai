@@ -246,6 +246,46 @@ export function adminListProviders() {
   return adminFetch("/providers");
 }
 
+// --- Statistics ---
+
+/**
+ * Build a query string from a params object, omitting empty values.
+ * @param {object} params — key-value pairs
+ * @returns {string} — query string (with leading ?) or empty string
+ */
+function buildQuery(params) {
+  const entries = Object.entries(params || {}).filter(
+    ([, v]) => v !== undefined && v !== null && v !== "",
+  );
+  if (entries.length === 0) return "";
+  return "?" + new URLSearchParams(entries).toString();
+}
+
+/** Get a high-level summary of usage statistics. */
+export function adminGetStatsSummary(params) {
+  return adminFetch("/stats/summary" + buildQuery(params));
+}
+
+/** Get time-bucketed aggregation of usage statistics. */
+export function adminGetStatsAggregate(params) {
+  return adminFetch("/stats/aggregate" + buildQuery(params));
+}
+
+/** Get aggregated tool usage statistics. */
+export function adminGetStatsTools(params) {
+  return adminFetch("/stats/tools" + buildQuery(params));
+}
+
+/** Get aggregated per-provider statistics. */
+export function adminGetStatsProviders(params) {
+  return adminFetch("/stats/providers" + buildQuery(params));
+}
+
+/** Get a paginated list of raw usage statistics. */
+export function adminGetStatsList(params) {
+  return adminFetch("/stats" + buildQuery(params));
+}
+
 // --- System ---
 
 /** Trigger a server configuration reload. */

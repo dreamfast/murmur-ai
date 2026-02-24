@@ -52,6 +52,11 @@ const routes = [
             component: () => import("../views/admin/ChannelsPanel.vue"),
           },
           {
+            path: "stats",
+            name: "admin-stats",
+            component: () => import("../views/admin/StatsPanel.vue"),
+          },
+          {
             path: "system",
             name: "admin-system",
             component: () => import("../views/admin/SystemPanel.vue"),

@@ -35,6 +35,7 @@ const tabs = [
   { name: "admin-tools", label: "Tools", icon: "\u{1F527}" },
   { name: "admin-tasks", label: "Tasks", icon: "\u{23F0}" },
   { name: "admin-channels", label: "Channels", icon: "\u{1F4E2}" },
+  { name: "admin-stats", label: "Stats", icon: "\u{1F4CA}" },
   { name: "admin-system", label: "System", icon: "\u{2699}" },
 ];
 </script>
