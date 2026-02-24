@@ -230,6 +230,11 @@ docker_store_secrets() {
 		if [[ -n "$IRC_SERVER_PASS" ]]; then
 			vault_store_docker "irc-server-password" "$IRC_SERVER_PASS"
 		fi
+
+		# Store summary provider API key (only if it's a separate key, not reusing primary)
+		if [[ -n "${SUMMARY_API_KEY:-}" && "$SUMMARY_API_KEY" != vault:* ]]; then
+			vault_store_docker "summary-api-key" "$SUMMARY_API_KEY"
+		fi
 	else
 		info "[dry-run] Would store vault secrets: llm-api-key, api-key"
 		if [[ "$SEARCH_PROVIDER" == "brave" ]]; then
@@ -237,6 +242,9 @@ docker_store_secrets() {
 		fi
 		if [[ -n "$IRC_SERVER_PASS" ]]; then
 			info "[dry-run] Would store vault secret: irc-server-password"
+		fi
+		if [[ -n "${SUMMARY_API_KEY:-}" && "$SUMMARY_API_KEY" != vault:* ]]; then
+			info "[dry-run] Would store vault secret: summary-api-key"
 		fi
 	fi
 }

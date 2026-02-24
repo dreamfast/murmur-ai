@@ -455,6 +455,37 @@ fi
 success "Provider: ${BOLD}$LLM_PROVIDER${RESET} ($LLM_PROVIDER_ID)"
 success "Model: ${BOLD}$LLM_MODEL${RESET}"
 
+# ─── Summary Provider (sub-question within LLM step) ────────────────────────
+
+echo ""
+info "Murmur uses a summary LLM for conversation summarization and iteration"
+info "status messages (e.g. 'Searching for files...' instead of 'thinking...')."
+info "A separate cheaper/faster model keeps costs down and avoids slowing the main LLM."
+
+SUMMARY_MODEL=""
+SUMMARY_API_BASE=""
+SUMMARY_LLM_MODEL=""
+SUMMARY_API_KEY=""
+if ask_yesno "Configure a separate summary provider?" "n"; then
+	ask SUMMARY_API_BASE "Summary provider API base URL" "$LLM_API_BASE"
+	ask SUMMARY_LLM_MODEL "Summary model name (small/fast recommended)" "openai/gpt-4.1-mini"
+	if [[ "$SUMMARY_API_BASE" == "$LLM_API_BASE" ]]; then
+		# Same endpoint — reuse the same API key
+		SUMMARY_API_KEY="vault:llm-api-key"
+		info "Same API base as primary — reusing API key."
+	else
+		ask_secret SUMMARY_API_KEY "API key for summary provider"
+		if [[ -z "$SUMMARY_API_KEY" ]]; then
+			err "API key cannot be empty."
+			exit 1
+		fi
+	fi
+	SUMMARY_MODEL="summary"
+	success "Summary provider: ${BOLD}$SUMMARY_LLM_MODEL${RESET}"
+else
+	success "Using default provider for summaries (configure later in config)"
+fi
+
 # ─── RAG Memory Search (sub-question within LLM step) ───────────────────────
 
 echo ""
@@ -462,23 +493,9 @@ info "RAG memory search lets Murmur search its conversation history and ingested
 info "It uses FTS5 full-text search (no external dependencies)."
 
 RAG_ENABLED="false"
-SUMMARY_MODEL=""
 if ask_yesno "Enable RAG memory search?" "y"; then
 	RAG_ENABLED="true"
 	success "RAG memory search enabled"
-
-	# Optional: summary model for cheaper summarization
-	echo ""
-	info "You can use a separate (cheaper/faster) LLM for conversation summarization."
-	info "Leave empty to use the default provider ($LLM_PROVIDER_ID)."
-	if ask_yesno "Configure a separate summary model?" "n"; then
-		ask SUMMARY_MODEL "Summary model provider ID (must be configured in [llm.providers])" ""
-		if [[ -n "$SUMMARY_MODEL" ]]; then
-			success "Summary model: ${BOLD}$SUMMARY_MODEL${RESET}"
-		else
-			success "Using default provider for summaries"
-		fi
-	fi
 else
 	success "RAG disabled (enable later in config)"
 fi
@@ -792,6 +809,11 @@ else
 
 		if [[ -n "$IRC_SERVER_PASS" ]]; then
 			vault_store_bare "irc-server-password" "$IRC_SERVER_PASS"
+		fi
+
+		# Store summary provider API key (only if it's a separate key, not reusing primary)
+		if [[ -n "${SUMMARY_API_KEY:-}" && "$SUMMARY_API_KEY" != vault:* ]]; then
+			vault_store_bare "summary-api-key" "$SUMMARY_API_KEY"
 		fi
 	else
 		info "[dry-run] Would store vault secrets"

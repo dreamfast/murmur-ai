@@ -10,7 +10,8 @@
 #   TOOL_SHELL, TOOL_CODE_EXEC, TOOL_RSS, TOOL_DNS, TOOL_HTTP,
 #   TOOL_IRC_MANAGE, TOOL_CONFIG_MANAGE, TOOL_SYSTEMINFO, TOOL_SEARXNG,
 #   TOOL_BROWSER, TOOL_OPENCODE, OPER_PASS, OPENCODE_API_KEY,
-#   RAG_ENABLED, SUMMARY_MODEL (for server config)
+#   RAG_ENABLED, SUMMARY_MODEL, SUMMARY_API_BASE, SUMMARY_LLM_MODEL,
+#   SUMMARY_API_KEY (for server config)
 # Additional for client: CLIENT_ID, CLIENT_HOSTNAME, CLIENT_AUTONOMY,
 #   IRC_PASSWORD_TOML, CLIENT_NICK_SAFE, BUS_KEY_TOML, VAULT_ENABLED,
 #   CT_* flags, API_ENABLED (for standalone client config)
@@ -105,6 +106,25 @@ TOML
 	if [[ "${LLM_REASONING:-false}" == "true" ]]; then
 		cat <<TOML
 reasoning = true
+TOML
+	fi
+
+	# Summary provider (optional, for cheaper/faster summarization + iteration status)
+	if [[ -n "${SUMMARY_MODEL:-}" && -n "${SUMMARY_API_BASE:-}" ]]; then
+		local summary_key_toml
+		if [[ "$SUMMARY_API_KEY" == vault:* ]]; then
+			summary_key_toml="$SUMMARY_API_KEY"
+		else
+			summary_key_toml="vault:summary-api-key"
+		fi
+		cat <<TOML
+
+[llm.providers.summary]
+api_base = "$(toml_escape "$SUMMARY_API_BASE")"
+api_key = "$summary_key_toml"
+model = "$(toml_escape "$SUMMARY_LLM_MODEL")"
+max_tokens = 512
+temperature = 0.3
 TOML
 	fi
 
