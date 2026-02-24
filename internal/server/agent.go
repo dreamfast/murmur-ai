@@ -87,6 +87,9 @@ type Agent struct {
 	mu        sync.RWMutex                        // protects cfg (agentConfig fields)
 	cfg       agentConfig
 
+	summaryProvider llm.Provider    // optional smaller/faster LLM for iteration summaries and pause summaries; may be nil
+	lifecycleCtx    context.Context // server lifecycle context for stop-summary calls; defaults to context.Background()
+
 	serverTools     *ToolRegistry
 	registry        *Registry
 	memory          *Memory
@@ -172,6 +175,11 @@ type AgentParams struct {
 	Verbose bool
 	// Debug holds granular debug log category flags.
 	Debug config.DebugConfig
+	// SummaryProvider is an optional smaller/faster LLM used for generating
+	// iteration status summaries and pause summaries. When nil, the primary
+	// provider is used for pause summaries and "thinking..." is shown for
+	// iteration status.
+	SummaryProvider llm.Provider
 	// Logger is the structured logger.
 	Logger *slog.Logger
 }
@@ -197,6 +205,8 @@ func NewAgent(p AgentParams) *Agent {
 			verbose:         p.Verbose,
 			debug:           p.Debug,
 		},
+		summaryProvider: p.SummaryProvider,
+		lifecycleCtx:    context.Background(),
 		serverTools:     serverTools,
 		registry:        p.Registry,
 		memory:          p.Memory,
@@ -219,6 +229,13 @@ func NewAgent(p AgentParams) *Agent {
 	}
 	a.fallbacks.Store(&fallbacks)
 	return a
+}
+
+// SetLifecycleContext sets the server lifecycle context on the Agent. This
+// context is used to derive timeout contexts for stop-summary LLM calls,
+// ensuring they are cancelled on server shutdown. Must be called before Run.
+func (a *Agent) SetLifecycleContext(ctx context.Context) {
+	a.lifecycleCtx = ctx
 }
 
 // loadProviders returns the current providers map from the atomic pointer.

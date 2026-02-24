@@ -416,6 +416,7 @@ func New(cfg *config.ServerConfig, configPath string, logger *slog.Logger) (*Ser
 		ApprovalTimeout:     approvalTimeout,
 		Verbose:             cfg.Server.Verbose,
 		Debug:               cfg.Debug,
+		SummaryProvider:     summaryProvider,
 		Logger:              logger,
 	})
 
@@ -657,8 +658,9 @@ func (s *Server) Run(ctx context.Context) error {
 	s.logger.Info("starting murmur server")
 
 	// Propagate the lifecycle context to Memory so summarization timeout
-	// contexts are cancelled on shutdown.
+	// contexts are cancelled on shutdown, and to Agent for stop-summary calls.
 	s.memory.SetLifecycleContext(ctx)
+	s.agent.SetLifecycleContext(ctx)
 
 	// Wire the bus receiver to the message handler.
 	s.handler.RegisterBusHandler(s.receiver.HandleRaw)
