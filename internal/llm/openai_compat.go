@@ -111,6 +111,12 @@ func (p *OpenAICompatProvider) Name() string {
 	return p.name
 }
 
+// Model returns the model identifier used by this provider (e.g.,
+// "claude-sonnet-4-5", "gpt-4o").
+func (p *OpenAICompatProvider) Model() string {
+	return p.model
+}
+
 // openAIRequest is the JSON body sent to the chat completions endpoint.
 type openAIRequest struct {
 	Model       string            `json:"model"`

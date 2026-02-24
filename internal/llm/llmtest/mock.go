@@ -12,6 +12,7 @@ import (
 // It records all calls for assertions.
 type MockProvider struct {
 	NameVal   string
+	ModelVal  string
 	Responses []*llm.ChatResponse
 	Errors    []error
 	Calls     []*llm.ChatRequest
@@ -23,6 +24,14 @@ type MockProvider struct {
 // Name returns the mock provider's name.
 func (m *MockProvider) Name() string {
 	return m.NameVal
+}
+
+// Model returns the mock provider's model identifier.
+func (m *MockProvider) Model() string {
+	if m.ModelVal != "" {
+		return m.ModelVal
+	}
+	return "mock-model"
 }
 
 // ChatCompletion returns the next predetermined response or error.

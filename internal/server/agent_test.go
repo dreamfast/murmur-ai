@@ -3101,7 +3101,8 @@ type blockingProvider struct {
 	callCount atomic.Int32
 }
 
-func (b *blockingProvider) Name() string { return b.name }
+func (b *blockingProvider) Name() string  { return b.name }
+func (b *blockingProvider) Model() string { return "blocking-model" }
 
 func (b *blockingProvider) ChatCompletion(ctx context.Context, _ *llm.ChatRequest) (*llm.ChatResponse, error) {
 	b.callCount.Add(1)

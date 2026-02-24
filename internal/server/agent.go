@@ -15,6 +15,7 @@ import (
 
 	"murmur/internal/bus"
 	"murmur/internal/config"
+	"murmur/internal/db"
 	"murmur/internal/irc"
 	"murmur/internal/llm"
 )
@@ -92,6 +93,10 @@ type taskModeKey struct{}
 // tries this provider before the channel and global defaults.
 type taskProviderKey struct{}
 
+// requestTypeKey is a context key that carries the request type for statistics
+// tracking. Values are "chat", "task", or "event".
+type requestTypeKey struct{}
+
 // ephemeralSeq is an atomic counter used to generate unique ephemeral channel
 // keys for scheduled tasks and events. This prevents key collisions when the
 // same task fires concurrently (e.g., overlapping executions of a recurring task).
@@ -120,6 +125,7 @@ type Agent struct {
 	cfg       agentConfig
 
 	summaryProvider llm.Provider    // optional smaller/faster LLM for iteration summaries and pause summaries; may be nil
+	statsCollector  *StatsCollector // async usage stats writer; nil-safe (no-op when nil)
 	lifecycleCtx    context.Context // server lifecycle context for stop-summary calls; defaults to context.Background()
 
 	serverTools     *ToolRegistry
@@ -219,6 +225,9 @@ type AgentParams struct {
 	// provider is used for pause summaries and "thinking..." is shown for
 	// iteration status.
 	SummaryProvider llm.Provider
+	// StatsCollector is the async usage statistics writer. May be nil if
+	// statistics tracking is disabled.
+	StatsCollector *StatsCollector
 	// Logger is the structured logger.
 	Logger *slog.Logger
 }
@@ -245,6 +254,7 @@ func NewAgent(p AgentParams) *Agent {
 			debug:           p.Debug,
 		},
 		summaryProvider: p.SummaryProvider,
+		statsCollector:  p.StatsCollector,
 		lifecycleCtx:    context.Background(),
 		serverTools:     serverTools,
 		registry:        p.Registry,
@@ -439,6 +449,9 @@ func (a *Agent) HandleMessage(ctx context.Context, channel, nick, message string
 	ctx = a.startChannelContext(ctx, channel)
 	defer a.clearChannelContext(channel)
 
+	// Tag the context with request type for statistics tracking.
+	ctx = context.WithValue(ctx, requestTypeKey{}, "chat")
+
 	// Store the user message in memory.
 	if err := a.memory.AddMessage(channel, llm.RoleUser, nick+": "+message, "", ""); err != nil {
 		a.logger.Error("failed to store user message", "error", err, "channel", channel)
@@ -479,6 +492,9 @@ func (a *Agent) RunScheduledTask(ctx context.Context, taskID int64, channel, tas
 
 	// Mark context as task mode so buildSystemPrompt appends focus instruction.
 	ctx = context.WithValue(ctx, taskModeKey{}, true)
+
+	// Tag the context with request type for statistics tracking.
+	ctx = context.WithValue(ctx, requestTypeKey{}, "task")
 
 	// Inject per-task provider override if specified.
 	if provider != "" {
@@ -530,6 +546,9 @@ func (a *Agent) HandleEvent(ctx context.Context, channel, nick, source, eventTyp
 
 	// Mark context as task mode so buildSystemPrompt appends focus instruction.
 	ctx = context.WithValue(ctx, taskModeKey{}, true)
+
+	// Tag the context with request type for statistics tracking.
+	ctx = context.WithValue(ctx, requestTypeKey{}, "event")
 
 	content := fmt.Sprintf("[Event from %s] %s: %s", source, eventType, summary)
 	if data != "" {
@@ -789,6 +808,22 @@ func (a *Agent) runLoop(ctx context.Context, memoryChannel, ircChannel, nick str
 				"iteration", i,
 				"latency", llmDuration,
 			)
+			// Record the final outcome of the provider chain in statistics.
+			// Individual failover attempts are not recorded separately — only
+			// the terminal result matters for usage tracking.
+			errMsg := truncate(err.Error(), 500)
+			a.statsCollector.Record(&db.UsageStat{
+				Channel:      ircChannel,
+				Nick:         nick,
+				Provider:     usedProvider.Name(),
+				Model:        usedProvider.Model(),
+				LatencyMs:    llmDuration.Milliseconds(),
+				Iteration:    i,
+				RequestType:  requestTypeFromContext(ctx),
+				Status:       "error",
+				ErrorMessage: &errMsg,
+				ToolDetails:  "[]",
+			})
 			a.send(ircChannel, fmt.Sprintf("error: LLM call failed: %v", err))
 			return
 		}
@@ -835,7 +870,9 @@ func (a *Agent) runLoop(ctx context.Context, memoryChannel, ircChannel, nick str
 				a.logger.Error("failed to store assistant tool call message", "error", err)
 			}
 
-			// Route each tool call and store results.
+			// Route each tool call and store results. Collect tool details
+			// for statistics tracking.
+			var toolDetails []db.ToolDetail
 			for _, tc := range resp.ToolCalls {
 				if cfg.debug.LogToolCalls {
 					a.logger.Info("routing tool call",
@@ -847,7 +884,14 @@ func (a *Agent) runLoop(ctx context.Context, memoryChannel, ircChannel, nick str
 				toolStart := time.Now()
 				result, routeErr := a.routeToolCall(ctx, ircChannel, tc.Function.Name, json.RawMessage(tc.Function.Arguments))
 				toolDuration := time.Since(toolStart)
+
+				td := db.ToolDetail{
+					Name:       tc.Function.Name,
+					DurationMs: toolDuration.Milliseconds(),
+					Status:     "ok",
+				}
 				if routeErr != nil {
+					td.Status = "error"
 					if cfg.debug.LogToolCalls {
 						a.logger.Error("tool_call_result",
 							"tool", tc.Function.Name,
@@ -872,6 +916,7 @@ func (a *Agent) runLoop(ctx context.Context, memoryChannel, ircChannel, nick str
 						)
 					}
 				}
+				toolDetails = append(toolDetails, td)
 
 				// Store the tool result in memory (ephemeral context).
 				if err := a.memory.AddMessage(memoryChannel, llm.RoleTool, result, tc.Function.Name, tc.ID); err != nil {
@@ -879,9 +924,43 @@ func (a *Agent) runLoop(ctx context.Context, memoryChannel, ircChannel, nick str
 				}
 			}
 
+			// Record successful LLM call with tool details in statistics.
+			toolDetailsJSON, _ := json.Marshal(toolDetails)
+			a.statsCollector.Record(&db.UsageStat{
+				Channel:          ircChannel,
+				Nick:             nick,
+				Provider:         usedProvider.Name(),
+				Model:            usedProvider.Model(),
+				PromptTokens:     resp.Usage.PromptTokens,
+				CompletionTokens: resp.Usage.CompletionTokens,
+				TotalTokens:      resp.Usage.TotalTokens,
+				ToolCallsCount:   len(resp.ToolCalls),
+				ToolDetails:      string(toolDetailsJSON),
+				LatencyMs:        llmDuration.Milliseconds(),
+				Iteration:        i,
+				RequestType:      requestTypeFromContext(ctx),
+				Status:           "ok",
+			})
+
 			// Continue the loop — the LLM will see the tool results.
 			continue
 		}
+
+		// Record successful LLM call (text-only, no tool calls) in statistics.
+		a.statsCollector.Record(&db.UsageStat{
+			Channel:          ircChannel,
+			Nick:             nick,
+			Provider:         usedProvider.Name(),
+			Model:            usedProvider.Model(),
+			PromptTokens:     resp.Usage.PromptTokens,
+			CompletionTokens: resp.Usage.CompletionTokens,
+			TotalTokens:      resp.Usage.TotalTokens,
+			LatencyMs:        llmDuration.Milliseconds(),
+			Iteration:        i,
+			RequestType:      requestTypeFromContext(ctx),
+			Status:           "ok",
+			ToolDetails:      "[]",
+		})
 
 		// Text-only response — store in memory and send to IRC.
 		if resp.Content != "" {
@@ -1842,4 +1921,13 @@ func (a *Agent) status(channel string, verbose bool, message string) {
 		return
 	}
 	a.conn.Send(channel, formatted)
+}
+
+// requestTypeFromContext extracts the request type from the context. Returns
+// "chat" as the default if no type was set.
+func requestTypeFromContext(ctx context.Context) string {
+	if rt, ok := ctx.Value(requestTypeKey{}).(string); ok && rt != "" {
+		return rt
+	}
+	return "chat"
 }

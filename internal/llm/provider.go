@@ -21,6 +21,9 @@ type Provider interface {
 	ChatCompletion(ctx context.Context, req *ChatRequest) (*ChatResponse, error)
 	// Name returns the provider's configured name.
 	Name() string
+	// Model returns the model identifier used by this provider (e.g.,
+	// "claude-sonnet-4-5", "gpt-4o"). Used for statistics tracking.
+	Model() string
 }
 
 // ChatRequest holds the parameters for a chat completion request.
