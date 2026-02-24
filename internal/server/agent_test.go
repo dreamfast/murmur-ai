@@ -3248,7 +3248,7 @@ func TestAgent_StopChannel_NoActiveLoop(t *testing.T) {
 	}
 }
 
-func TestAgent_AsyncIterationSummary_WithProvider(t *testing.T) {
+func TestAgent_IterationSummary_WithProvider(t *testing.T) {
 	t.Parallel()
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -3290,25 +3290,17 @@ func TestAgent_AsyncIterationSummary_WithProvider(t *testing.T) {
 	summaryMock := &llmtest.MockProvider{
 		NameVal: "summary",
 		Responses: []*llm.ChatResponse{
-			{Content: "Running shell commands to check system status."},
+			{Content: "Ran shell commands to check system status."},
+			{Content: "Executed another shell command."},
+			{Content: "Ran a third shell command."},
 		},
 	}
 
 	providers := map[string]llm.Provider{"primary": primaryMock}
 
 	var sent []string
-	var sentMu sync.Mutex
 	appendSent := func(_, message string) {
-		sentMu.Lock()
-		defer sentMu.Unlock()
 		sent = append(sent, message)
-	}
-	getSent := func() []string {
-		sentMu.Lock()
-		defer sentMu.Unlock()
-		result := make([]string, len(sent))
-		copy(result, sent)
-		return result
 	}
 
 	agent := NewAgent(AgentParams{
@@ -3333,49 +3325,38 @@ func TestAgent_AsyncIterationSummary_WithProvider(t *testing.T) {
 
 	agent.HandleMessage(context.Background(), "#test-summary", "user1", "run commands")
 
-	// Wait a bit for async summary goroutines to complete.
-	time.Sleep(200 * time.Millisecond)
-
-	messages := getSent()
-
 	// The summary provider should have been called for iterations 2+ (not iteration 1).
-	// After the sleep, all async goroutines should have completed.
 	summaryCallCount := len(summaryMock.Calls)
-
-	// We expect at least 1 summary call (iterations 2 and 3 may trigger async summaries).
 	if summaryCallCount == 0 {
 		t.Error("expected summary provider to be called at least once for iteration summaries")
 	}
 
-	// Check that at least one message contains the summary text pattern.
+	// Synchronous: summary messages must appear in order before tool calls.
 	foundSummary := false
-	for _, msg := range messages {
+	for _, msg := range sent {
 		if strings.Contains(msg, "[iteration") && strings.Contains(msg, "shell") {
 			foundSummary = true
 			break
 		}
 	}
-	// The async summary may or may not arrive before the final response
-	// depending on timing, so we check the summary provider was called
-	// rather than requiring the message to appear in a specific order.
-	if !foundSummary && summaryCallCount > 0 {
-		t.Logf("summary provider was called %d times but no summary message found in sent: %v", summaryCallCount, messages)
+	if !foundSummary {
+		t.Errorf("expected iteration summary message containing tool description, got: %v", sent)
 	}
 
 	// Verify the final response was sent.
 	foundFinal := false
-	for _, msg := range messages {
+	for _, msg := range sent {
 		if strings.Contains(msg, "Done! I ran 3 commands") {
 			foundFinal = true
 			break
 		}
 	}
 	if !foundFinal {
-		t.Errorf("expected final response, got: %v", messages)
+		t.Errorf("expected final response, got: %v", sent)
 	}
 }
 
-func TestAgent_AsyncIterationSummary_NilProvider(t *testing.T) {
+func TestAgent_IterationSummary_NilProvider(t *testing.T) {
 	t.Parallel()
 	env := newTestAgentEnv(t)
 
@@ -3410,7 +3391,7 @@ func TestAgent_AsyncIterationSummary_NilProvider(t *testing.T) {
 	}
 }
 
-func TestAgent_AsyncIterationSummary_Timeout(t *testing.T) {
+func TestAgent_IterationSummary_Error(t *testing.T) {
 	t.Parallel()
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -3446,27 +3427,17 @@ func TestAgent_AsyncIterationSummary_Timeout(t *testing.T) {
 		},
 	}
 
-	// Summary provider: always errors (simulates timeout/failure).
+	// Summary provider: always errors (simulates failure).
 	summaryMock := &llmtest.MockProvider{
-		NameVal: "summary-slow",
-		Errors:  []error{errors.New("timeout")},
+		NameVal: "summary-fail",
+		Errors:  []error{errors.New("api error")},
 	}
 
 	providers := map[string]llm.Provider{"primary": primaryMock}
 
 	var sent []string
-	var sentMu sync.Mutex
 	appendSent := func(_, message string) {
-		sentMu.Lock()
-		defer sentMu.Unlock()
 		sent = append(sent, message)
-	}
-	getSent := func() []string {
-		sentMu.Lock()
-		defer sentMu.Unlock()
-		result := make([]string, len(sent))
-		copy(result, sent)
-		return result
 	}
 
 	agent := NewAgent(AgentParams{
@@ -3489,22 +3460,17 @@ func TestAgent_AsyncIterationSummary_Timeout(t *testing.T) {
 		return "ok", nil
 	}
 
-	agent.HandleMessage(context.Background(), "#test-timeout", "user1", "do something")
-
-	// Wait for async goroutines.
-	time.Sleep(200 * time.Millisecond)
-
-	messages := getSent()
+	agent.HandleMessage(context.Background(), "#test-error", "user1", "do something")
 
 	// On summary provider error, should fall back to "thinking..." message.
 	foundThinking := false
-	for _, msg := range messages {
-		if strings.Contains(msg, "thinking...") {
+	for _, msg := range sent {
+		if strings.Contains(msg, "thinking...") && strings.Contains(msg, "iteration 2") {
 			foundThinking = true
 			break
 		}
 	}
 	if !foundThinking {
-		t.Errorf("expected 'thinking...' fallback on summary error, got: %v", messages)
+		t.Errorf("expected 'thinking...' fallback on summary error, got: %v", sent)
 	}
 }

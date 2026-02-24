@@ -117,7 +117,7 @@ debug:
     recover-from-errors: true
 
 datastore:
-    path: ircd.db
+    path: db/ircd.db
     autoupgrade: true
 
 languages:
