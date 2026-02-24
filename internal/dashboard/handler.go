@@ -91,6 +91,7 @@ func NewHandler(sessions *SessionStore, cfg config.DashboardConfig, ircCfg confi
 			channels:  admin.Channels,
 			providers: admin.Providers,
 			reloader:  admin.Reloader,
+			stats:     admin.Stats,
 		}
 	}
 	return h

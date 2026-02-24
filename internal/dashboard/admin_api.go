@@ -1,6 +1,7 @@
 package dashboard
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -94,6 +95,92 @@ type ConfigReloader interface {
 	Reload() error
 }
 
+// StatsProvider provides usage statistics data for the admin API.
+// Implemented by an adapter wrapping *db.DB in the server package.
+// All methods accept a context.Context for request cancellation and timeouts.
+type StatsProvider interface {
+	GetSummary(ctx context.Context, q StatsQueryParams) (*StatsSummaryDTO, error)
+	GetAggregate(ctx context.Context, q StatsQueryParams, period string) ([]StatsAggregationDTO, error)
+	GetTopTools(ctx context.Context, q StatsQueryParams) ([]ToolUsageDTO, error)
+	GetProviderBreakdown(ctx context.Context, q StatsQueryParams) ([]ProviderStatDTO, error)
+	ListStats(ctx context.Context, q StatsQueryParams) ([]UsageStatDTO, int, error)
+}
+
+// StatsQueryParams holds validated query parameters for stats endpoints.
+type StatsQueryParams struct {
+	Channel     string
+	Nick        string
+	Provider    string
+	RequestType string
+	From        time.Time
+	To          time.Time
+	Limit       int
+	Offset      int
+}
+
+// StatsSummaryDTO mirrors db.StatsSummary for the dashboard API.
+type StatsSummaryDTO struct {
+	TotalRequests  int     `json:"total_requests"`
+	TotalTokens    int64   `json:"total_tokens"`
+	TotalToolCalls int     `json:"total_tool_calls"`
+	AvgLatencyMs   float64 `json:"avg_latency_ms"`
+	ErrorCount     int     `json:"error_count"`
+	TopProvider    string  `json:"top_provider"`
+	TopChannel     string  `json:"top_channel"`
+}
+
+// StatsAggregationDTO mirrors db.StatsAggregation for the dashboard API.
+type StatsAggregationDTO struct {
+	Period                string  `json:"period"`
+	TotalRequests         int     `json:"total_requests"`
+	TotalPromptTokens     int64   `json:"total_prompt_tokens"`
+	TotalCompletionTokens int64   `json:"total_completion_tokens"`
+	TotalTokens           int64   `json:"total_tokens"`
+	TotalToolCalls        int     `json:"total_tool_calls"`
+	AvgLatencyMs          float64 `json:"avg_latency_ms"`
+	ErrorCount            int     `json:"error_count"`
+}
+
+// ToolUsageDTO mirrors db.ToolUsageStat for the dashboard API.
+type ToolUsageDTO struct {
+	Name          string  `json:"name"`
+	Count         int     `json:"count"`
+	AvgDurationMs float64 `json:"avg_duration_ms"`
+	ErrorCount    int     `json:"error_count"`
+}
+
+// ProviderStatDTO mirrors db.ProviderStat for the dashboard API.
+type ProviderStatDTO struct {
+	Provider              string  `json:"provider"`
+	TotalRequests         int     `json:"total_requests"`
+	TotalPromptTokens     int64   `json:"total_prompt_tokens"`
+	TotalCompletionTokens int64   `json:"total_completion_tokens"`
+	TotalTokens           int64   `json:"total_tokens"`
+	TotalToolCalls        int     `json:"total_tool_calls"`
+	AvgLatencyMs          float64 `json:"avg_latency_ms"`
+	ErrorCount            int     `json:"error_count"`
+}
+
+// UsageStatDTO mirrors db.UsageStat for the dashboard API.
+type UsageStatDTO struct {
+	ID               int64     `json:"id"`
+	Timestamp        time.Time `json:"timestamp"`
+	Channel          string    `json:"channel"`
+	Nick             string    `json:"nick"`
+	Provider         string    `json:"provider"`
+	Model            string    `json:"model"`
+	PromptTokens     int       `json:"prompt_tokens"`
+	CompletionTokens int       `json:"completion_tokens"`
+	TotalTokens      int       `json:"total_tokens"`
+	ToolCallsCount   int       `json:"tool_calls_count"`
+	ToolDetails      string    `json:"tool_details"`
+	LatencyMs        int64     `json:"latency_ms"`
+	Iteration        int       `json:"iteration"`
+	RequestType      string    `json:"request_type"`
+	Status           string    `json:"status"`
+	ErrorMessage     *string   `json:"error_message,omitempty"`
+}
+
 // AdminDeps bundles all dependencies needed by the admin API endpoints.
 // Passed to NewHandler to keep the constructor signature manageable.
 type AdminDeps struct {
@@ -104,6 +191,7 @@ type AdminDeps struct {
 	Channels  ChannelLister
 	Providers ProviderLister
 	Reloader  ConfigReloader
+	Stats     StatsProvider
 }
 
 // adminAPI groups the admin API dependencies on the Handler for cleaner access.
@@ -115,6 +203,7 @@ type adminAPI struct {
 	channels  ChannelLister
 	providers ProviderLister
 	reloader  ConfigReloader
+	stats     StatsProvider
 }
 
 // enabled returns true if the admin API has been wired with dependencies.
@@ -206,6 +295,18 @@ func (h *Handler) routeAdminAPI(w http.ResponseWriter, r *http.Request) bool {
 	// Providers
 	case r.Method == http.MethodGet && apiPath == "/providers":
 		h.handleAdminListProviders(w, r)
+
+	// Statistics
+	case r.Method == http.MethodGet && apiPath == "/stats/summary":
+		h.handleAdminStatsSummary(w, r)
+	case r.Method == http.MethodGet && apiPath == "/stats/aggregate":
+		h.handleAdminStatsAggregate(w, r)
+	case r.Method == http.MethodGet && apiPath == "/stats/tools":
+		h.handleAdminStatsTools(w, r)
+	case r.Method == http.MethodGet && apiPath == "/stats/providers":
+		h.handleAdminStatsProviders(w, r)
+	case r.Method == http.MethodGet && apiPath == "/stats":
+		h.handleAdminStatsList(w, r)
 
 	// System
 	case r.Method == http.MethodPost && apiPath == "/system/reload":
@@ -910,6 +1011,228 @@ func (h *Handler) handleAdminReload(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 	h.jsonResponse(w, http.StatusOK, successResponse{OK: true})
+}
+
+// --- Statistics API ---
+
+// maxStatsLimit is the maximum number of rows returned by the stats list endpoint.
+const maxStatsLimit = 200
+
+// maxDateRangeDays is the maximum date range span allowed for stats queries.
+const maxDateRangeDays = 365
+
+// allowedPeriods is the set of valid aggregation periods.
+var allowedPeriods = map[string]bool{
+	"hour":  true,
+	"day":   true,
+	"week":  true,
+	"month": true,
+}
+
+// allowedRequestTypes is the set of valid request_type filter values.
+var allowedRequestTypes = map[string]bool{
+	"chat":    true,
+	"task":    true,
+	"event":   true,
+	"summary": true,
+}
+
+// parseStatsQuery extracts and validates StatsQueryParams from URL query
+// parameters. Returns an error string if validation fails.
+func parseStatsQuery(q url.Values) (StatsQueryParams, string) {
+	var p StatsQueryParams
+
+	p.Channel = q.Get("channel")
+	p.Nick = q.Get("nick")
+	p.Provider = q.Get("provider")
+
+	if rt := q.Get("request_type"); rt != "" {
+		if !allowedRequestTypes[rt] {
+			return p, "request_type must be one of: chat, task, event, summary"
+		}
+		p.RequestType = rt
+	}
+
+	if fromStr := q.Get("from"); fromStr != "" {
+		t, err := time.Parse(time.RFC3339, fromStr)
+		if err != nil {
+			return p, "from must be RFC3339 format"
+		}
+		p.From = t
+	}
+
+	if toStr := q.Get("to"); toStr != "" {
+		t, err := time.Parse(time.RFC3339, toStr)
+		if err != nil {
+			return p, "to must be RFC3339 format"
+		}
+		p.To = t
+	}
+
+	// Validate date range span.
+	if !p.From.IsZero() && !p.To.IsZero() {
+		if p.To.Before(p.From) {
+			return p, "to must be after from"
+		}
+		if p.To.Sub(p.From).Hours()/24 > maxDateRangeDays {
+			return p, fmt.Sprintf("date range must not exceed %d days", maxDateRangeDays)
+		}
+	}
+
+	if limitStr := q.Get("limit"); limitStr != "" {
+		limit, err := strconv.Atoi(limitStr)
+		if err != nil || limit < 1 {
+			return p, "limit must be a positive integer"
+		}
+		if limit > maxStatsLimit {
+			limit = maxStatsLimit
+		}
+		p.Limit = limit
+	}
+
+	if offsetStr := q.Get("offset"); offsetStr != "" {
+		offset, err := strconv.Atoi(offsetStr)
+		if err != nil || offset < 0 {
+			return p, "offset must be a non-negative integer"
+		}
+		p.Offset = offset
+	}
+
+	return p, ""
+}
+
+// handleAdminStatsSummary returns a high-level summary of usage statistics.
+func (h *Handler) handleAdminStatsSummary(w http.ResponseWriter, r *http.Request) {
+	if h.api.stats == nil {
+		h.jsonResponse(w, http.StatusServiceUnavailable, errorResponse{Error: "statistics not available"})
+		return
+	}
+
+	q, errMsg := parseStatsQuery(r.URL.Query())
+	if errMsg != "" {
+		h.jsonResponse(w, http.StatusBadRequest, errorResponse{Error: errMsg})
+		return
+	}
+
+	summary, err := h.api.stats.GetSummary(r.Context(), q)
+	if err != nil {
+		h.logger.Error("admin API: stats summary", "error", err)
+		h.jsonResponse(w, http.StatusInternalServerError, errorResponse{Error: "failed to get stats summary"})
+		return
+	}
+	h.jsonResponse(w, http.StatusOK, successResponse{OK: true, Data: summary})
+}
+
+// handleAdminStatsAggregate returns time-bucketed aggregation of usage statistics.
+func (h *Handler) handleAdminStatsAggregate(w http.ResponseWriter, r *http.Request) {
+	if h.api.stats == nil {
+		h.jsonResponse(w, http.StatusServiceUnavailable, errorResponse{Error: "statistics not available"})
+		return
+	}
+
+	q, errMsg := parseStatsQuery(r.URL.Query())
+	if errMsg != "" {
+		h.jsonResponse(w, http.StatusBadRequest, errorResponse{Error: errMsg})
+		return
+	}
+
+	period := r.URL.Query().Get("period")
+	if period == "" {
+		period = "day"
+	}
+	if !allowedPeriods[period] {
+		h.jsonResponse(w, http.StatusBadRequest, errorResponse{Error: "period must be one of: hour, day, week, month"})
+		return
+	}
+
+	agg, err := h.api.stats.GetAggregate(r.Context(), q, period)
+	if err != nil {
+		h.logger.Error("admin API: stats aggregate", "error", err)
+		h.jsonResponse(w, http.StatusInternalServerError, errorResponse{Error: "failed to get stats aggregate"})
+		return
+	}
+	if agg == nil {
+		agg = []StatsAggregationDTO{}
+	}
+	h.jsonResponse(w, http.StatusOK, successResponse{OK: true, Data: agg})
+}
+
+// handleAdminStatsTools returns aggregated tool usage statistics.
+func (h *Handler) handleAdminStatsTools(w http.ResponseWriter, r *http.Request) {
+	if h.api.stats == nil {
+		h.jsonResponse(w, http.StatusServiceUnavailable, errorResponse{Error: "statistics not available"})
+		return
+	}
+
+	q, errMsg := parseStatsQuery(r.URL.Query())
+	if errMsg != "" {
+		h.jsonResponse(w, http.StatusBadRequest, errorResponse{Error: errMsg})
+		return
+	}
+
+	tools, err := h.api.stats.GetTopTools(r.Context(), q)
+	if err != nil {
+		h.logger.Error("admin API: stats tools", "error", err)
+		h.jsonResponse(w, http.StatusInternalServerError, errorResponse{Error: "failed to get tool stats"})
+		return
+	}
+	if tools == nil {
+		tools = []ToolUsageDTO{}
+	}
+	h.jsonResponse(w, http.StatusOK, successResponse{OK: true, Data: tools})
+}
+
+// handleAdminStatsProviders returns aggregated per-provider statistics.
+func (h *Handler) handleAdminStatsProviders(w http.ResponseWriter, r *http.Request) {
+	if h.api.stats == nil {
+		h.jsonResponse(w, http.StatusServiceUnavailable, errorResponse{Error: "statistics not available"})
+		return
+	}
+
+	q, errMsg := parseStatsQuery(r.URL.Query())
+	if errMsg != "" {
+		h.jsonResponse(w, http.StatusBadRequest, errorResponse{Error: errMsg})
+		return
+	}
+
+	providers, err := h.api.stats.GetProviderBreakdown(r.Context(), q)
+	if err != nil {
+		h.logger.Error("admin API: stats providers", "error", err)
+		h.jsonResponse(w, http.StatusInternalServerError, errorResponse{Error: "failed to get provider stats"})
+		return
+	}
+	if providers == nil {
+		providers = []ProviderStatDTO{}
+	}
+	h.jsonResponse(w, http.StatusOK, successResponse{OK: true, Data: providers})
+}
+
+// handleAdminStatsList returns a paginated list of raw usage statistics.
+func (h *Handler) handleAdminStatsList(w http.ResponseWriter, r *http.Request) {
+	if h.api.stats == nil {
+		h.jsonResponse(w, http.StatusServiceUnavailable, errorResponse{Error: "statistics not available"})
+		return
+	}
+
+	q, errMsg := parseStatsQuery(r.URL.Query())
+	if errMsg != "" {
+		h.jsonResponse(w, http.StatusBadRequest, errorResponse{Error: errMsg})
+		return
+	}
+
+	stats, total, err := h.api.stats.ListStats(r.Context(), q)
+	if err != nil {
+		h.logger.Error("admin API: stats list", "error", err)
+		h.jsonResponse(w, http.StatusInternalServerError, errorResponse{Error: "failed to list stats"})
+		return
+	}
+	if stats == nil {
+		stats = []UsageStatDTO{}
+	}
+	h.jsonResponse(w, http.StatusOK, successResponse{OK: true, Data: map[string]any{
+		"stats": stats,
+		"total": total,
+	}})
 }
 
 // --- Helpers ---

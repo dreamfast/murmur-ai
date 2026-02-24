@@ -2,12 +2,14 @@ package dashboard
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 	"time"
 
@@ -154,6 +156,37 @@ func (m *mockProviderLister) ListProviders() []ProviderInfo {
 	return m.providers
 }
 
+// mockStatsProvider implements StatsProvider for tests.
+type mockStatsProvider struct {
+	summary   *StatsSummaryDTO
+	aggregate []StatsAggregationDTO
+	tools     []ToolUsageDTO
+	providers []ProviderStatDTO
+	stats     []UsageStatDTO
+	total     int
+	err       error
+}
+
+func (m *mockStatsProvider) GetSummary(_ context.Context, _ StatsQueryParams) (*StatsSummaryDTO, error) {
+	return m.summary, m.err
+}
+
+func (m *mockStatsProvider) GetAggregate(_ context.Context, _ StatsQueryParams, _ string) ([]StatsAggregationDTO, error) {
+	return m.aggregate, m.err
+}
+
+func (m *mockStatsProvider) GetTopTools(_ context.Context, _ StatsQueryParams) ([]ToolUsageDTO, error) {
+	return m.tools, m.err
+}
+
+func (m *mockStatsProvider) GetProviderBreakdown(_ context.Context, _ StatsQueryParams) ([]ProviderStatDTO, error) {
+	return m.providers, m.err
+}
+
+func (m *mockStatsProvider) ListStats(_ context.Context, _ StatsQueryParams) ([]UsageStatDTO, int, error) {
+	return m.stats, m.total, m.err
+}
+
 // mockConfigReloader implements ConfigReloader for tests.
 type mockConfigReloader struct {
 	err    error
@@ -224,6 +257,31 @@ func testAdminHandler(t *testing.T, database *db.DB) (*Handler, *SessionStore) {
 			},
 		},
 		Reloader: &mockConfigReloader{},
+		Stats: &mockStatsProvider{
+			summary: &StatsSummaryDTO{
+				TotalRequests:  42,
+				TotalTokens:    12345,
+				TotalToolCalls: 10,
+				AvgLatencyMs:   250.5,
+				ErrorCount:     2,
+				TopProvider:    "openrouter",
+				TopChannel:     "#murmur",
+			},
+			aggregate: []StatsAggregationDTO{
+				{Period: "2026-02-24", TotalRequests: 20, TotalTokens: 6000},
+				{Period: "2026-02-25", TotalRequests: 22, TotalTokens: 6345},
+			},
+			tools: []ToolUsageDTO{
+				{Name: "shell", Count: 15, AvgDurationMs: 1200.0, ErrorCount: 1},
+			},
+			providers: []ProviderStatDTO{
+				{Provider: "openrouter", TotalRequests: 42, TotalTokens: 12345},
+			},
+			stats: []UsageStatDTO{
+				{ID: 1, Channel: "#murmur", Nick: "user1", Provider: "openrouter", Model: "claude", Status: "ok", RequestType: "chat"},
+			},
+			total: 1,
+		},
 	}
 
 	h := NewHandler(store, cfg, ircCfg, nil, admin, logger)
@@ -941,5 +999,473 @@ func TestAdminAPIUsers_InvalidRole(t *testing.T) {
 	decodeResponse(t, w, &resp)
 	if resp.Error != "role must be 'admin' or 'user'" {
 		t.Errorf("error = %q, want %q", resp.Error, "role must be 'admin' or 'user'")
+	}
+}
+
+// --- Statistics API Tests ---
+
+func TestAdminAPIStats_Summary(t *testing.T) {
+	t.Parallel()
+
+	database := newTestDB(t)
+	h, store := testAdminHandler(t, database)
+	sess, _ := store.Create("admin")
+
+	req := adminRequest(t, http.MethodGet, "/dashboard/api/stats/summary", nil, sess)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	var resp struct {
+		OK   bool            `json:"ok"`
+		Data StatsSummaryDTO `json:"data"`
+	}
+	decodeResponse(t, w, &resp)
+	if !resp.OK {
+		t.Error("expected ok=true")
+	}
+	if resp.Data.TotalRequests != 42 {
+		t.Errorf("TotalRequests = %d, want 42", resp.Data.TotalRequests)
+	}
+	if resp.Data.TopProvider != "openrouter" {
+		t.Errorf("TopProvider = %q, want %q", resp.Data.TopProvider, "openrouter")
+	}
+}
+
+func TestAdminAPIStats_SummaryWithFilters(t *testing.T) {
+	t.Parallel()
+
+	database := newTestDB(t)
+	h, store := testAdminHandler(t, database)
+	sess, _ := store.Create("admin")
+
+	req := adminRequest(t, http.MethodGet,
+		"/dashboard/api/stats/summary?channel=%23murmur&provider=openrouter&from=2026-01-01T00:00:00Z&to=2026-12-31T23:59:59Z",
+		nil, sess)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusOK, w.Body.String())
+	}
+}
+
+func TestAdminAPIStats_Aggregate(t *testing.T) {
+	t.Parallel()
+
+	database := newTestDB(t)
+	h, store := testAdminHandler(t, database)
+	sess, _ := store.Create("admin")
+
+	req := adminRequest(t, http.MethodGet, "/dashboard/api/stats/aggregate?period=day", nil, sess)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	var resp struct {
+		OK   bool                  `json:"ok"`
+		Data []StatsAggregationDTO `json:"data"`
+	}
+	decodeResponse(t, w, &resp)
+	if !resp.OK {
+		t.Error("expected ok=true")
+	}
+	if len(resp.Data) != 2 {
+		t.Errorf("got %d aggregation buckets, want 2", len(resp.Data))
+	}
+}
+
+func TestAdminAPIStats_AggregateDefaultPeriod(t *testing.T) {
+	t.Parallel()
+
+	database := newTestDB(t)
+	h, store := testAdminHandler(t, database)
+	sess, _ := store.Create("admin")
+
+	// No period param — should default to "day".
+	req := adminRequest(t, http.MethodGet, "/dashboard/api/stats/aggregate", nil, sess)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusOK, w.Body.String())
+	}
+}
+
+func TestAdminAPIStats_AggregateInvalidPeriod(t *testing.T) {
+	t.Parallel()
+
+	database := newTestDB(t)
+	h, store := testAdminHandler(t, database)
+	sess, _ := store.Create("admin")
+
+	req := adminRequest(t, http.MethodGet, "/dashboard/api/stats/aggregate?period=year", nil, sess)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+}
+
+func TestAdminAPIStats_Tools(t *testing.T) {
+	t.Parallel()
+
+	database := newTestDB(t)
+	h, store := testAdminHandler(t, database)
+	sess, _ := store.Create("admin")
+
+	req := adminRequest(t, http.MethodGet, "/dashboard/api/stats/tools", nil, sess)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	var resp struct {
+		OK   bool           `json:"ok"`
+		Data []ToolUsageDTO `json:"data"`
+	}
+	decodeResponse(t, w, &resp)
+	if !resp.OK {
+		t.Error("expected ok=true")
+	}
+	if len(resp.Data) != 1 {
+		t.Fatalf("got %d tools, want 1", len(resp.Data))
+	}
+	if resp.Data[0].Name != "shell" {
+		t.Errorf("tool name = %q, want %q", resp.Data[0].Name, "shell")
+	}
+}
+
+func TestAdminAPIStats_Providers(t *testing.T) {
+	t.Parallel()
+
+	database := newTestDB(t)
+	h, store := testAdminHandler(t, database)
+	sess, _ := store.Create("admin")
+
+	req := adminRequest(t, http.MethodGet, "/dashboard/api/stats/providers", nil, sess)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	var resp struct {
+		OK   bool              `json:"ok"`
+		Data []ProviderStatDTO `json:"data"`
+	}
+	decodeResponse(t, w, &resp)
+	if !resp.OK {
+		t.Error("expected ok=true")
+	}
+	if len(resp.Data) != 1 {
+		t.Fatalf("got %d providers, want 1", len(resp.Data))
+	}
+	if resp.Data[0].Provider != "openrouter" {
+		t.Errorf("provider = %q, want %q", resp.Data[0].Provider, "openrouter")
+	}
+}
+
+func TestAdminAPIStats_List(t *testing.T) {
+	t.Parallel()
+
+	database := newTestDB(t)
+	h, store := testAdminHandler(t, database)
+	sess, _ := store.Create("admin")
+
+	req := adminRequest(t, http.MethodGet, "/dashboard/api/stats?limit=50&offset=0", nil, sess)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	var resp struct {
+		OK   bool `json:"ok"`
+		Data struct {
+			Stats []UsageStatDTO `json:"stats"`
+			Total int            `json:"total"`
+		} `json:"data"`
+	}
+	decodeResponse(t, w, &resp)
+	if !resp.OK {
+		t.Error("expected ok=true")
+	}
+	if resp.Data.Total != 1 {
+		t.Errorf("total = %d, want 1", resp.Data.Total)
+	}
+	if len(resp.Data.Stats) != 1 {
+		t.Fatalf("got %d stats, want 1", len(resp.Data.Stats))
+	}
+}
+
+func TestAdminAPIStats_InvalidRequestType(t *testing.T) {
+	t.Parallel()
+
+	database := newTestDB(t)
+	h, store := testAdminHandler(t, database)
+	sess, _ := store.Create("admin")
+
+	req := adminRequest(t, http.MethodGet, "/dashboard/api/stats/summary?request_type=invalid", nil, sess)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+}
+
+func TestAdminAPIStats_InvalidDateRange(t *testing.T) {
+	t.Parallel()
+
+	database := newTestDB(t)
+	h, store := testAdminHandler(t, database)
+	sess, _ := store.Create("admin")
+
+	// to before from
+	req := adminRequest(t, http.MethodGet,
+		"/dashboard/api/stats/summary?from=2026-12-31T00:00:00Z&to=2026-01-01T00:00:00Z",
+		nil, sess)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+
+	var resp errorResponse
+	decodeResponse(t, w, &resp)
+	if resp.Error != "to must be after from" {
+		t.Errorf("error = %q, want %q", resp.Error, "to must be after from")
+	}
+}
+
+func TestAdminAPIStats_DateRangeTooLarge(t *testing.T) {
+	t.Parallel()
+
+	database := newTestDB(t)
+	h, store := testAdminHandler(t, database)
+	sess, _ := store.Create("admin")
+
+	// 400 days range
+	req := adminRequest(t, http.MethodGet,
+		"/dashboard/api/stats/summary?from=2025-01-01T00:00:00Z&to=2026-02-05T00:00:00Z",
+		nil, sess)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+}
+
+func TestAdminAPIStats_InvalidFromDate(t *testing.T) {
+	t.Parallel()
+
+	database := newTestDB(t)
+	h, store := testAdminHandler(t, database)
+	sess, _ := store.Create("admin")
+
+	req := adminRequest(t, http.MethodGet, "/dashboard/api/stats/summary?from=not-a-date", nil, sess)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+}
+
+func TestAdminAPIStats_InvalidLimit(t *testing.T) {
+	t.Parallel()
+
+	database := newTestDB(t)
+	h, store := testAdminHandler(t, database)
+	sess, _ := store.Create("admin")
+
+	req := adminRequest(t, http.MethodGet, "/dashboard/api/stats?limit=-5", nil, sess)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+}
+
+func TestAdminAPIStats_NilStatsProvider(t *testing.T) {
+	t.Parallel()
+
+	database := newTestDB(t)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	store := NewSessionStore(time.Hour, logger)
+
+	cfg := config.DashboardConfig{
+		Enabled:        true,
+		Listen:         "127.0.0.1:8082",
+		SessionTimeout: "1h",
+	}
+	ircCfg := config.IRCConfig{
+		Server:   "localhost",
+		Port:     6667,
+		Channels: config.ChannelsConfig{Main: "#murmur"},
+	}
+
+	admin := &AdminDeps{
+		DB:    database,
+		Admin: &mockAdminChecker{admins: map[string]bool{"admin": true}},
+		// Stats is nil — should return 503.
+	}
+
+	h := NewHandler(store, cfg, ircCfg, nil, admin, logger)
+	h.verify = noopVerifier
+	sess, _ := store.Create("admin")
+
+	req := adminRequest(t, http.MethodGet, "/dashboard/api/stats/summary", nil, sess)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusServiceUnavailable)
+	}
+}
+
+func TestParseStatsQuery(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		query   string
+		wantErr string
+		check   func(t *testing.T, q StatsQueryParams)
+	}{
+		{
+			name:  "empty query",
+			query: "",
+			check: func(t *testing.T, q StatsQueryParams) {
+				if q.Channel != "" || q.Nick != "" || q.Provider != "" {
+					t.Error("expected empty filters")
+				}
+			},
+		},
+		{
+			name:  "all filters",
+			query: "channel=%23murmur&nick=user1&provider=openrouter&request_type=chat&limit=100&offset=10",
+			check: func(t *testing.T, q StatsQueryParams) {
+				if q.Channel != "#murmur" {
+					t.Errorf("Channel = %q, want %q", q.Channel, "#murmur")
+				}
+				if q.Nick != "user1" {
+					t.Errorf("Nick = %q, want %q", q.Nick, "user1")
+				}
+				if q.Provider != "openrouter" {
+					t.Errorf("Provider = %q, want %q", q.Provider, "openrouter")
+				}
+				if q.RequestType != "chat" {
+					t.Errorf("RequestType = %q, want %q", q.RequestType, "chat")
+				}
+				if q.Limit != 100 {
+					t.Errorf("Limit = %d, want 100", q.Limit)
+				}
+				if q.Offset != 10 {
+					t.Errorf("Offset = %d, want 10", q.Offset)
+				}
+			},
+		},
+		{
+			name:    "invalid request_type",
+			query:   "request_type=invalid",
+			wantErr: "request_type must be one of: chat, task, event, summary",
+		},
+		{
+			name:    "invalid from date",
+			query:   "from=not-a-date",
+			wantErr: "from must be RFC3339 format",
+		},
+		{
+			name:    "invalid to date",
+			query:   "to=not-a-date",
+			wantErr: "to must be RFC3339 format",
+		},
+		{
+			name:    "to before from",
+			query:   "from=2026-12-31T00:00:00Z&to=2026-01-01T00:00:00Z",
+			wantErr: "to must be after from",
+		},
+		{
+			name:    "date range too large",
+			query:   "from=2025-01-01T00:00:00Z&to=2026-02-05T00:00:00Z",
+			wantErr: "date range must not exceed 365 days",
+		},
+		{
+			name:    "negative limit",
+			query:   "limit=-1",
+			wantErr: "limit must be a positive integer",
+		},
+		{
+			name:    "zero limit",
+			query:   "limit=0",
+			wantErr: "limit must be a positive integer",
+		},
+		{
+			name:    "non-numeric limit",
+			query:   "limit=abc",
+			wantErr: "limit must be a positive integer",
+		},
+		{
+			name:    "negative offset",
+			query:   "offset=-1",
+			wantErr: "offset must be a non-negative integer",
+		},
+		{
+			name:  "limit capped at max",
+			query: "limit=500",
+			check: func(t *testing.T, q StatsQueryParams) {
+				if q.Limit != maxStatsLimit {
+					t.Errorf("Limit = %d, want %d (capped)", q.Limit, maxStatsLimit)
+				}
+			},
+		},
+		{
+			name:  "valid date range",
+			query: "from=2026-01-01T00:00:00Z&to=2026-06-01T00:00:00Z",
+			check: func(t *testing.T, q StatsQueryParams) {
+				if q.From.IsZero() || q.To.IsZero() {
+					t.Error("expected non-zero From and To")
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			values, err := url.ParseQuery(tt.query)
+			if err != nil {
+				t.Fatalf("ParseQuery: %v", err)
+			}
+			q, errMsg := parseStatsQuery(values)
+			if tt.wantErr != "" {
+				if errMsg != tt.wantErr {
+					t.Errorf("error = %q, want %q", errMsg, tt.wantErr)
+				}
+				return
+			}
+			if errMsg != "" {
+				t.Fatalf("unexpected error: %s", errMsg)
+			}
+			if tt.check != nil {
+				tt.check(t, q)
+			}
+		})
 	}
 }
