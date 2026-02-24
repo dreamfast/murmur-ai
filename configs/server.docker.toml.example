@@ -54,10 +54,20 @@ temperature = 0.7
 # max_tokens = 4096
 # temperature = 0.7
 
+# Summary provider (optional) — cheaper/faster LLM for conversation
+# summarization and iteration status messages (e.g. "Searching for files..."
+# instead of "thinking..."). Keeps costs down and avoids blocking the main LLM.
+# [llm.providers.summary]
+# api_base = "https://openrouter.ai/api/v1"
+# api_key = "vault:llm-api-key"   # reuse primary key if same endpoint
+# model = "openai/gpt-4.1-mini"
+# max_tokens = 512
+# temperature = 0.3
+
 [memory]
 db_path = "/data/memory.db"
 max_history = 100
-# summary_model = "ollama"       # use a cheap model for summarization
+# summary_model = "summary"      # provider ID for summarization + iteration status
 # summary_threshold = 80         # default: 80% of max_history
 # cross_channel_context = 10     # messages from other channels in system prompt (-1 to disable)
 
