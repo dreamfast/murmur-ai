@@ -495,18 +495,10 @@ const PALETTE = [
 
 async function loadChartJS() {
   if (chartModule) return chartModule;
-  const mod = await import("chart.js");
-  mod.Chart.register(
-    mod.CategoryScale,
-    mod.LinearScale,
-    mod.PointElement,
-    mod.LineElement,
-    mod.BarElement,
-    mod.ArcElement,
-    mod.Tooltip,
-    mod.Legend,
-    mod.Filler,
-  );
+  // Use chart.js/auto to auto-register all controllers, scales, and elements.
+  // Manual registration of individual components misses controllers (LineController,
+  // BarController, DoughnutController) which causes "X is not a registered controller".
+  const mod = await import("chart.js/auto");
   chartModule = mod;
   return mod;
 }
