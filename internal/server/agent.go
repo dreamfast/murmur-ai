@@ -20,9 +20,11 @@ import (
 
 // iterationPauseThreshold is the number of LLM call iterations before the
 // agent pauses, asks the LLM to summarize progress, and waits for the user
-// to decide whether to continue. The user's next message triggers a fresh
-// loop with the full conversation history, effectively continuing.
-const iterationPauseThreshold = 10
+// to decide whether to continue. Set high (100) to support agentic workflows
+// that require many tool calls. The user can type !stop at any time to
+// interrupt early. The user's next message triggers a fresh loop with the
+// full conversation history, effectively continuing.
+const iterationPauseThreshold = 100
 
 // crossChannelMaxMsgLen is the maximum length (in runes) of a single message
 // included in the cross-channel context section of the system prompt.
