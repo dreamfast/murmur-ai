@@ -38,7 +38,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="${MURMUR_DIR:-$SCRIPT_DIR}"
 
 # Core services (always started with `start`)
-CORE_SERVICES=(ircd piston murmur-server murmur-client)
+# murmur-client is only included if its config exists (not everyone runs a client)
+CORE_SERVICES=(ircd piston murmur-server)
+if [[ -f "$PROJECT_DIR/configs/client.docker.toml" ]]; then
+	CORE_SERVICES+=(murmur-client)
+fi
 
 # Profile-to-service mapping for optional services
 # Docker Compose profiles gate these; we resolve them so `start` brings up everything configured.
