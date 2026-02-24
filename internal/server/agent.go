@@ -1064,15 +1064,47 @@ func (a *Agent) generatePauseSummary(memoryChannel, ircChannel, nick string, ite
 		}
 	}
 
+	llmStart := time.Now()
 	resp, err := provider.ChatCompletion(summaryCtx, &llm.ChatRequest{
 		Messages: messages,
 		// No tools — force a text-only response.
 	})
+	llmDuration := time.Since(llmStart)
+
 	if err != nil {
 		a.logger.Error("summary LLM call failed", "error", err, "provider", provider.Name())
+		errMsg := truncate(err.Error(), 500)
+		a.statsCollector.Record(&db.UsageStat{
+			Channel:      ircChannel,
+			Nick:         nick,
+			Provider:     provider.Name(),
+			Model:        provider.Model(),
+			LatencyMs:    llmDuration.Milliseconds(),
+			Iteration:    iterations,
+			RequestType:  "pause_summary",
+			Status:       "error",
+			ErrorMessage: &errMsg,
+			ToolDetails:  "[]",
+		})
 		a.send(ircChannel, continueMsg)
 		return
 	}
+
+	// Record successful pause summary LLM call.
+	a.statsCollector.Record(&db.UsageStat{
+		Channel:          ircChannel,
+		Nick:             nick,
+		Provider:         provider.Name(),
+		Model:            provider.Model(),
+		PromptTokens:     resp.Usage.PromptTokens,
+		CompletionTokens: resp.Usage.CompletionTokens,
+		TotalTokens:      resp.Usage.TotalTokens,
+		LatencyMs:        llmDuration.Milliseconds(),
+		Iteration:        iterations,
+		RequestType:      "pause_summary",
+		Status:           "ok",
+		ToolDetails:      "[]",
+	})
 
 	if resp.Content != "" {
 		if err := a.memory.AddMessage(memoryChannel, llm.RoleAssistant, resp.Content, "", ""); err != nil {
@@ -1101,12 +1133,42 @@ func (a *Agent) iterationSummary(ctx context.Context, channel string, providerNa
 	})
 	messages = append(messages, recentMsgs...)
 
+	llmStart := time.Now()
 	resp, err := a.summaryProvider.ChatCompletion(summaryCtx, &llm.ChatRequest{
 		Messages: messages,
 	})
+	llmDuration := time.Since(llmStart)
+
 	if err != nil {
+		errMsg := truncate(err.Error(), 500)
+		a.statsCollector.Record(&db.UsageStat{
+			Channel:      channel,
+			Provider:     a.summaryProvider.Name(),
+			Model:        a.summaryProvider.Model(),
+			LatencyMs:    llmDuration.Milliseconds(),
+			Iteration:    iteration,
+			RequestType:  "iteration_summary",
+			Status:       "error",
+			ErrorMessage: &errMsg,
+			ToolDetails:  "[]",
+		})
 		return fallback
 	}
+
+	// Record successful iteration summary LLM call.
+	a.statsCollector.Record(&db.UsageStat{
+		Channel:          channel,
+		Provider:         a.summaryProvider.Name(),
+		Model:            a.summaryProvider.Model(),
+		PromptTokens:     resp.Usage.PromptTokens,
+		CompletionTokens: resp.Usage.CompletionTokens,
+		TotalTokens:      resp.Usage.TotalTokens,
+		LatencyMs:        llmDuration.Milliseconds(),
+		Iteration:        iteration,
+		RequestType:      "iteration_summary",
+		Status:           "ok",
+		ToolDetails:      "[]",
+	})
 
 	summary := strings.TrimSpace(resp.Content)
 	if summary == "" {
