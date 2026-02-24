@@ -132,12 +132,28 @@ hey murmur, what's the uptime on this machine?
 
 You can also DM the bot directly — private messages work the same as channel messages, with separate conversation history per user. Or open the web dashboard at `http://localhost:8082` if you enabled it.
 
-### Check the logs
+### Managing the stack
+
+The `murmur.sh` helper script wraps Docker Compose (or bare-metal processes) for day-to-day management:
 
 ```bash
-docker compose logs -f murmur-server
-docker compose logs -f murmur-client
+./murmur.sh start                 # start all services
+./murmur.sh stop                  # stop all services
+./murmur.sh restart               # restart everything
+./murmur.sh status                # show service status
+./murmur.sh logs                  # tail all logs
+./murmur.sh logs murmur-server    # tail specific service
+./murmur.sh reload                # hot-reload server config (SIGHUP)
+./murmur.sh send "hello"          # send a message to the agent
+./murmur.sh vault set my-key      # store a secret
+./murmur.sh update                # pull latest, rebuild, restart
+./murmur.sh shell                 # open a shell in the server container
+./murmur.sh piston-setup          # install Piston language runtimes
 ```
+
+The script auto-detects whether Docker is available. If not, it falls back to managing bare-metal processes via the compiled binary. It also resolves Docker Compose profiles (browser, search, opencode) from your `.env` so `start` brings up everything you've configured.
+
+See [CLI Reference](#cli-reference) for the full command list.
 
 ---
 
@@ -934,6 +950,39 @@ Server and clients communicate via JSON messages on `#murmur-bus`:
 ---
 
 ## CLI Reference
+
+### murmur.sh (stack management)
+
+The recommended way to manage Murmur. Auto-detects Docker vs bare-metal mode.
+
+```bash
+./murmur.sh start   [service...]   # start all services (or specific ones)
+./murmur.sh stop    [service...]   # stop all services (or specific ones)
+./murmur.sh restart [service...]   # restart all services (or specific ones)
+./murmur.sh reload                 # hot-reload server config (SIGHUP)
+./murmur.sh status                 # show service status
+./murmur.sh logs    [service...]   # tail logs (all or specific services)
+./murmur.sh build                  # build/rebuild Docker images or binary
+./murmur.sh vault   <sub> [args]   # manage secrets (set/get/list/delete)
+./murmur.sh send    "message"      # send a message to the agent
+./murmur.sh update                 # pull latest code, rebuild, restart
+./murmur.sh shell                  # open a shell in the server container (Docker only)
+./murmur.sh piston-setup           # install Piston language runtimes (Docker only)
+./murmur.sh help                   # show help
+```
+
+**Services:** `ircd`, `piston`, `murmur-server`, `murmur-client`, `browser`, `searxng`, `opencode`
+
+**Environment variables:**
+- `MURMUR_DIR` — project directory (default: script location)
+- `MURMUR_VAULT_PASS` — vault passphrase (prompted if not set)
+- `COMPOSE_PROFILES` — Docker Compose profiles, also read from `.env`
+
+When no services are specified, `start` brings up all core services plus any profile-gated services (browser, searxng, opencode) configured in your `.env`.
+
+### murmur binary
+
+The compiled binary for direct usage or bare-metal deployments:
 
 ```bash
 murmur server [--config path]     # start the server (default: ~/.murmur/server.toml)
