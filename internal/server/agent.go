@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -18,6 +19,12 @@ import (
 	"murmur/internal/llm"
 )
 
+// errStopRequested is the sentinel cause used with context.WithCancelCause
+// when a user issues the !stop command. It allows runLoop to distinguish a
+// user-initiated stop (which should produce a summary) from a server shutdown
+// (which should exit silently).
+var errStopRequested = errors.New("stop requested by user")
+
 // iterationPauseThreshold is the number of LLM call iterations before the
 // agent pauses, asks the LLM to summarize progress, and waits for the user
 // to decide whether to continue. Set high (100) to support agentic workflows
@@ -25,6 +32,11 @@ import (
 // interrupt early. The user's next message triggers a fresh loop with the
 // full conversation history, effectively continuing.
 const iterationPauseThreshold = 100
+
+// stopSummaryTimeout is the maximum duration for the LLM call that generates
+// a progress summary when the user issues !stop or the iteration limit is
+// reached. Kept short to avoid blocking the channel.
+const stopSummaryTimeout = 10 * time.Second
 
 // crossChannelMaxMsgLen is the maximum length (in runes) of a single message
 // included in the cross-channel context section of the system prompt.
@@ -127,6 +139,13 @@ type Agent struct {
 	// this is not a concern.
 	chanMu    sync.Mutex
 	chanLocks map[string]*sync.Mutex
+
+	// loopCancels stores per-channel cancel functions for active agent loops.
+	// When a user issues !stop, StopChannel calls the CancelCauseFunc with
+	// errStopRequested. The running loop detects this via context.Cause and
+	// produces a summary before exiting. Protected by loopCancelMu.
+	loopCancelMu sync.Mutex
+	loopCancels  map[string]context.CancelCauseFunc
 }
 
 // AgentParams holds all parameters for creating a new Agent. Using a struct
@@ -222,6 +241,7 @@ func NewAgent(p AgentParams) *Agent {
 		logger:          p.Logger,
 		lastTopics:      make(map[string]string),
 		chanLocks:       make(map[string]*sync.Mutex),
+		loopCancels:     make(map[string]context.CancelCauseFunc),
 	}
 	providers := p.Providers
 	a.providers.Store(&providers)
@@ -238,6 +258,48 @@ func NewAgent(p AgentParams) *Agent {
 // ensuring they are cancelled on server shutdown. Must be called before Run.
 func (a *Agent) SetLifecycleContext(ctx context.Context) {
 	a.lifecycleCtx = ctx
+}
+
+// startChannelContext creates a cancellable child context for the given
+// channel and stores the CancelCauseFunc so StopChannel can interrupt the
+// loop. If a cancel func already exists for this channel (defensive — should
+// not happen due to per-channel locking), it is called first.
+func (a *Agent) startChannelContext(parentCtx context.Context, channel string) context.Context {
+	a.loopCancelMu.Lock()
+	defer a.loopCancelMu.Unlock()
+
+	// Defensive: cancel any stale entry without a cause, so the old loop
+	// exits silently (first-cause-wins semantics — nil cause means no summary).
+	if prev, ok := a.loopCancels[channel]; ok {
+		prev(nil)
+	}
+
+	ctx, cancel := context.WithCancelCause(parentCtx)
+	a.loopCancels[channel] = cancel
+	return ctx
+}
+
+// clearChannelContext removes the cancel function for a channel after the
+// agent loop has exited. Must be called via defer after startChannelContext.
+func (a *Agent) clearChannelContext(channel string) {
+	a.loopCancelMu.Lock()
+	defer a.loopCancelMu.Unlock()
+	delete(a.loopCancels, channel)
+}
+
+// StopChannel cancels the active agent loop on the given channel by invoking
+// the stored CancelCauseFunc with errStopRequested. Returns true if a loop
+// was running and was signalled to stop, false if no loop was active.
+func (a *Agent) StopChannel(channel string) bool {
+	a.loopCancelMu.Lock()
+	defer a.loopCancelMu.Unlock()
+
+	cancel, ok := a.loopCancels[channel]
+	if !ok {
+		return false
+	}
+	cancel(errStopRequested)
+	return true
 }
 
 // loadProviders returns the current providers map from the atomic pointer.
@@ -355,6 +417,10 @@ func (a *Agent) HandleMessage(ctx context.Context, channel, nick, message string
 	chLock.Lock()
 	defer chLock.Unlock()
 
+	// Create a cancellable context so !stop can interrupt this loop.
+	ctx = a.startChannelContext(ctx, channel)
+	defer a.clearChannelContext(channel)
+
 	// Store the user message in memory.
 	if err := a.memory.AddMessage(channel, llm.RoleUser, nick+": "+message, "", ""); err != nil {
 		a.logger.Error("failed to store user message", "error", err, "channel", channel)
@@ -413,6 +479,10 @@ func (a *Agent) RunScheduledTask(ctx context.Context, taskID int64, channel, tas
 	chLock.Lock()
 	defer chLock.Unlock()
 
+	// Create a cancellable context so !stop can interrupt this loop.
+	ctx = a.startChannelContext(ctx, channel)
+	defer a.clearChannelContext(channel)
+
 	// Run the agent loop with ephemeral memory but real IRC output.
 	a.runLoop(ctx, memoryChannel, channel, createdBy)
 
@@ -456,6 +526,10 @@ func (a *Agent) HandleEvent(ctx context.Context, channel, nick, source, eventTyp
 	chLock := a.getChannelLock(channel)
 	chLock.Lock()
 	defer chLock.Unlock()
+
+	// Create a cancellable context so !stop can interrupt this loop.
+	ctx = a.startChannelContext(ctx, channel)
+	defer a.clearChannelContext(channel)
 
 	// Run the agent loop with ephemeral memory but real IRC output.
 	a.runLoop(ctx, memoryChannel, channel, nick)
@@ -520,7 +594,12 @@ func (a *Agent) runLoop(ctx context.Context, memoryChannel, ircChannel, nick str
 	for i := 0; i < iterationPauseThreshold; i++ {
 		// Check context before each iteration.
 		if ctx.Err() != nil {
-			a.logger.Info("agent loop cancelled", "channel", ircChannel, "iteration", i)
+			if errors.Is(context.Cause(ctx), errStopRequested) {
+				a.logger.Info("agent loop stopped by user", "channel", ircChannel, "iteration", i+1)
+				a.generatePauseSummary(memoryChannel, ircChannel, nick, i+1, true)
+			} else {
+				a.logger.Info("agent loop cancelled (shutdown)", "channel", ircChannel, "iteration", i+1)
+			}
 			return
 		}
 
@@ -667,6 +746,13 @@ func (a *Agent) runLoop(ctx context.Context, memoryChannel, ircChannel, nick str
 			usedProvider = primaryProvider
 		}
 		if err != nil {
+			// If the error is due to !stop, produce a summary instead of
+			// an error message.
+			if errors.Is(context.Cause(ctx), errStopRequested) {
+				a.logger.Info("agent loop stopped by user during LLM call", "channel", ircChannel, "iteration", i+1)
+				a.generatePauseSummary(memoryChannel, ircChannel, nick, i+1, true)
+				return
+			}
 			a.logger.Error("LLM call failed",
 				"error", err,
 				"provider", usedProvider.Name(),
@@ -791,15 +877,35 @@ func (a *Agent) runLoop(ctx context.Context, memoryChannel, ircChannel, nick str
 	a.logger.Info("iteration pause threshold reached, requesting summary",
 		"channel", ircChannel, "iterations", iterationPauseThreshold)
 
-	continueMsg := fmt.Sprintf(
-		"I've used %d iterations so far. Reply to continue or change your request.",
-		iterationPauseThreshold,
-	)
+	a.generatePauseSummary(memoryChannel, ircChannel, nick, iterationPauseThreshold, false)
+}
+
+// generatePauseSummary builds a progress summary using the summary provider
+// (or primary LLM as fallback) and sends it to IRC along with a "reply to
+// continue" prompt. It is called both when the iteration limit is reached and
+// when the user issues !stop.
+//
+// The stopped parameter indicates whether this was triggered by !stop (true)
+// or by reaching the iteration limit (false). When stopped, the context may
+// already be cancelled, so a fresh timeout context is derived from the
+// server's lifecycle context.
+func (a *Agent) generatePauseSummary(memoryChannel, ircChannel, nick string, iterations int, stopped bool) {
+	var reason string
+	if stopped {
+		reason = fmt.Sprintf("I was stopped after %d iterations.", iterations)
+	} else {
+		reason = fmt.Sprintf("I've used %d iterations so far.", iterations)
+	}
+	continueMsg := reason + " Reply to continue or change your request."
+
+	// Use the lifecycle context for the summary LLM call. When stopped, the
+	// loop context is cancelled, so we need a fresh context. When paused
+	// (iteration limit), the loop context may still be valid, but using the
+	// lifecycle context is consistent and safe.
+	summaryCtx, cancel := context.WithTimeout(a.lifecycleCtx, stopSummaryTimeout)
+	defer cancel()
 
 	// Build messages for one final LLM call (no tools → text-only summary).
-	// Append a system message requesting a summary directly in the message
-	// array rather than persisting it, so it doesn't pollute conversation
-	// history if the summary call fails.
 	cfg := a.loadConfig()
 	history, err := a.memory.GetHistory(memoryChannel, cfg.maxHistory)
 	if err != nil {
@@ -817,39 +923,42 @@ func (a *Agent) runLoop(ctx context.Context, memoryChannel, ircChannel, nick str
 	messages := make([]llm.Message, 0, 2+len(sanitized))
 	messages = append(messages, llm.Message{
 		Role:    llm.RoleSystem,
-		Content: a.buildSystemPrompt(ctx, ircChannel, cfg),
+		Content: a.buildSystemPrompt(summaryCtx, ircChannel, cfg),
 	})
 	messages = append(messages, sanitized...)
-	// Append a system directive asking for a progress summary.
 	messages = append(messages, llm.Message{
 		Role: llm.RoleSystem,
 		Content: fmt.Sprintf(
 			"You have used %d iterations of tool calls. "+
 				"Please provide a brief summary of what you have tried so far "+
 				"and what the current status is. Be concise.",
-			iterationPauseThreshold,
+			iterations,
 		),
 	})
 
-	// Snapshot the permission manager for provider resolution (same as the
-	// main loop) so model permission checks are not bypassed.
-	a.mu.RLock()
-	pm := a.permissions
-	a.mu.RUnlock()
+	// Choose the summary provider if available, otherwise fall back to the
+	// primary LLM.
+	provider := a.summaryProvider
+	if provider == nil {
+		a.mu.RLock()
+		pm := a.permissions
+		a.mu.RUnlock()
 
-	provider, err := a.resolveProvider(ircChannel, nick, pm)
-	if err != nil {
-		a.logger.Error("failed to get provider for summary", "error", err)
-		a.send(ircChannel, continueMsg)
-		return
+		var resolveErr error
+		provider, resolveErr = a.resolveProvider(ircChannel, nick, pm)
+		if resolveErr != nil {
+			a.logger.Error("failed to get provider for summary", "error", resolveErr)
+			a.send(ircChannel, continueMsg)
+			return
+		}
 	}
 
-	resp, err := provider.ChatCompletion(ctx, &llm.ChatRequest{
+	resp, err := provider.ChatCompletion(summaryCtx, &llm.ChatRequest{
 		Messages: messages,
 		// No tools — force a text-only response.
 	})
 	if err != nil {
-		a.logger.Error("summary LLM call failed", "error", err)
+		a.logger.Error("summary LLM call failed", "error", err, "provider", provider.Name())
 		a.send(ircChannel, continueMsg)
 		return
 	}

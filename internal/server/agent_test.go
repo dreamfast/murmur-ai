@@ -3093,3 +3093,157 @@ func TestBuildSystemPrompt_TaskMode(t *testing.T) {
 		t.Error("task mode prompt should contain focus instruction")
 	}
 }
+
+// blockingProvider is a mock LLM provider that blocks on ChatCompletion until
+// the context is cancelled. Used to test !stop cancellation behavior.
+type blockingProvider struct {
+	name      string
+	callCount atomic.Int32
+}
+
+func (b *blockingProvider) Name() string { return b.name }
+
+func (b *blockingProvider) ChatCompletion(ctx context.Context, _ *llm.ChatRequest) (*llm.ChatResponse, error) {
+	b.callCount.Add(1)
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func TestAgent_StopChannel_CancelsLoop(t *testing.T) {
+	t.Parallel()
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := database.Migrate(); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	t.Cleanup(func() { database.Close() })
+
+	memory := NewMemory(database, 100, 80, nil, logger)
+	registry := NewRegistry(2*time.Minute, logger)
+	registry.Register(&bus.RegisterMessage{
+		Type:     bus.TypeRegister,
+		ClientID: "test-client",
+		Hostname: "test-host",
+		Tools: []bus.ToolDef{
+			{Name: "shell", Description: "Run commands", Parameters: json.RawMessage(`{"type":"object","properties":{"cmd":{"type":"string"}}}`)},
+		},
+	})
+
+	sender := bus.NewSender(nil, "#murmur-bus", "", 0, logger)
+	router := NewRouter(registry, sender, logger)
+
+	// Use a blocking provider for the primary LLM — it will block until
+	// the context is cancelled, simulating a long-running LLM call.
+	primary := &blockingProvider{name: "blocking-primary"}
+
+	// Use a fast mock for the summary provider so the stop summary completes.
+	summaryMock := &llmtest.MockProvider{
+		NameVal: "summary-provider",
+		Responses: []*llm.ChatResponse{
+			{Content: "I was working on shell commands."},
+		},
+	}
+
+	providers := map[string]llm.Provider{
+		"blocking-primary": primary,
+	}
+
+	var sent []string
+	var sentMu sync.Mutex
+	appendSent := func(_, message string) {
+		sentMu.Lock()
+		defer sentMu.Unlock()
+		sent = append(sent, message)
+	}
+	getSent := func() []string {
+		sentMu.Lock()
+		defer sentMu.Unlock()
+		result := make([]string, len(sent))
+		copy(result, sent)
+		return result
+	}
+
+	agent := NewAgent(AgentParams{
+		Providers:       providers,
+		DefaultProvider: "blocking-primary",
+		SummaryProvider: summaryMock,
+		Registry:        registry,
+		Memory:          memory,
+		Router:          router,
+		SystemPrompt:    "You are a test assistant.",
+		ServerName:      "test-server",
+		BusChannel:      "#test-bus",
+		MaxHistory:      100,
+		ToolTimeout:     2 * time.Second,
+		Verbose:         true,
+		Logger:          logger,
+	})
+	agent.sendFunc = appendSent
+
+	// Run HandleMessage in a goroutine — it will block on the LLM call.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		agent.HandleMessage(context.Background(), "#test-stop", "user1", "do something")
+	}()
+
+	// Wait for the primary LLM to be called (proves the loop started).
+	deadline := time.After(5 * time.Second)
+	for {
+		if primary.callCount.Load() > 0 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for LLM call")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	// Issue !stop.
+	stopped := agent.StopChannel("#test-stop")
+	if !stopped {
+		t.Fatal("StopChannel returned false, expected true")
+	}
+
+	// Wait for the loop to exit.
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for agent loop to exit after stop")
+	}
+
+	// Verify the summary was sent.
+	messages := getSent()
+	foundSummary := false
+	foundContinue := false
+	for _, msg := range messages {
+		if strings.Contains(msg, "shell commands") {
+			foundSummary = true
+		}
+		if strings.Contains(msg, "Reply to continue") {
+			foundContinue = true
+		}
+	}
+	if !foundSummary {
+		t.Errorf("expected summary message, got: %v", messages)
+	}
+	if !foundContinue {
+		t.Errorf("expected continue prompt, got: %v", messages)
+	}
+}
+
+func TestAgent_StopChannel_NoActiveLoop(t *testing.T) {
+	t.Parallel()
+	env := newTestAgentEnv(t)
+
+	// No loop is running — StopChannel should return false.
+	stopped := env.agent.StopChannel("#nonexistent")
+	if stopped {
+		t.Error("StopChannel returned true for channel with no active loop")
+	}
+}
