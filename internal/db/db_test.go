@@ -92,6 +92,7 @@ func TestMigrate_CreatesAllTables(t *testing.T) {
 		"channel_permissions",
 		"metadata",
 		"docker_containers",
+		"usage_stats",
 	}
 
 	for _, table := range expectedTables {
@@ -133,6 +134,12 @@ func TestMigrate_CreatesIndexes(t *testing.T) {
 		"idx_users_api_key",
 		"idx_users_role",
 		"idx_docker_containers_status",
+		"idx_usage_stats_timestamp",
+		"idx_usage_stats_channel",
+		"idx_usage_stats_provider",
+		"idx_usage_stats_nick",
+		"idx_usage_stats_channel_ts",
+		"idx_usage_stats_provider_ts",
 	}
 
 	for _, idx := range expectedIndexes {

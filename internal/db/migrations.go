@@ -235,6 +235,35 @@ var migrations = []string{
 		updated DATETIME DEFAULT CURRENT_TIMESTAMP
 	);
 	CREATE INDEX idx_docker_containers_status ON docker_containers(status);`,
+
+	// Migration 13: Usage statistics table for tracking LLM token consumption,
+	// tool invocations, and request metadata. Each row represents one LLM API
+	// call. Tool-level detail is stored as a JSON array in tool_details.
+	// The status column tracks whether the call succeeded or failed.
+	`CREATE TABLE usage_stats (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+		channel TEXT NOT NULL COLLATE NOCASE,
+		nick TEXT NOT NULL DEFAULT '' COLLATE NOCASE,
+		provider TEXT NOT NULL,
+		model TEXT NOT NULL DEFAULT '',
+		prompt_tokens INTEGER NOT NULL DEFAULT 0,
+		completion_tokens INTEGER NOT NULL DEFAULT 0,
+		total_tokens INTEGER NOT NULL DEFAULT 0,
+		tool_calls_count INTEGER NOT NULL DEFAULT 0,
+		tool_details TEXT NOT NULL DEFAULT '[]',
+		latency_ms INTEGER NOT NULL DEFAULT 0,
+		iteration INTEGER NOT NULL DEFAULT 0,
+		request_type TEXT NOT NULL DEFAULT 'chat' CHECK(request_type IN ('chat', 'task', 'event', 'summary')),
+		status TEXT NOT NULL DEFAULT 'ok' CHECK(status IN ('ok', 'error')),
+		error_message TEXT
+	);
+	CREATE INDEX idx_usage_stats_timestamp ON usage_stats(timestamp);
+	CREATE INDEX idx_usage_stats_channel ON usage_stats(channel);
+	CREATE INDEX idx_usage_stats_provider ON usage_stats(provider);
+	CREATE INDEX idx_usage_stats_nick ON usage_stats(nick);
+	CREATE INDEX idx_usage_stats_channel_ts ON usage_stats(channel, timestamp);
+	CREATE INDEX idx_usage_stats_provider_ts ON usage_stats(provider, timestamp);`,
 }
 
 // Migrate runs all pending schema migrations. It creates the schema_version
