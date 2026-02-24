@@ -446,10 +446,15 @@ async function fetchAll() {
       statsTotal.value = 0;
     }
 
-    // Render charts after DOM updates
+    // Render charts after DOM updates (non-fatal if Chart.js fails to load)
     await nextTick();
-    await renderCharts();
-  } catch {
+    try {
+      await renderCharts();
+    } catch (chartErr) {
+      console.warn("Chart rendering failed:", chartErr);
+    }
+  } catch (e) {
+    console.error("Stats fetch error:", e);
     error.value = "Network error \u2014 is the server running?";
   } finally {
     loading.value = false;
