@@ -288,6 +288,13 @@ func (a *Agent) SetLifecycleContext(ctx context.Context) {
 	a.lifecycleCtx = ctx
 }
 
+// SetStatsCollector sets the async usage statistics writer. This is called
+// from Run() after the lifecycle context is available, since the collector
+// needs a context for its background goroutine. Safe to call with nil.
+func (a *Agent) SetStatsCollector(sc *StatsCollector) {
+	a.statsCollector = sc
+}
+
 // startChannelContext creates a cancellable child context for the given
 // channel and stores the CancelCauseFunc so StopChannel can interrupt the
 // loop. If a cancel func already exists for this channel (defensive — should

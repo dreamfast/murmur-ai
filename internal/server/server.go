@@ -88,6 +88,10 @@ type Server struct {
 	// ircLogHandler is the IRC debug channel log handler, nil when debug
 	// channel is not configured. Exposed so commands can toggle it.
 	ircLogHandler *irc.IRCLogHandler
+
+	// statsCollector is the async usage statistics writer, nil when
+	// statistics are disabled. Created in Run() with the lifecycle context.
+	statsCollector *StatsCollector
 }
 
 // New creates a new server from the given configuration. It opens the SQLite
@@ -687,6 +691,41 @@ func (s *Server) Run(ctx context.Context) error {
 	defer monitorCancel()
 	s.monitorCtx = monitorCtx
 
+	// Create and start the stats collector if statistics are enabled.
+	// This must happen after monitorCtx is available so the collector's
+	// background goroutine is tied to the server lifecycle.
+	if s.loadCfg().Statistics.IsEnabled() {
+		s.statsCollector = NewStatsCollector(monitorCtx, s.database, s.logger)
+		s.agent.SetStatsCollector(s.statsCollector)
+		s.logger.Info("usage statistics collection enabled")
+	}
+
+	// Run stats cleanup on startup regardless of whether collection is enabled.
+	// This ensures previously-collected data is cleaned up even if the user
+	// later disables statistics.
+	{
+		retentionDays := s.loadCfg().Statistics.RetentionDays
+		deleted, err := s.database.CleanupStats(monitorCtx, retentionDays)
+		if err != nil {
+			s.logger.Warn("stats cleanup on startup failed", "error", err)
+		} else if deleted > 0 {
+			s.logger.Info("stats cleanup on startup", "deleted", deleted, "retention_days", retentionDays)
+		}
+	}
+
+	// Run event cleanup on startup using the configured retention.
+	{
+		eventRetention := s.loadCfg().API.EventRetentionDays
+		if eventRetention > 0 {
+			deleted, err := s.database.CleanupEvents(monitorCtx, eventRetention)
+			if err != nil {
+				s.logger.Warn("event cleanup on startup failed", "error", err)
+			} else if deleted > 0 {
+				s.logger.Info("event cleanup on startup", "deleted", deleted, "retention_days", eventRetention)
+			}
+		}
+	}
+
 	// Start the registry heartbeat monitor.
 	var monitorWg sync.WaitGroup
 	monitorWg.Add(1)
@@ -791,6 +830,16 @@ func (s *Server) Run(ctx context.Context) error {
 	// database. This prevents goroutines from hitting a closed DB.
 	s.logger.Info("waiting for in-flight agent goroutines to finish")
 	s.agentWg.Wait()
+
+	// Wait for the stats collector to drain remaining records. This must
+	// happen after agentWg.Wait() (no more Record() calls) and before
+	// database.Close() (the collector needs the DB for final flushes).
+	// monitorCancel() above already cancelled the collector's context,
+	// triggering its drain sequence.
+	if s.statsCollector != nil {
+		s.statsCollector.Wait()
+		s.logger.Info("stats collector drained")
+	}
 
 	// Close the IRC log handler before closing the database.
 	if s.ircLogHandler != nil {
